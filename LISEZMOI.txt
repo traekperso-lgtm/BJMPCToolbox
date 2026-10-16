@@ -1,0 +1,147 @@
+﻿BJMPC Toolbox 1.7 - interface graphique (Windows 11)
+=====================================================
+
+LANCER
+  Double-clic sur BJMPC-Toolbox.bat (la demande d'administrateur s'affiche).
+
+CONTENU DU DOSSIER (ne pas separer les fichiers)
+  BJMPC-Toolbox.ps1               l'application (fenetre)
+  BJMPC-Optimisation-Win11.ps1    moteur gaming / reseau / systeme / ecran (utilisable seul en console)
+  BJMPC-Reglages-Win11.ps1        catalogue de 73 reglages Windows (confidentialite, interface, mises a jour...)
+  BJMPC-Maintenance-Win11.ps1     moteur maintenance et reparation (utilisable seul en console)
+  BJMPC-Outils-Win11.ps1          diagnostics, depannage, catalogue de logiciels winget, nettoyage
+  BJMPC-Toolbox.bat               lanceur
+  Verif.bat / Apercu.bat          autotest en lecture seule / apercu du resume (facultatifs)
+
+NOUVEAUTES 1.7
+  Page "Journal et annulation" : nouvelle carte "Retablir les valeurs par defaut de Windows 11"
+  - Le Journal ne sait annuler que ce que la Toolbox a elle-meme modifie. Cette carte compare le PC a un Windows 11
+    d'origine, meme si le Journal est vide (reglages poses par une ancienne version ou un autre outil).
+  - "Comparer avec Windows 11" (lecture seule) : tableau Reglage / Valeur par defaut / Valeur actuelle, classe en
+    Systeme, Reseau, Materiel, Parametre non critique, Prise en charge specifique, Preference utilisateur,
+    Confidentialite et strategies, Interface et Explorateur, Taches planifiees. Cases par ligne et par categorie.
+  - Couvre : services (SSDPSRV, TrkWks, icssvc, upnphost, MapsBroker, RetailDemo, DiagTrack, SysMain, dmwappushservice,
+    TermService, WerSvc, Spooler, Bluetooth, DoSvc...), priorites systeme (Win32PrioritySeparation, SystemResponsiveness,
+    NetworkThrottlingIndex, jeux : Priority / Scheduling Category / SFIO Priority), Nagle (TcpAckFrequency, TCPNoDelay
+    sur chaque carte), PowerThrottlingOff, rapport d'erreurs (WER), toutes les strategies et valeurs de confidentialite
+    posees par le catalogue, autorisations (ConsentStore), menu contextuel classique, taches de telemetrie.
+  - Securite : une valeur "non definie par defaut" est SUPPRIMEE (pas mise a 0). Les strategies ne sont retirees que si
+    leur valeur est celle posee par nos outils, jamais sur un PC en domaine. Les pilotes de demarrage/systeme, Defender,
+    pare-feu et Windows Update ne sont jamais touches. Les reglages de confort (Interface et Explorateur) ne sont pas
+    coches par defaut.
+  - Avant chaque retour : point de restauration + fichier C:\BJMPC-Logs\Backup\AvantDefauts_<PC>_<date>.json ;
+    "Annuler le dernier retablissement" remet tout comme avant. Redemarrage conseille ensuite.
+
+NOUVEAUTES 1.6
+  Page "Pilotes" refaite en cinq onglets (aucune question a taper : listes deroulantes et cases a cocher)
+  - MISES A JOUR : choisir "Appareils" (principaux = graphique, reseau, son, Bluetooth, stockage, camera... et appareils
+    sans pilote / seulement sans pilote / tous) et "Analyse" (stricte, ou elargie), puis "Rechercher les mises a jour".
+    Un tableau montre pour chaque appareil : pilote installe, pilote propose, date, taille, niveau d'analyse. Les
+    mises a jour sont cochees (celles de l'analyse elargie, en orange, ne le sont pas) ; "Installer les mises a jour
+    cochees". Les appareils deja a jour ou sans pilote trouve sont listes en gris. Clic droit : proprietes Windows.
+    Avant toute installation : signature Microsoft WHQL, identifiant, architecture, classe, version, point de
+    restauration, copie de l'ancien pilote (C:\BJMPC-Logs\Pilotes\Avant_MAJ_*). Au moindre doute : REFUSE. Apres
+    installation on verifie que Windows a vraiment applique le pilote, sinon le paquet inutile est retire du magasin.
+    Controle de l'INF : seul l'identifiant de PUCE (VEN_xxxx&DEV_xxxx, ou VID&PID en USB) est exige ; SUBSYS, REV et CC_
+    ne le sont jamais (chaque editeur les ecrit a sa guise). Les paquets legers (60 Mo ou moins) sont telecharges et
+    controles des la recherche : un pilote n'est "propose" que si son INF declare bien l'appareil (sinon : "Aucun paquet
+    adapte"). Les gros (pilotes graphiques) sont controles au moment de l'installation.
+    Le Catalog est approximatif (plusieurs paquets pour la meme puce) : l'installation essaie jusqu'a 6 paquets
+    distincts, du plus recent au moins recent, et garde le premier dont l'INF declare bien l'appareil. Une reponse
+    anormale du Catalog (limite de requetes) est signalee "Erreur", jamais prise pour "aucun pilote". Les
+    identifiants de classe (CC_xxxx) ne sont jamais cherches.
+    Analyse elargie : si rien en strict, recherche par la puce (VEN/DEV), identifiants compatibles, nom du produit ;
+    l'INF doit declarer la puce ou un identifiant compatible (SUBSYS non exige), signature Microsoft toujours exigee.
+  - PILOTES INSTALLES (comme DriverStore Explorer) : tableau pilote / editeur / classe / appareil / version / date /
+    taille / etat (en service, ancienne version, aucun appareil branche, protege). Afficher + filtrer, "Cocher les
+    anciennes versions", "Supprimer la selection" (copie avant suppression, pilotes de demarrage proteges, seules les
+    lignes visibles et cochees sont supprimees), export CSV.
+  - AJOUTER UN PILOTE : "Chercher dans Telechargements" (dossier ou .zip), choisir le pilote, controle "Strict"
+    (WHQL Microsoft) ou "Ouvert" (signature valide d'un autre editeur), puis installer ou ajouter au magasin seulement.
+  - APPAREILS ABSENTS : fantomes absents depuis 15 jours ou plus (classes sans risque, date inconnue = jamais
+    propose), liste enregistree avant suppression.
+  - SAUVEGARDES : sauvegarde de tous les pilotes tiers et restauration.
+  - Retire : Station-Drivers, recherche Windows Update dans la page (le bouton "Windows Update" ouvre les Parametres).
+  Limite : la suppression "forcee" de Driver Store Explorer n'est volontairement pas reprise (risque chez un client).
+
+NOUVEAUTES 1.4
+  Page "Pilotes" (menu Reparation)
+  - Pilotes a jour : interroge Windows Update (recherche en lecture seule), liste les pilotes proposes, installe
+    ceux que vous cochez. Windows garde l'ancien pilote (retour possible dans le Gestionnaire de peripheriques).
+  - Magasin de pilotes (equivalent de Driver Store Explorer, refait en PowerShell avec pnputil) : liste des
+    pilotes tiers avec editeur, version, date, taille et appareil associe ; reperage des anciennes versions et
+    des pilotes sans appareil branche ; suppression de la selection.
+    Avant chaque suppression, une copie est exportee dans C:\BJMPC-Logs\Pilotes\Suppression_* ; Windows refuse de
+    supprimer un pilote utilise ; les pilotes necessaires au demarrage sont proteges.
+  - Sauvegarde de tous les pilotes et restauration d'une sauvegarde (liste deroulante).
+  - "Sans appareil branche" ne veut pas dire "inutile" (imprimantes, peripheriques USB, antivirus...) : verifier.
+  - Le resume pour le client raconte ces operations en langage simple.
+  - Driver Store Explorer lui-meme est aussi dans le catalogue Applications (Utilitaires) si vous preferez l'outil original.
+
+NOUVEAUTES 1.3
+  Page "Resume pour le client" (menu Client)
+  - Apres votre intervention, un resume anime explique au client, avec des mots simples, ce qui a ete fait sur
+    son ordinateur : avatar "Mia" et voix francaise (Microsoft Hortense, incluse dans Windows 11 en francais ;
+    sans elle, le texte s'affiche en sous-titres).
+  - Chaque action lancee depuis la Toolbox est ajoutee automatiquement a la liste de la session. Decochez ce
+    que vous ne voulez pas montrer, cliquez sur "Lancer le resume" : Pause, Suivant, Rejouer, Espace = pause.
+  - Si une etape n'a pas pu aller jusqu'au bout (erreur ou avertissement), elle est annoncee honnetement
+    dans une scene "A revoir ensemble" ; decochez-la si vous l'avez deja corrigee.
+  - Voix naturelle (facultatif) : par defaut la voix de Windows (Hortense) lit le texte, ce qui reste "robotique".
+    Pour une voix beaucoup plus naturelle : creer sur portal.azure.com une ressource gratuite "Speech" (offre F0,
+    environ 500 000 caracteres par mois), copier la cle et la region dans la page "Resume pour le client",
+    cliquer "Enregistrer la cle" puis "Tester la voix". Voix proposees : Denise, Vivienne, Henri. La cle est
+    chiffree par Windows (compte courant uniquement). Le texte du resume, prenom du client compris, est envoye
+    a Microsoft Azure pour etre converti en voix ; decochez la case pour rester hors ligne. Sans Internet, sans
+    cle ou en cas d'erreur, Hortense prend automatiquement le relais.
+  - Les textes sont rediges en langage courant, sans jargon, a la premiere personne du pluriel ("Nous avons...").
+  Verifications
+  - Controle de syntaxe et d'interface, simulation complete (application puis annulation : etat identique),
+    relecture independante (7 defauts corriges), puis essais sur un vrai PC Windows 11 en PowerShell 5.1.
+  - Verif.bat : autotest en lecture seule sur le PC courant (resultat dans Verif_resultat.txt).
+    Apercu.bat : ouvre la fenetre de resume avec des exemples, sans droits administrateur.
+  Attention : les reglages "utilisateur" s'appliquent au compte qui a ete eleve en administrateur. Si vous
+  elevez avec un autre compte que celui du client, ils ne concerneront pas la session du client.
+
+NOUVEAUTES 1.2 (comparaison avec les scripts WinScript fournis)
+  Nouvelles pages
+  - Confidentialite : telemetrie, publicites, Copilot/Recall, logiciels tiers (Edge, Brave, Office, NVIDIA...),
+    autorisations des applications. Les reglages recommandes sont pre-coches, rien ne s'applique sans clic.
+  - Interface et Explorateur : menu contextuel classique, fichiers caches, barre des taches, widgets, etc.
+  - Mises a jour et securite : Windows Update, Defender, reseau, fonctionnalites facultatives.
+  - Applications : 335 logiciels installables avec winget (filtre, categories), recherche libre,
+    verification des identifiants, retrait des applications preinstallees (liste protegee), OneDrive.
+  Pages existantes completees
+  - Reseau : DNS chiffres Cloudflare, Quad9, AdGuard, Google, OpenDNS (en plus de Mullvad).
+  - Gaming : plans d'alimentation Windows (Equilibre, Hautes performances, Performances optimales).
+  - Maintenance > Entretien : nettoyage de disque Windows (selection prudente, Windows.old en option),
+    caches des navigateurs, compte residuel defaultuser0.
+  Tous les reglages du registre, services, taches et fonctionnalites sont annulables depuis le Journal.
+  Ne sont PAS annulables par le Journal : retrait d'applications preinstallees (reinstallables depuis le
+  Microsoft Store ou winget), nettoyage de disque, caches des navigateurs.
+
+CE QUI N'A PAS ETE REPRIS, ET POURQUOI
+  - Plan d'alimentation "Ultimate" cree avec une commande qui plante selon les versions : remplace par une version corrigee.
+  - Reglage HAGS en conflit avec le profil Gaming deja present : non duplique.
+  - Strategies Edge obsoletes ou sans effet sur Windows 11 recent : ecartees.
+  - Suppression de dossiers utilisateur, de Windows Defender, du Store, de composants dont Windows depend : refuse.
+  - Logiciels obsoletes : Speccy, RDCMan, Java 8, Python 3.10 (fin de support 10/2026), Sublime Text 3,
+    Chromium non officiel, doublon SnappyDriverInstaller.
+  - Logiciels sans identifiant winget (Ryzen, RustDesk, FileZilla, EqualizerAPO, MusicBee, Avast, AVG, Kaspersky).
+  - Les fichiers du site WinScript (main, unattend, global) concernent le site web ou l'installation sans
+    surveillance : rien a porter.
+  Les identifiants winget n'ont pas pu etre testes depuis l'environnement de creation : Applications >
+  "Verifier le catalogue" liste ceux qui n'existent plus.
+
+SECURITE / ANNULATION
+  Chaque valeur modifiee est enregistree AVANT modification dans
+  C:\BJMPC-Logs\Backup\EtatOrigine_<PC>.json. Page "Journal et annulation" : annuler par categorie
+  ou tout annuler. Un point de restauration peut etre cree depuis le tableau de bord.
+
+JOURNAUX
+  C:\BJMPC-Logs\Toolbox_<PC>_<date>.log        journal de la session
+  C:\BJMPC-Logs\Toolbox_erreurs.log            erreurs internes de l'interface (a me transmettre en cas de souci)
+
+SI RIEN NE S'AFFICHE
+  Ouvrir C:\BJMPC-Logs\Toolbox_erreurs.log. Verifier que les 5 fichiers .ps1 sont dans le meme dossier.
+  Si le zip a ete telecharge : clic droit sur chaque .ps1 > Proprietes > Debloquer (le .bat contourne deja la restriction).
