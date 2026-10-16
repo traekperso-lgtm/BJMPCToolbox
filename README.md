@@ -2,7 +2,7 @@
 
 🇫🇷 [Français](#-français) · 🇬🇧 [English](#-english)
 
-> **Version 1.7** · Windows 11 · Windows PowerShell 5.1 (WPF) · by **BJMPC Informatique**
+> **Version 1.8** · Windows 11 · Windows PowerShell 5.1 (WPF) · by **BJMPC Informatique**
 
 ---
 
@@ -43,17 +43,17 @@ Prérequis : Windows 11, droits administrateur, Windows PowerShell 5.1 (inclus d
 ### Les pages
 
 - **Tableau de bord** : matériel, état du système, points d'attention.
-- **Outils** : diagnostics et dépannage (licence, disque, réseau, horloge, file d'impression, caches, rapports…).
-- **Maintenance** : réparation de Windows et remise à l'état des services essentiels, point de restauration.
+- **Outils** : mesures, rapports et inventaires en lecture seule (disques SMART, erreurs matérielles, Wi-Fi, audit de sécurité, licence…).
+- **Maintenance** : réparation de Windows (DISM, SFC, CHKDSK, WMI), réinitialisations, dépannage rapide (Explorateur, audio, impression, horloge, cache DNS) et entretien (nettoyage, caches de navigateurs et de shaders).
 - **Pilotes** *(refaite en 1.6)* : cinq onglets.
   - *Mises à jour* : recherche sur le **Microsoft Update Catalog** (stricte, ou élargie), tableau installé / proposé / date / taille, installation des seuls pilotes cochés.
   - *Pilotes installés* : équivalent de DriverStore Explorer (anciennes versions, suppression avec copie préalable, export CSV).
   - *Ajouter un pilote* : depuis un dossier ou un .zip, avec contrôle de signature.
   - *Appareils absents* : fantômes anciens, liste sauvegardée avant suppression.
   - *Sauvegardes* : export de tous les pilotes tiers et restauration.
-- **Gaming et GPU / Réseau et DNS / Système et NVMe / Affichage et OLED** : optimisations ciblées pour PC moderne, sans toucher à la sécurité.
-- **Confidentialité / Interface et Explorateur / Mises à jour et sécurité** : catalogue de réglages Windows à cocher.
-- **Applications** : catalogue de logiciels (winget) et suppression des applications préinstallées.
+- **Gaming et GPU / Réseau et DNS / Système et NVMe / Affichage et OLED** : optimisations ciblées pour PC moderne, sans toucher à la sécurité. *Système et NVMe* = disque, démarrage et services uniquement.
+- **Confidentialité / Interface et Explorateur / Mises à jour et sécurité** : catalogue de réglages Windows à cocher. Chaque réglage n'apparaît que dans la page de son thème (aucun doublon).
+- **Applications** : catalogue de logiciels (winget), mises à jour et inventaire, suppression des applications préinstallées.
 - **Résumé pour le client** : journal de session traduit en langage simple, pour expliquer ce qui a été fait.
 - **Journal et annulation** : annule tout, ou une catégorie ; points de restauration ; **nouveau en 1.7 : « Rétablir les valeurs par défaut de Windows 11 »**.
 
@@ -74,7 +74,7 @@ Prérequis : Windows 11, droits administrateur, Windows PowerShell 5.1 (inclus d
 
 ### Retours
 
-Ouvrez une *issue* en précisant la version de Windows, la version de l'outil (1.7) et, si possible, le journal de `C:\BJMPC-Logs\`.
+Ouvrez une *issue* en précisant la version de Windows, la version de l'outil (1.8) et, si possible, le journal de `C:\BJMPC-Logs\`.
 
 ---
 
@@ -115,17 +115,17 @@ Requirements: Windows 11, administrator rights, Windows PowerShell 5.1 (built in
 ### Pages
 
 - **Dashboard**: hardware, system state, points of attention.
-- **Tools**: diagnostics and troubleshooting (licence, disk, network, clock, print queue, caches, reports…).
-- **Maintenance**: Windows repair and reset of essential services, restore point.
+- **Tools**: read-only measurements, reports and inventories (SMART disks, hardware errors, Wi-Fi, security audit, licence…).
+- **Maintenance**: Windows repair (DISM, SFC, CHKDSK, WMI), resets, quick troubleshooting (Explorer, audio, printing, clock, DNS cache) and upkeep (cleanup, browser and shader caches).
 - **Drivers** *(rebuilt in 1.6)*: five tabs.
   - *Updates*: search on the **Microsoft Update Catalog** (strict or extended), table of installed / proposed / date / size, installs only the ticked drivers.
   - *Installed drivers*: DriverStore Explorer equivalent (old versions, deletion with prior copy, CSV export).
   - *Add a driver*: from a folder or .zip, with signature check.
   - *Absent devices*: old ghost devices, list saved before removal.
   - *Backups*: export of all third-party drivers and restore.
-- **Gaming & GPU / Network & DNS / System & NVMe / Display & OLED**: targeted optimisations for modern PCs, without touching security.
-- **Privacy / Interface & Explorer / Updates & security**: a catalogue of Windows tweaks to tick.
-- **Applications**: software catalogue (winget) and removal of preinstalled apps.
+- **Gaming & GPU / Network & DNS / System & NVMe / Display & OLED**: targeted optimisations for modern PCs, without touching security. *System & NVMe* = disk, startup and services only.
+- **Privacy / Interface & Explorer / Updates & security**: a catalogue of Windows tweaks to tick. Each tweak appears only on the page matching its topic (no duplicates).
+- **Applications**: software catalogue (winget), updates and inventory, removal of preinstalled apps.
 - **Customer summary**: the session log translated into plain language to explain what was done.
 - **Journal & undo**: undo everything or one category; restore points; **new in 1.7: "Restore Windows 11 defaults"**.
 
@@ -146,4 +146,4 @@ Requirements: Windows 11, administrator rights, Windows PowerShell 5.1 (built in
 
 ### Feedback
 
-Open an *issue* with your Windows version, the tool version (1.7) and, if possible, the log from `C:\BJMPC-Logs\`.
+Open an *issue* with your Windows version, the tool version (1.8) and, if possible, the log from `C:\BJMPC-Logs\`.
