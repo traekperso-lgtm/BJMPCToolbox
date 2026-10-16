@@ -583,9 +583,8 @@ function Optimize-Network {
     Invoke-Native 'netsh.exe' 'int tcp set global timestamps=disabled'
     Invoke-Native 'netsh.exe' 'int tcp set heuristics disabled'
 
-    # Pas de réservation QoS, pas de partage P2P des mises à jour
+    # Pas de réservation de bande passante QoS (le partage P2P des mises à jour se règle dans la page Mises à jour)
     Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Psched' 'NonBestEffortLimit' 0
-    Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization' 'DODownloadMode' 0
     Write-Log "Optimisation réseau terminée" 'OK'
 }
 
@@ -658,35 +657,18 @@ function Optimize-Storage {
     Write-Log "Optimisation stockage terminée" 'OK'
 }
 
-# ---------------------------------------------------------------- Services et télémétrie
+# ---------------------------------------------------------------- Services inutiles (niveau sûr)
+# La télémétrie (DiagTrack, tâches de collecte, stratégies) relève de la page Confidentialité (catalogue de réglages).
 $Script:SafeServices = @(
-    @{ Name = 'DiagTrack';         Mode = 'disabled'; Desc = '(télémétrie Connected User Experiences)' },
-    @{ Name = 'dmwappushservice';  Mode = 'disabled'; Desc = '(routage de messages push WAP)' },
-    @{ Name = 'MapsBroker';        Mode = 'demand';   Desc = '(cartes téléchargées)' },
     @{ Name = 'RetailDemo';        Mode = 'disabled'; Desc = '(mode démo magasin)' },
     @{ Name = 'Fax';               Mode = 'disabled'; Desc = '(télécopie)' },
-    @{ Name = 'RemoteRegistry';    Mode = 'disabled'; Desc = '(registre à distance : risque de sécurité)' },
-    @{ Name = 'WerSvc';            Mode = 'demand';   Desc = '(rapport d''erreurs Windows)' }
-)
-
-$Script:TelemetryTasks = @(
-    @('\Microsoft\Windows\Application Experience\', 'Microsoft Compatibility Appraiser'),
-    @('\Microsoft\Windows\Application Experience\', 'ProgramDataUpdater'),
-    @('\Microsoft\Windows\Customer Experience Improvement Program\', 'Consolidator'),
-    @('\Microsoft\Windows\Customer Experience Improvement Program\', 'UsbCeip'),
-    @('\Microsoft\Windows\Feedback\Siuf\', 'DmClient'),
-    @('\Microsoft\Windows\Feedback\Siuf\', 'DmClientOnScenarioDownload')
+    @{ Name = 'RemoteRegistry';    Mode = 'disabled'; Desc = '(registre à distance : risque de sécurité)' }
 )
 
 function Optimize-ServicesSafe {
-    Write-Log "=== Services et télémétrie (niveau sûr) ==="
+    Write-Log "=== Services inutiles (niveau sûr) ==="
     Write-Log "Defender, pare-feu, Windows Update, audio, réseau et Bluetooth ne sont pas touchés"
     foreach ($s in $Script:SafeServices) { Set-SvcMode $s.Name $s.Mode $s.Desc }
-    foreach ($t in $Script:TelemetryTasks) { Disable-TaskSafe $t[0] $t[1] }
-    Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' 'AllowTelemetry' 0
-    Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' 'DoNotShowFeedbackNotifications' 1
-    Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo' 'Enabled' 0
-    Write-Log "Note : sur Windows Home/Pro, la télémétrie minimale 'Requise' reste envoyée (limite imposée par Microsoft)." 'WARN'
 }
 
 function Optimize-ServicesAdvanced {
@@ -1140,6 +1122,8 @@ function Invoke-FullProfile {
         Optimize-Network
         Optimize-Storage
         Optimize-ServicesSafe
+        # Télémétrie minimale : réglage du catalogue Confidentialité (présent dans l'interface, absent de la console seule)
+        if (Get-Command Set-Tweaks -ErrorAction SilentlyContinue) { Set-Tweaks -Ids @('tel_win') }
         Set-OledCare
     } finally { $Script:AssumeDefaults = $false }
     $Script:RebootNeeded = $true
@@ -1193,7 +1177,7 @@ function Show-Menu {
     Write-Host ""
     Write-Host "   SYSTÈME" -ForegroundColor Magenta
     Write-Host "    8) SSD NVMe (TRIM, accès, SysMain, démarrage rapide)"
-    Write-Host "    9) Services et télémétrie - niveau sûr"
+    Write-Host "    9) Services inutiles - niveau sûr (démo magasin, télécopie, registre à distance)"
     Write-Host "   10) Services - niveau avancé (choix un par un)"
     Write-Host "   11) Protection OLED"
     Write-Host "   15) Explorateur : extensions visibles, ouverture sur Ce PC, démarrage sans délai"

@@ -1,4 +1,4 @@
-﻿BJMPC Toolbox 1.7 - interface graphique (Windows 11)
+﻿BJMPC Toolbox 1.8 - interface graphique (Windows 11)
 =====================================================
 
 LANCER
@@ -12,6 +12,24 @@ CONTENU DU DOSSIER (ne pas separer les fichiers)
   BJMPC-Outils-Win11.ps1          diagnostics, depannage, catalogue de logiciels winget, nettoyage
   BJMPC-Toolbox.bat               lanceur
   Verif.bat / Apercu.bat          autotest en lecture seule / apercu du resume (facultatifs)
+
+NOUVEAUTES 1.8
+  Reorganisation : chaque page ne contient plus que ce qui correspond a son theme, et plus aucun doublon.
+  - SYSTEME ET NVME : disque, demarrage et services seulement. Les cartes "Explorateur et confidentialite" et la
+    telemetrie ont ete retirees (elles sont dans Interface et Confidentialite). Nouvelle carte "Demarrage et
+    diagnostic" (ecran bleu detaille, messages detaillees, horloge UTC). "Services inutiles - niveau sur" ne
+    concerne plus que RetailDemo, Fax et RemoteRegistry.
+  - CONFIDENTIALITE : regroupe toute la telemetrie (DiagTrack, taches de collecte, rapports d'erreurs, publicites,
+    synchronisation des parametres, IA...). Le profil complet applique toujours la telemetrie minimale.
+  - INTERFACE ET EXPLORATEUR : nouveaux reglages "Afficher les extensions de fichiers" et "Applications de demarrage
+    sans delai artificiel" (auparavant dans Systeme). "Barre de jeu et capture" passe dans Gaming.
+  - RESEAU : "Pile reseau" (preferer IPv4). Le partage P2P des mises a jour (Delivery Optimization) ne se regle plus
+    que dans Mises a jour et securite. La carte "Securite et reseau" devient "Securite".
+  - OUTILS : lecture seule uniquement (mesures, rapports, inventaires). Les depannages qui agissent (explorateur,
+    audio, file d'impression, horloge, cache DNS, memoire) et les caches de shaders sont dans MAINTENANCE.
+  - APPLICATIONS : mises a jour winget et inventaire des logiciels. La sauvegarde des pilotes n'est plus que dans
+    Pilotes ; le point de restauration n'est plus que dans Journal et annulation.
+  - Verification : aucune valeur de registre ni service n'est desormais pilote par deux pages.
 
 NOUVEAUTES 1.7
   Page "Journal et annulation" : nouvelle carte "Retablir les valeurs par defaut de Windows 11"

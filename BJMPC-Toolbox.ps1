@@ -11,7 +11,7 @@
 #>
 
 $ErrorActionPreference = 'Continue'
-$Script:AppVersion = '1.7'
+$Script:AppVersion = '1.8'
 $Script:Root       = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $Script:LogDir     = Join-Path $env:SystemDrive 'BJMPC-Logs'
 $Script:BackupDir  = Join-Path $Script:LogDir 'Backup'
@@ -951,7 +951,7 @@ function Build-Dashboard {
     $c2 = New-Object Windows.Controls.ColumnDefinition; $c2.Width = [Windows.GridLength]::new(2, 'Star')
     [void]$grid.ColumnDefinitions.Add($c1); [void]$grid.ColumnDefinitions.Add($c2)
 
-    $hero = New-Card 'Profil complet recommandé' 'Gaming, alimentation, réseau, stockage, services sûrs et protection OLED. Un point de restauration est créé d''abord, et chaque valeur d''origine est mémorisée.' 'Recommandé' 'a' '0,0,10,20'
+    $hero = New-Card 'Profil complet recommandé' 'Gaming, alimentation, réseau, stockage, services inutiles, télémétrie minimale et protection OLED. Un point de restauration est créé d''abord, et chaque valeur d''origine est mémorisée.' 'Recommandé' 'a' '0,0,10,20'
     $act = New-Object Windows.Controls.StackPanel
     $act.Orientation = 'Horizontal'; $act.Margin = '0,18,0,0'
     $spec = New-Spec 'opt' 'Invoke-FullProfile' 'Profil complet recommandé' @{} 'Appliquer le profil complet ? Un point de restauration est créé avant.' $Script:AfterChange
@@ -991,7 +991,7 @@ function Build-Dashboard {
     Add-Tile $hw 'net' 'Réseau' '10,0,0,10'
     [void]$p.Children.Add($hw)
 
-    $reco = New-Card 'Recommandations' 'Vert : déjà en place. Orange : à appliquer depuis les pages Gaming, Réseau ou Système.'
+    $reco = New-Card 'Recommandations' 'Vert : déjà en place. Orange : à appliquer depuis les pages Gaming, Réseau, Système ou Confidentialité.'
     $Script:RecoPanel = New-Object Windows.Controls.StackPanel
     $Script:RecoPanel.Margin = '0,10,0,0'
     [void]$reco.Body.Children.Add($Script:RecoPanel)
@@ -1001,13 +1001,12 @@ function Build-Dashboard {
     Add-Row $tools.Body 'État détaillé des optimisations' 'Affiche chaque réglage et sa valeur actuelle dans la console.' '' 'n' @((New-Btn 'Afficher' (New-Spec 'opt' 'Show-State' 'État des optimisations')))
     Add-Row $tools.Body 'Profil matériel détecté' 'CPU, RAM, GPU, NVMe, Wi-Fi et écran, avec les points d''attention.' '' 'n' @((New-Btn 'Afficher' (New-Spec 'opt' 'Show-HardwareProfile' 'Profil matériel')))
     Add-Row $tools.Body 'Informations système et santé des disques' '' '' 'n' @((New-Btn 'Afficher' (New-Spec 'maint' 'Get-SystemSummary' 'Informations système')))
-    Add-Row $tools.Body 'Point de restauration' 'À créer avant toute série de modifications.' '' 'n' @((New-Btn 'Créer' (New-Spec 'opt' 'New-RestorePoint' 'Point de restauration')))
     [void]$p.Children.Add($tools.Card)
 }
 
 # ---------------------------------------------------------------- Outils et diagnostics
 function Build-Tools {
-    $p = New-Page 'tools' 'Outils et diagnostics' 'Mesures, rapports et dépannages rapides. La plupart sont en lecture seule ; ceux qui modifient quelque chose le disent.'
+    $p = New-Page 'tools' 'Outils et diagnostics' 'Mesures, rapports et inventaires : rien n''est modifié ici. Les dépannages qui agissent sur le système sont dans la page Maintenance.'
     function ToolSpec { param([string]$Code, [string]$Title, [string]$Confirm = '') return (New-Spec 'tools' $Code $Title @{} $Confirm) }
 
     $hw = New-Card 'Matériel' 'Santé des disques, erreurs système liées au matériel, rapports énergétiques.' 'Lecture seule' 'g'
@@ -1023,7 +1022,6 @@ function Build-Tools {
     Add-Row $nt.Body 'Qualité de la connexion' 'Ping du routeur et de deux serveurs publics (8 essais chacun), temps de résolution DNS.' '' 'n' @((New-Btn 'Tester' (ToolSpec 'Test-NetworkQuality' 'Qualité de la connexion') -Primary))
     Add-Row $nt.Body 'Connexion Wi-Fi actuelle' 'Réseau, canal, débit, puissance du signal.' '' 'n' @((New-Btn 'Afficher' (ToolSpec 'Get-WifiInfo' 'Wi-Fi')))
     Add-Row $nt.Body 'Rapport Wi-Fi des 3 derniers jours' 'Coupures, déconnexions et durée des sessions, au format HTML.' '' 'n' @((New-Btn 'Générer' (ToolSpec 'New-WlanReport' 'Rapport Wi-Fi')))
-    Add-Row $nt.Body 'Vider le cache DNS' 'Utile après un changement de DNS ou un site inaccessible.' '' 'n' @((New-Btn 'Vider' (ToolSpec 'Clear-DnsCache' 'Cache DNS')))
     [void]$p.Children.Add($nt.Card)
 
     $sc = New-Card 'Sécurité et mises à jour' 'Contrôle de l''état de protection du PC, sans rien modifier.' 'Lecture seule' 'g'
@@ -1031,26 +1029,13 @@ function Build-Tools {
     Add-Row $sc.Body 'Mises à jour Windows en attente' 'Liste des mises à jour disponibles (recherche d''environ une minute).' '' 'n' @((New-Btn 'Rechercher' (ToolSpec 'Get-PendingUpdates' 'Mises à jour Windows')))
     [void]$p.Children.Add($sc.Card)
 
-    $sw = New-Card 'Logiciels, pilotes et licence' 'Inventaires pour un dossier client, mises à jour des applications et sauvegarde des pilotes.'
-    Add-Row $sw.Body 'Applications à mettre à jour (winget)' 'Liste seulement. Nécessite winget (Programme d''installation d''application).' '' 'n' @(
-        (New-Btn 'Rechercher' (ToolSpec 'Get-WingetUpdates' 'Applications à mettre à jour')),
-        (New-Btn 'Tout mettre à jour' (ToolSpec 'Update-WingetApps' 'Mise à jour des applications' 'Mettre à jour toutes les applications installées avec winget ? Certaines seront fermées et relancées.')))
-    Add-Row $sw.Body 'Inventaire des logiciels installés' 'Fichier CSV (nom, version, éditeur) enregistré dans C:\BJMPC-Logs\Rapports.' '' 'n' @((New-Btn 'Exporter' (ToolSpec 'Export-InstalledSoftware' 'Inventaire des logiciels')))
-    Add-Row $sw.Body 'Sauvegarde des pilotes tiers' 'Copie tous les pilotes installés dans C:\BJMPC-Logs\Pilotes, réinstallables avec pnputil.' '' 'n' @((New-Btn 'Sauvegarder' (ToolSpec 'Export-DriversBackup' 'Sauvegarde des pilotes')))
+    $sw = New-Card 'Système et licence' 'Programmes au démarrage, licence et informations système pour un dossier client.'
     Add-Row $sw.Body 'Programmes au démarrage' 'Liste dans la console ; la désactivation se fait dans les paramètres de Windows.' '' 'n' @(
         (New-Btn 'Lister' (ToolSpec 'Get-StartupItems' 'Programmes au démarrage')),
         (New-Btn 'Ouvrir les paramètres' @{ Fn = { try { Start-Process 'ms-settings:startupapps' } catch {} } }))
     Add-Row $sw.Body 'Licence Windows' 'Édition, état d''activation et clé OEM inscrite dans le BIOS.' '' 'n' @((New-Btn 'Afficher' (ToolSpec 'Get-LicenseInfo' 'Licence Windows')))
     Add-Row $sw.Body 'Informations système complètes' 'Exporte le résultat de systeminfo dans un fichier texte.' '' 'n' @((New-Btn 'Exporter' (ToolSpec 'Export-SystemInfo' 'Informations système (export)')))
     [void]$p.Children.Add($sw.Card)
-
-    $dp = New-Card 'Dépannage rapide' 'Petites actions courantes en atelier.' 'Modifie le système' 'w'
-    Add-Row $dp.Body 'Redémarrer l''Explorateur' 'Règle les problèmes de barre des tâches, de menu Démarrage ou de bureau figé. L''écran clignote une seconde.' '' 'n' @((New-Btn 'Redémarrer' (ToolSpec 'Restart-ExplorerShell' 'Explorateur Windows')))
-    Add-Row $dp.Body 'Redémarrer les services audio' 'Si le son disparaît ou crépite sans raison.' '' 'n' @((New-Btn 'Redémarrer' (ToolSpec 'Restart-AudioServices' 'Services audio')))
-    Add-Row $dp.Body 'Vider la file d''impression' 'Supprime les travaux bloqués puis relance le spouleur.' '' 'n' @((New-Btn 'Vider' (ToolSpec 'Clear-PrintQueue' 'File d''impression' 'Supprimer tous les travaux d''impression en attente ?')))
-    Add-Row $dp.Body 'Synchroniser l''horloge' 'Recale l''heure sur le serveur de temps Windows.' '' 'n' @((New-Btn 'Synchroniser' (ToolSpec 'Sync-Clock' 'Horloge')))
-    Add-Row $dp.Body 'Diagnostic de la mémoire (RAM)' 'Ouvre l''outil Windows, qui propose de redémarrer le PC pour tester la mémoire.' 'Redémarrage' 'n' @((New-Btn 'Ouvrir' (ToolSpec 'Start-MemoryDiagnostic' 'Diagnostic de la mémoire')))
-    [void]$p.Children.Add($dp.Card)
 }
 
 # ---------------------------------------------------------------- Maintenance
@@ -1073,7 +1058,7 @@ function Build-Maintenance {
     Add-Row $seq.Body '4. WMI : dépôt' 'Vérification, puis réparation sur confirmation.' '' 'n' @((New-Btn 'Vérifier' (New-Spec 'maint' 'Repair-WMI' 'WMI')))
     [void]$p.Children.Add($seq.Card)
 
-    $rst = New-Card 'Réinitialisations' 'Créez un point de restauration (page Tableau de bord) avant les actions sensibles.'
+    $rst = New-Card 'Réinitialisations' 'Créez un point de restauration (page Journal et annulation) avant les actions sensibles.'
     Add-Row $rst.Body 'Services Windows' 'Remet les services essentiels à leur démarrage par défaut.' '' 'n' @((New-Btn 'Réinitialiser' (New-Spec 'maint' 'Reset-Services' 'Services Windows')))
     Add-Row $rst.Body 'Réseau' 'DNS, Winsock, TCP/IP, ARP.' 'Coupe la connexion' 'w' @((New-Btn 'Réinitialiser' (New-Spec 'maint' 'Reset-Network' 'Réseau' @{} 'La connexion Internet sera coupée brièvement. Continuer ?')))
     Add-Row $rst.Body 'Windows Update' 'Dossiers renommés en .bak, DLL ré-enregistrées.' 'Redémarrage' 'n' @((New-Btn 'Réinitialiser' (New-Spec 'maint' 'Reset-WindowsUpdate' 'Windows Update')))
@@ -1085,6 +1070,15 @@ function Build-Maintenance {
     Add-Row $rst.Body 'Modes d''alimentation' 'Restaure les plans par défaut de Windows.' '' 'n' @((New-Btn 'Restaurer' (New-Spec 'maint' 'Reset-PowerPlan' 'Modes d''alimentation')))
     [void]$p.Children.Add($rst.Card)
 
+    $dp = New-Card 'Dépannage rapide' 'Petites actions courantes en atelier.' 'Modifie le système' 'w'
+    Add-Row $dp.Body 'Redémarrer l''Explorateur' 'Règle les problèmes de barre des tâches, de menu Démarrage ou de bureau figé. L''écran clignote une seconde.' '' 'n' @((New-Btn 'Redémarrer' (New-Spec 'tools' 'Restart-ExplorerShell' 'Explorateur Windows')))
+    Add-Row $dp.Body 'Redémarrer les services audio' 'Si le son disparaît ou crépite sans raison.' '' 'n' @((New-Btn 'Redémarrer' (New-Spec 'tools' 'Restart-AudioServices' 'Services audio')))
+    Add-Row $dp.Body 'Vider la file d''impression' 'Supprime les travaux bloqués puis relance le spouleur.' '' 'n' @((New-Btn 'Vider' (New-Spec 'tools' 'Clear-PrintQueue' 'File d''impression' @{} 'Supprimer tous les travaux d''impression en attente ?')))
+    Add-Row $dp.Body 'Synchroniser l''horloge' 'Recale l''heure sur le serveur de temps Windows.' '' 'n' @((New-Btn 'Synchroniser' (New-Spec 'tools' 'Sync-Clock' 'Horloge')))
+    Add-Row $dp.Body 'Diagnostic de la mémoire (RAM)' 'Ouvre l''outil Windows, qui propose de redémarrer le PC pour tester la mémoire.' 'Redémarrage' 'n' @((New-Btn 'Ouvrir' (New-Spec 'tools' 'Start-MemoryDiagnostic' 'Diagnostic de la mémoire')))
+    Add-Row $dp.Body 'Vider le cache DNS' 'Utile après un changement de DNS ou un site inaccessible.' '' 'n' @((New-Btn 'Vider' (New-Spec 'tools' 'Clear-DnsCache' 'Cache DNS')))
+    [void]$p.Children.Add($dp.Card)
+
     $ent = New-Card 'Entretien'
     Add-Row $ent.Body 'Nettoyage' 'Fichiers temporaires, corbeille, magasin de composants.' '' 'n' @((New-Btn 'Nettoyer' (New-Spec 'maint' 'Invoke-Cleanup' 'Nettoyage')))
     $wo = New-Check 'Supprimer aussi l''ancienne installation de Windows (Windows.old) : retour à la version précédente impossible ensuite' $false
@@ -1095,6 +1089,7 @@ function Build-Maintenance {
     Add-Row $ent.Body 'Nettoyage de disque Windows' 'Outil officiel avec une sélection prudente (fichiers temporaires, caches, journaux). Téléchargements, corbeille et vidages mémoire ne sont jamais touchés. Une fenêtre de Windows s''ouvre pendant le nettoyage.' '' 'n' @((New-Btn 'Nettoyer' $woSpec))
     [void]$ent.Body.Children.Add($wo)
     Add-Row $ent.Body 'Caches des navigateurs' 'Edge, Chrome, Brave, Firefox : dossiers de cache uniquement. Historique, cookies et mots de passe conservés. Fermez les navigateurs avant.' '' 'n' @((New-Btn 'Vider' (New-Spec 'tools' 'Clear-BrowserCaches' 'Caches des navigateurs' @{} 'Les navigateurs ouverts doivent être fermés pour que leurs caches soient vidés. Continuer ?')))
+    Add-Row $ent.Body 'Caches de shaders (jeux)' 'Utile après un changement de pilote graphique ou en cas de saccades et de plantages dans un jeu. Les caches DirectX, NVIDIA et AMD sont reconstruits au prochain lancement des jeux ; seuls des fichiers temporaires sont supprimés.' '' 'n' @((New-Btn 'Vider' (New-Spec 'tools' 'Clear-ShaderCache' 'Caches de shaders')))
     Add-Row $ent.Body 'Compte résiduel defaultuser0' 'Laissé par certaines installations de Windows. Supprime le compte seulement, jamais de dossier.' '' 'n' @((New-Btn 'Supprimer' (New-Spec 'tools' 'Remove-DefaultUser0' 'Compte defaultuser0' @{} 'Supprimer le compte utilisateur résiduel defaultuser0 ? Cette suppression ne peut pas être annulée par le Journal.')))
     Add-Row $ent.Body 'Analyse Defender rapide' 'Met à jour les signatures puis analyse.' '' 'n' @((New-Btn 'Analyser' (New-Spec 'maint' 'Invoke-DefenderScan' 'Analyse Defender')))
     [void]$p.Children.Add($ent.Card)
@@ -1145,16 +1140,14 @@ function Build-Gaming {
     [void]$ad.Body.Children.Add($ab)
     [void]$p.Children.Add($ad.Card)
 
-    $sh = New-Card 'Caches de shaders' 'Utile après un changement de pilote ou en cas de saccades et de plantages dans un jeu. Les caches DirectX, NVIDIA et AMD sont reconstruits au prochain lancement des jeux.'
-    Add-Row $sh.Body 'Vider les caches de shaders' 'Sans risque : seuls des fichiers temporaires sont supprimés.' '' 'n' @((New-Btn 'Vider' (New-Spec 'tools' 'Clear-ShaderCache' 'Caches de shaders')))
-    [void]$p.Children.Add($sh.Card)
+    [void](New-TweakCard $p 'Barre de jeu et capture' 'Le profil Gaming coupe déjà la capture pour votre session. Cette option applique la désactivation complète (stratégie) pour tous les comptes.')
 }
 
 # ---------------------------------------------------------------- Réseau
 $Script:NetChecks = @{}
 function Build-Network {
     $p = New-Page 'net' 'Réseau et DNS' 'Carte Wi-Fi 6/7 et Ethernet, pile TCP et DNS chiffré, avec retour arrière possible.'
-    $c = New-Card 'Cartes réseau et pile TCP' 'Économie d''énergie de la carte, Receive Side Scaling, itinérance Wi-Fi, TcpAckFrequency, TCPNoDelay (Nagle), RSC, réservation QoS, Delivery Optimization. Les cartes redémarrent : la connexion est coupée quelques secondes.'
+    $c = New-Card 'Cartes réseau et pile TCP' 'Économie d''énergie de la carte, Receive Side Scaling, itinérance Wi-Fi, TcpAckFrequency, TCPNoDelay (Nagle), RSC, réservation QoS. Les cartes redémarrent : la connexion est coupée quelques secondes.'
     $Script:NetChecks.Single = New-Check 'Le Wi-Fi passe par un seul routeur ou point d''accès (pas de réseau maillé) : réduit les recherches de roaming' $true
     [void]$c.Body.Children.Add($Script:NetChecks.Single)
     $ns = New-Spec 'opt' 'Optimize-Network' 'Réseau' @{} '' $Script:AfterChange
@@ -1163,6 +1156,8 @@ function Build-Network {
     $nb.HorizontalAlignment = 'Left'; $nb.Margin = '0,14,0,0'
     [void]$c.Body.Children.Add($nb)
     [void]$p.Children.Add($c.Card)
+
+    [void](New-TweakCard $p 'Pile réseau' 'Ordre de préférence des protocoles.')
 
     $d = New-Card 'DNS chiffré (Mullvad)' 'DNS over HTTPS en IPv4 et IPv6, mise à niveau automatique. Avec le repli UDP désactivé, si Mullvad est injoignable la résolution s''arrête au lieu de passer en clair.' 'DoH' 'a'
     Add-Row $d.Body 'Mullvad standard' '194.242.2.2 · 2a07:e340::2 · aucun filtrage' '' 'n' @((New-Btn 'Appliquer' (New-Spec 'opt' 'Set-MullvadDns' 'DNS Mullvad standard' @{ '^\s*Choix' = '1'; 'Continuer' = 'yes' } '' $Script:AfterChange) -Primary))
@@ -1185,7 +1180,7 @@ function Build-Network {
 $Script:HibRadios = @()
 $Script:SysChecks = @{}
 function Build-System {
-    $p = New-Page 'sys' 'Système et NVMe' 'Disque, services, Explorateur et confidentialité. Niveau sûr par défaut, niveau avancé sur demande.'
+    $p = New-Page 'sys' 'Système et NVMe' 'Disque, démarrage et services. Niveau sûr par défaut, niveau avancé sur demande.'
     $c = New-Card 'SSD NVMe' 'TRIM, horodatage d''accès désactivé et SysMain (Superfetch) désactivé sont toujours appliqués. Choisissez le reste ci-dessous.'
     $Script:SysChecks.Retrim = New-Check 'Lancer un ReTrim immédiat des volumes SSD' $true
     [void]$c.Body.Children.Add($Script:SysChecks.Retrim)
@@ -1215,12 +1210,9 @@ function Build-System {
     [void]$c.Body.Children.Add($b)
     [void]$p.Children.Add($c.Card)
 
-    $e = New-Card 'Explorateur et confidentialité' 'Réglages de confort, tous annulables depuis la page Journal et annulation. S''appliquent à l''utilisateur actuel.' 'Réversible' 'g'
-    Add-Row $e.Body 'Explorateur Windows' 'Extensions de fichiers visibles, ouverture sur « Ce PC », applications de démarrage sans délai artificiel.' '' 'n' @((New-Btn 'Appliquer' (New-Spec 'opt' 'Optimize-Explorer' 'Explorateur Windows' @{} '' $Script:AfterChange)))
-    Add-Row $e.Body 'Confidentialité et suggestions' 'Identifiant publicitaire, expériences personnalisées, suggestions et publicités du menu Démarrage, résultats Bing dans la recherche.' '' 'n' @((New-Btn 'Appliquer' (New-Spec 'opt' 'Optimize-Privacy' 'Confidentialité' @{} '' $Script:AfterChange)))
-    [void]$p.Children.Add($e.Card)
+    [void](New-TweakCard $p 'Démarrage et diagnostic' 'Affichage au démarrage, écran bleu et horloge matérielle.')
 
-    $s = New-Card 'Services et télémétrie · niveau sûr' 'DiagTrack, dmwappushservice, MapsBroker, RetailDemo, Fax, RemoteRegistry, WerSvc, ainsi que les tâches de télémétrie (Compatibility Appraiser, CEIP, Feedback). Defender, pare-feu et Windows Update restent intacts.' 'Réversible' 'g'
+    $s = New-Card 'Services inutiles · niveau sûr' 'Mode démonstration magasin (RetailDemo), télécopie (Fax) et registre à distance (RemoteRegistry). La télémétrie se règle dans la page Confidentialité. Defender, pare-feu et Windows Update restent intacts.' 'Réversible' 'g'
     Add-Row $s.Body 'Appliquer le niveau sûr' '' '' 'n' @((New-Btn 'Appliquer' (New-Spec 'opt' 'Optimize-ServicesSafe' 'Services niveau sûr' @{} '' $Script:AfterChange) -Primary))
     [void]$p.Children.Add($s.Card)
 
@@ -1732,9 +1724,9 @@ function Build-Interface {
 }
 
 function Build-WinSettings {
-    Build-TweakPage 'winset' 'Mises à jour et sécurité' 'Comportement de Windows Update, réseau et fonctionnalités facultatives.' @(
+    Build-TweakPage 'winset' 'Mises à jour et sécurité' 'Windows Update, sécurité et fonctionnalités facultatives.' @(
         @{ Name = 'Mises à jour Windows'; Sub = 'Les mises à jour de sécurité restent installées.' },
-        @{ Name = 'Sécurité et réseau'; Sub = 'Réglages à lire avant de cocher : certains retirent une protection ou en ajoutent une.' },
+        @{ Name = 'Sécurité'; Sub = 'Réglages à lire avant de cocher : certains retirent une protection ou en ajoutent une.' },
         @{ Name = 'Fonctionnalités Windows facultatives'; Sub = 'Composants anciens rarement utiles. Désactivation réversible depuis le Journal.' })
 }
 
@@ -1900,6 +1892,14 @@ function Build-Apps {
     [void]$fb.Children.Add((New-Btn 'Installer cet identifiant' $is))
     [void]$f.Body.Children.Add($fb)
     [void]$p.Children.Add($f.Card)
+
+    # --- Mises à jour et inventaire
+    $wu = New-Card 'Mises à jour et inventaire' 'Applications installées : mises à jour disponibles (winget) et inventaire pour un dossier client.'
+    Add-Row $wu.Body 'Applications à mettre à jour (winget)' 'Liste seulement. Nécessite winget (Programme d''installation d''application).' '' 'n' @(
+        (New-Btn 'Rechercher' (New-Spec 'tools' 'Get-WingetUpdates' 'Applications à mettre à jour')),
+        (New-Btn 'Tout mettre à jour' (New-Spec 'tools' 'Update-WingetApps' 'Mise à jour des applications' @{} 'Mettre à jour toutes les applications installées avec winget ? Certaines seront fermées et relancées.')))
+    Add-Row $wu.Body 'Inventaire des logiciels installés' 'Fichier CSV (nom, version, éditeur) enregistré dans C:\BJMPC-Logs\Rapports.' '' 'n' @((New-Btn 'Exporter' (New-Spec 'tools' 'Export-InstalledSoftware' 'Inventaire des logiciels')))
+    [void]$p.Children.Add($wu.Card)
 
     # --- Applications préinstallées
     $b = New-Card 'Applications préinstallées' 'Analyse les applications du Store présentes sur ce PC. Les composants dont Windows dépend (Store, Photos, Calculatrice, Terminal, Defender, codecs…) sont protégés et jamais proposés.' 'Non annulable par le Journal' 'w'
@@ -2575,6 +2575,9 @@ $Script:PlainMap = @(
     @{ K = '¦Réglages : Mises à jour'; C = 'secu'; T = 'Nous avons réglé la façon dont Windows se met à jour, pour éviter les mauvaises surprises.' }
     @{ K = '¦Réglages : Sécurité'; C = 'secu'; T = 'Nous avons ajusté quelques réglages de sécurité et de connexion.' }
     @{ K = '¦Réglages : Fonctionnalités'; C = 'vitesse'; T = 'Nous avons retiré de vieux éléments de Windows qui ne servent presque plus.' }
+    @{ K = '¦Réglages : Barre de jeu'; C = 'vitesse'; T = 'Nous avons désactivé la barre de jeu et l''enregistrement en arrière-plan, qui ralentissent parfois les jeux.' }
+    @{ K = '¦Réglages : Pile réseau'; C = 'net'; T = 'Nous avons ajusté la façon dont votre ordinateur choisit sa connexion Internet.' }
+    @{ K = '¦Réglages : Démarrage'; C = 'vitesse'; T = 'Nous avons ajusté quelques réglages de démarrage de Windows.' }
     @{ K = '¦Réglages : '; C = 'vitesse'; T = 'Nous avons ajusté quelques réglages de Windows.' }
     @{ K = '¦Mullvad base|¦AdGuard'; C = 'net'; T = 'Nous avons rendu votre navigation sur Internet plus privée : les adresses des sites que vous visitez sont maintenant protégées. Cela bloque aussi une partie des publicités et des sites dangereux.' }
     @{ K = '¦DNS d.origine'; C = 'net'; T = 'Nous avons remis le réglage d''origine de votre connexion Internet.' }

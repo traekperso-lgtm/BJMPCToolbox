@@ -2046,6 +2046,7 @@ $Script:Win11DefRegistry = @(
     @('priv', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\SearchSettings', 'IsMSACloudSearchEnabled', $null, 'DWord', 0),
     @('priv', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\SearchSettings', 'IsAADCloudSearchEnabled', $null, 'DWord', 0),
     @('priv', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\SearchSettings', 'IsDeviceSearchHistoryEnabled', $null, 'DWord', 0),
+    @('priv', 'HKCU:\Control Panel\International\User Profile', 'HttpAcceptLanguageOptOut', $null, 'DWord', 1),
     @('priv', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Search', 'BingSearchEnabled', $null, 'DWord', 0),
     @('priv', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Search', 'DeviceHistoryEnabled', $null, 'DWord', 0),
     @('priv', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Search', 'HistoryViewEnabled', $null, 'DWord', 0),

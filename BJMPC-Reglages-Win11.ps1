@@ -153,6 +153,7 @@ $Script:TweakCatalog = @(
         Fn = ''
         Needs = @()
         Reg = @(
+            @('HKCU:\Control Panel\International\User Profile', 'HttpAcceptLanguageOptOut', 1, 'DWord'),
             @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent', 'DisableSoftLanding', 1, 'DWord'),
             @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent', 'DisableWindowsConsumerFeatures', 1, 'DWord'),
             @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent', 'DisableTailoredExperiencesWithDiagnosticData', 1, 'DWord'),
@@ -716,6 +717,28 @@ $Script:TweakCatalog = @(
         Feat = @()
     },
     @{
+        Id = 'ui_fileext'; Group = 'Interface et Explorateur'; Risk = 'safe'; Default = $true; Reboot = $false
+        Label = 'Afficher les extensions de fichiers'
+        Desc = 'Évite d''ouvrir par erreur un fichier piégé (facture.pdf.exe) et facilite le dépannage.'
+        Fn = ''
+        Needs = @()
+        Reg = @(,@('HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced', 'HideFileExt', 0, 'DWord'))
+        Svc = @()
+        Task = @()
+        Feat = @()
+    },
+    @{
+        Id = 'ui_startdelay'; Group = 'Interface et Explorateur'; Risk = 'safe'; Default = $true; Reboot = $false
+        Label = 'Applications de démarrage sans délai artificiel'
+        Desc = 'Supprime l''attente que Windows impose avant de lancer les programmes de démarrage. Effet à la prochaine session.'
+        Fn = ''
+        Needs = @()
+        Reg = @(,@('HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Serialize', 'StartupDelayInMSec', 0, 'DWord'))
+        Svc = @()
+        Task = @()
+        Feat = @()
+    },
+    @{
         Id = 'ui_homegallery'; Group = 'Interface et Explorateur'; Risk = 'safe'; Default = $false; Reboot = $false
         Label = 'Retirer Accueil et Galerie du volet de navigation'
         Desc = 'L''Explorateur s''ouvre sur « Ce PC ».'
@@ -836,7 +859,7 @@ $Script:TweakCatalog = @(
         Feat = @()
     },
     @{
-        Id = 'ui_bsod'; Group = 'Interface et Explorateur'; Risk = 'safe'; Default = $true; Reboot = $false
+        Id = 'ui_bsod'; Group = 'Démarrage et diagnostic'; Risk = 'safe'; Default = $true; Reboot = $false
         Label = 'Écran bleu détaillé'
         Desc = 'Affiche les paramètres du code d''arrêt (utile pour le diagnostic).'
         Fn = ''
@@ -847,7 +870,7 @@ $Script:TweakCatalog = @(
         Feat = @()
     },
     @{
-        Id = 'ui_verbose'; Group = 'Interface et Explorateur'; Risk = 'safe'; Default = $true; Reboot = $false
+        Id = 'ui_verbose'; Group = 'Démarrage et diagnostic'; Risk = 'safe'; Default = $true; Reboot = $false
         Label = 'Messages détaillés à l''ouverture et à la fermeture de session'
         Desc = 'Affiche ce que Windows est en train de faire plutôt que « Veuillez patienter ».'
         Fn = ''
@@ -858,7 +881,7 @@ $Script:TweakCatalog = @(
         Feat = @()
     },
     @{
-        Id = 'ui_gamebar'; Group = 'Interface et Explorateur'; Risk = 'warn'; Default = $false; Reboot = $false
+        Id = 'ui_gamebar'; Group = 'Barre de jeu et capture'; Risk = 'warn'; Default = $false; Reboot = $false
         Label = 'Désactiver complètement la barre de jeu Xbox et la capture (stratégie)'
         Desc = 'Avec une manette Xbox, Windows peut afficher un message « ms-gamingoverlay » : réactivez ce réglage depuis le Journal si cela arrive.'
         Fn = ''
@@ -884,7 +907,7 @@ $Script:TweakCatalog = @(
         Feat = @()
     },
     @{
-        Id = 'ui_utc'; Group = 'Interface et Explorateur'; Risk = 'warn'; Default = $false; Reboot = $false
+        Id = 'ui_utc'; Group = 'Démarrage et diagnostic'; Risk = 'warn'; Default = $false; Reboot = $false
         Label = 'Horloge matérielle en UTC (double démarrage avec Linux)'
         Desc = 'À n''utiliser que si Linux est installé en double démarrage. Sinon, l''heure sera décalée jusqu''à la prochaine synchronisation.'
         Fn = ''
@@ -956,7 +979,7 @@ $Script:TweakCatalog = @(
         Feat = @()
     },
     @{
-        Id = 'sec_defender'; Group = 'Sécurité et réseau'; Risk = 'safe'; Default = $true; Reboot = $false
+        Id = 'sec_defender'; Group = 'Sécurité'; Risk = 'safe'; Default = $true; Reboot = $false
         Label = 'Defender : limiter l''analyse à 25 % du processeur'
         Desc = 'Les analyses planifiées gênent moins. La protection en temps réel n''est pas modifiée.'
         Fn = ''
@@ -967,7 +990,7 @@ $Script:TweakCatalog = @(
         Feat = @()
     },
     @{
-        Id = 'sec_lockcam'; Group = 'Sécurité et réseau'; Risk = 'safe'; Default = $true; Reboot = $false
+        Id = 'sec_lockcam'; Group = 'Sécurité'; Risk = 'safe'; Default = $true; Reboot = $false
         Label = 'Caméra de l''écran de verrouillage désactivée'
         Desc = ''
         Fn = ''
@@ -978,7 +1001,7 @@ $Script:TweakCatalog = @(
         Feat = @()
     },
     @{
-        Id = 'sec_wpbt'; Group = 'Sécurité et réseau'; Risk = 'safe'; Default = $false; Reboot = $false
+        Id = 'sec_wpbt'; Group = 'Sécurité'; Risk = 'safe'; Default = $false; Reboot = $false
         Label = 'Empêcher le BIOS d''installer des logiciels dans Windows (WPBT)'
         Desc = 'Bloque l''exécution des programmes injectés par le firmware au démarrage. Certains fabricants (ASUS Armoury Crate) s''installent ainsi : cela ne les empêche pas de fonctionner une fois installés.'
         Fn = ''
@@ -989,7 +1012,7 @@ $Script:TweakCatalog = @(
         Feat = @()
     },
     @{
-        Id = 'sec_bitlocker'; Group = 'Sécurité et réseau'; Risk = 'warn'; Default = $false; Reboot = $false
+        Id = 'sec_bitlocker'; Group = 'Sécurité'; Risk = 'warn'; Default = $false; Reboot = $false
         Label = 'Empêcher le chiffrement automatique de l''appareil'
         Desc = 'Ne déchiffre rien. Évite seulement que Windows chiffre le disque tout seul à la première connexion avec un compte Microsoft.'
         Fn = ''
@@ -1000,7 +1023,7 @@ $Script:TweakCatalog = @(
         Feat = @()
     },
     @{
-        Id = 'sec_sync'; Group = 'Sécurité et réseau'; Risk = 'warn'; Default = $false; Reboot = $false
+        Id = 'sec_sync'; Group = 'Télémétrie et diagnostics'; Risk = 'warn'; Default = $false; Reboot = $false
         Label = 'Synchronisation des paramètres Windows avec le compte Microsoft désactivée'
         Desc = 'Thèmes, mots de passe Wi-Fi, langue et préférences ne sont plus synchronisés entre vos PC.'
         Fn = ''
@@ -1016,7 +1039,7 @@ $Script:TweakCatalog = @(
         Feat = @()
     },
     @{
-        Id = 'sec_ipv4'; Group = 'Sécurité et réseau'; Risk = 'safe'; Default = $false; Reboot = $true
+        Id = 'sec_ipv4'; Group = 'Pile réseau'; Risk = 'safe'; Default = $false; Reboot = $true
         Label = 'Préférer IPv4 à IPv6'
         Desc = 'Windows essaie IPv4 en premier. IPv6 reste actif (c''est la méthode recommandée plutôt que de le désactiver).'
         Fn = ''
