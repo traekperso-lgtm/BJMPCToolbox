@@ -5,7 +5,7 @@
 .DESCRIPTION
     Bibliothèque utilisée par BJMPC Toolbox. Elle s'appuie sur les primitives réversibles de
     BJMPC-Optimisation-Win11.ps1 (Set-Reg, Set-SvcMode, Disable-TaskSafe, Add-Orig) : chaque valeur est
-    enregistrée AVANT modification et peut être annulée depuis la page "Journal et annulation".
+    enregistrée AVANT modification et peut être annulée depuis l'onglet "Restauration" (Journal).
     Aucune fonction ne pose de question : l'interface choisit les réglages à appliquer.
 
     Le catalogue ci-dessous est une liste de données (aucun code) : l'interface en tire ses cases à cocher.
@@ -227,23 +227,7 @@ $Script:TweakCatalog = @(
         Task = @()
         Feat = @()
     },
-    @{
-        Id = 'maps'; Group = 'Publicités, recherche et suggestions'; Risk = 'safe'; Default = $true; Reboot = $false
-        Label = 'Cartes hors connexion : aucun téléchargement automatique'
-        Desc = 'Empêche Windows de télécharger et de mettre à jour les cartes en arrière-plan.'
-        Fn = ''
-        Needs = @()
-        Reg = @(
-            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\Maps', 'AutoDownloadAndUpdateMapData', 0, 'DWord'),
-            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\Maps', 'AllowUntriggeredNetworkTrafficOnSettingsPage', 0, 'DWord')
-        )
-        Svc = @(,@('MapsBroker', 'demand'))
-        Task = @(
-            @('\Microsoft\Windows\Maps\', 'MapsUpdateTask'),
-            @('\Microsoft\Windows\Maps\', 'MapsToastTask')
-        )
-        Feat = @()
-    },
+    # Retiré en 2.0 : 'maps' (cartes hors connexion). L'application Cartes de Windows a été retirée par Microsoft en 2025.
     @{
         Id = 'ai_copilot'; Group = 'IA et Copilot'; Risk = 'safe'; Default = $true; Reboot = $false
         Label = 'Copilot : masquer le bouton et appliquer la stratégie'
@@ -1049,17 +1033,7 @@ $Script:TweakCatalog = @(
         Task = @()
         Feat = @()
     },
-    @{
-        Id = 'feat_ie'; Group = 'Fonctionnalités Windows facultatives'; Risk = 'safe'; Default = $false; Reboot = $false
-        Label = 'Internet Explorer (mode hérité)'
-        Desc = 'Retire le composant s''il est encore présent. Réactivable depuis le Journal.'
-        Fn = ''
-        Needs = @()
-        Reg = @()
-        Svc = @()
-        Task = @()
-        Feat = @(,@('feature', 'Internet-Explorer-Optional-amd64'))
-    },
+    # Retiré en 2.0 : 'feat_ie'. Internet Explorer n'existe plus comme composant de Windows 11.
     @{
         Id = 'feat_fax'; Group = 'Fonctionnalités Windows facultatives'; Risk = 'safe'; Default = $false; Reboot = $false
         Label = 'Télécopie et numérisation Windows'
@@ -1165,7 +1139,7 @@ function Set-Tweaks {
             $ok++
         } catch { Write-Log "$($t.Label) : $($_.Exception.Message)" 'WARN' }
     }
-    Write-Log ("{0} réglage(s) appliqué(s), {1} ignoré(s). Annulation possible depuis la page Journal." -f $ok, $skipped) 'OK'
+    Write-Log ("{0} réglage(s) appliqué(s), {1} ignoré(s). Annulation possible depuis l'onglet Restauration." -f $ok, $skipped) 'OK'
 }
 
 # ---------------------------------------------------------------- DNS : autres fournisseurs

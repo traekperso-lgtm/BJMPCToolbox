@@ -353,21 +353,26 @@ function Show-State {
     Row "Mode Jeu" $(if ($gm -eq 0) { 'désactivé' } else { 'actif' }) ($gm -ne 0)
     $dvr = Get-RegValue 'HKCU:\System\GameConfigStore' 'GameDVR_Enabled'
     Row "Capture en arrière-plan (Game DVR)" $(if ($dvr -eq 0) { 'désactivée' } else { 'active' }) ($dvr -eq 0)
-    $nti = Get-RegValue 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile' 'NetworkThrottlingIndex'
-    Row "Bridage réseau multimédia (MMCSS)" $(if ($nti -eq -1) { 'supprimé' } else { 'par défaut' }) ($nti -eq -1)
     $plan = (& powercfg.exe /getactivescheme | Out-String).Trim()
-    Row "Plan d'alimentation actif" ($plan -replace '^.*\(|\)\s*$', '') ($plan -match 'BJMPC')
-    foreach ($s in 'SysMain', 'DiagTrack') {
-        $svc = Get-Service -Name $s -ErrorAction SilentlyContinue
-        if ($svc) { Row "Service $s" ("{0} / {1}" -f $svc.StartType, $svc.Status) ($svc.StartType -eq 'Disabled') }
-    }
+    Row "Plan d'alimentation actif" ($plan -replace '^.*\(|\)\s*$', '') $true
+    $svc = Get-Service -Name 'DiagTrack' -ErrorAction SilentlyContinue
+    if ($svc) { Row "Télémétrie (service DiagTrack)" ("{0} / {1}" -f $svc.StartType, $svc.Status) ($svc.StartType -eq 'Disabled') }
     $o = & fsutil.exe behavior query DisableDeleteNotify 2>$null | Out-String
     $trim = if ($o -match 'NTFS DisableDeleteNotify\s*=\s*(\d)') { $Matches[1] } else { '?' }
     Row "TRIM (NTFS)" $(if ($trim -eq '0') { 'actif' } else { "inactif ou inconnu ($trim)" }) ($trim -eq '0')
+    $fast = Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power' 'HiberbootEnabled'
+    Row "Démarrage rapide" $(if ($fast -eq 0) { 'désactivé' } else { 'actif (défaut Windows)' }) $true
+    # Anciens réglages (versions 1.x) : sans effet mesurable sur Windows 11, signalés pour pouvoir les défaire.
+    $old = @()
+    if ((Get-RegValue 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile' 'NetworkThrottlingIndex') -eq -1) { $old += 'MMCSS' }
+    $sm = Get-Service -Name 'SysMain' -ErrorAction SilentlyContinue
+    if ($sm -and $sm.StartType -eq 'Disabled') { $old += 'SysMain désactivé' }
     foreach ($a in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
-        $k = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($a.InterfaceGuid)"
-        $nd = Get-RegValue $k 'TCPNoDelay'
-        Row "Nagle désactivé sur $($a.Name)" $(if ($nd -eq 1) { 'oui' } else { 'non' }) ($nd -eq 1)
+        if ((Get-RegValue "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($a.InterfaceGuid)" 'TCPNoDelay') -eq 1) { $old += "Nagle ($($a.Name))" }
+    }
+    if ($old.Count -gt 0) {
+        Row "Anciens réglages encore présents" ($old -join ', ') $false
+        Write-Host "     -> Sauvegarde et restauration > Restauration > « Comparer avec Windows 11 » les remet par défaut." -ForegroundColor DarkGray
     }
     try {
         $dg = Get-CimInstance -ClassName Win32_DeviceGuard -Namespace root\Microsoft\Windows\DeviceGuard -ErrorAction Stop
@@ -376,7 +381,7 @@ function Show-State {
     } catch {}
     Write-Host ""
     Write-Host ("  Modifications enregistrées pour annulation : {0}" -f $Script:Orig.Count) -ForegroundColor Cyan
-    Write-Host "  (Vert = optimisé / sain, jaune = valeur par défaut Windows)" -ForegroundColor DarkGray
+    Write-Host "  (Vert = en place ou sain, jaune = à regarder)" -ForegroundColor DarkGray
 }
 
 function New-RestorePoint {
@@ -407,15 +412,36 @@ function Set-GlobalDxSettings {
     Set-Reg $path $name $new 'String'
 }
 
+function Set-Hags {
+    # Planification GPU à accélération matérielle (HAGS) : HwSchMode 2 = activée, 1 = désactivée.
+    # C'est le même réglage que Paramètres > Système > Affichage > Graphiques > Paramètres graphiques par défaut.
+    # Sans effet si le pilote graphique ne la propose pas (il faut un pilote WDDM 2.7 ou plus récent).
+    param([ValidateSet('on', 'off')][string]$Mode = 'on')
+    $k = 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers'
+    $cur = Get-RegValue $k 'HwSchMode'
+    $state = if ($cur -eq 2) { 'activée' } elseif ($cur -eq 1) { 'désactivée' } else { 'non définie (désactivée par défaut)' }
+    Write-Log "Planification GPU matérielle (HAGS) actuellement : $state"
+    $want = if ($Mode -eq 'on') { 2 } else { 1 }
+    if ($cur -eq $want) { Write-Log 'Déjà dans l''état demandé : rien à changer.' 'OK'; return }
+    if ($Mode -eq 'on') {
+        $gpu = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'NVIDIA|AMD|Radeon|Arc|Intel' -and $_.Name -notmatch 'Basic|Remote|Virtual' })
+        if ($gpu.Count -eq 0) { Write-Log 'Aucune carte graphique NVIDIA, AMD ou Intel détectée : HAGS non activée.' 'WARN'; return }
+    }
+    Set-Reg $k 'HwSchMode' $want
+    $Script:RebootNeeded = $true
+    if ($Mode -eq 'on') { Write-Log 'HAGS activée. Elle prend effet au prochain redémarrage (si le pilote graphique la propose).' 'OK' }
+    else { Write-Log 'HAGS désactivée. Effet au prochain redémarrage. La génération d''images DLSS 3 ne fonctionnera plus dans les jeux qui l''exigent.' 'OK' }
+}
+
 function Optimize-Gaming {
     Write-Log "=== Profil Gaming Windows ==="
 
     $gpu = @(Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'NVIDIA|AMD|Radeon|Arc' })
     if ($gpu.Count -gt 0) {
-        Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' 'HwSchMode' 2
-        Write-Log "HAGS activé (requis pour la génération d'images DLSS 3 dans plusieurs jeux) - redémarrage nécessaire"
-        $Script:RebootNeeded = $true
-    } else { Write-Log "Aucun GPU dédié détecté : HAGS ignoré" 'WARN' }
+        if (Confirm-Action "Activer la planification GPU matérielle (HAGS) ? Requise pour la génération d'images DLSS 3 ; redémarrage nécessaire" $true) {
+            Set-Hags -Mode on
+        } else { Write-Log "HAGS laissée telle quelle (réglage dédié : Optimiser > Jeux et alimentation)" }
+    } else { Write-Log "Aucun GPU dédié détecté : HAGS ignorée" 'WARN' }
 
     # Mode Jeu, désactivation de la capture en arrière-plan
     Set-Reg 'HKCU:\Software\Microsoft\GameBar' 'AllowAutoGameMode' 1
@@ -426,16 +452,8 @@ function Optimize-Gaming {
 
     # Optimisations des jeux fenêtrés (flip model) + fréquence variable (VRR) de Windows
     Set-GlobalDxSettings @{ SwapEffectUpgradeEnable = '1'; VRROptimizeEnable = '1' }
-
-    # Planificateur multimédia (MMCSS)
-    $sp = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile'
-    Set-Reg $sp 'NetworkThrottlingIndex' 0xFFFFFFFF
-    Set-Reg $sp 'SystemResponsiveness' 10
-    $tg = "$sp\Tasks\Games"
-    Set-Reg $tg 'GPU Priority' 8
-    Set-Reg $tg 'Priority' 6
-    Set-Reg $tg 'Scheduling Category' 'High' 'String'
-    Set-Reg $tg 'SFIO Priority' 'High' 'String'
+    # Retiré en 2.0 : priorités MMCSS (NetworkThrottlingIndex, SystemResponsiveness, tâche "Games").
+    # Aucun gain mesurable sur Windows 11, et des craquements audio possibles.
 
     if (Confirm-Action "Désactiver l'accélération de la souris (précision du pointeur) ? Prend effet à la prochaine ouverture de session") {
         Set-Reg 'HKCU:\Control Panel\Mouse' 'MouseSpeed' '0' 'String'
@@ -454,6 +472,7 @@ function Optimize-Gaming {
 
 function Optimize-Power {
     Write-Log "=== Plan d'alimentation Performance (BJMPC Gaming) ==="
+    Write-Log "Pour un PC fixe de jeu. Sur un portable ou un PC de bureautique, le plan Équilibré de Windows reste le meilleur choix."
     $g = Get-BjmpcPlan
     if (-not $g) { return }
     $laptop = Test-IsLaptop
@@ -471,51 +490,22 @@ function Optimize-Power {
     Write-Log "Plan actif : CPU boost agressif, PCIe/NVMe sans économie d'énergie, USB sans suspension, Wi-Fi performances max" 'OK'
 }
 
-function Optimize-Advanced {
-    Write-Log "=== Réglages avancés CPU / mémoire / sécurité ==="
-    if (Confirm-Action "Priorité du processus au premier plan plus réactive (Win32PrioritySeparation=0x26) ?") {
-        Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' 'Win32PrioritySeparation' 38
-    }
-    if (Confirm-Action "Désactiver le Power Throttling (CPU hybride Intel : évite le bridage des tâches de fond) ?") {
-        Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\PowerThrottling' 'PowerThrottlingOff' 1
-    }
-    try {
-        $mma = Get-MMAgent
-        if ($mma.MemoryCompression) {
-            if (Confirm-Action "Désactiver la compression mémoire (avec 32 Go, gain marginal) ?") {
-                Add-Orig 'mma|MemoryCompression' @{ Type = 'mma'; Enabled = $true }
-                Disable-MMAgent -MemoryCompression -ErrorAction Stop
-                Write-Log "Compression mémoire désactivée (redémarrage nécessaire)" 'OK'
-                $Script:RebootNeeded = $true
-            }
-        }
-    } catch { Write-Log "MMAgent : $($_.Exception.Message)" 'WARN' }
-
-    try {
-        $dg = Get-CimInstance -ClassName Win32_DeviceGuard -Namespace root\Microsoft\Windows\DeviceGuard -ErrorAction Stop
-        $hvci = @($dg.SecurityServicesRunning) -contains 2
-        Write-Host ""
-        Write-Host ("  Intégrité de la mémoire (HVCI) : {0}" -f $(if ($hvci) { 'ACTIVE' } else { 'inactive' })) -ForegroundColor Yellow
-        if ($hvci) {
-            Write-Host "  La désactiver peut donner quelques % de FPS dans certains jeux, mais retire une protection" -ForegroundColor Yellow
-            Write-Host "  importante contre les pilotes malveillants. Non recommandé sur un PC connecté à Internet." -ForegroundColor Yellow
-            if (Confirm-Strong "Désactiver l'intégrité de la mémoire ?") {
-                Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity' 'Enabled' 0
-                $Script:RebootNeeded = $true
-            }
-        }
-    } catch {}
-}
+# Retiré en 2.0 : "Réglages avancés" (Win32PrioritySeparation, PowerThrottlingOff, compression mémoire, HVCI).
+# Les trois premiers n'apportent rien de mesurable sur Windows 11 ; désactiver HVCI retire une protection.
+# Le Journal sait toujours annuler ces réglages s'ils ont été posés par une version 1.x.
 
 # ---------------------------------------------------------------- Réseau
 function Optimize-Network {
-    Write-Log "=== Optimisation réseau (Wi-Fi 6/7, Ethernet, TCP) ==="
+    # Ce qui reste utile en 2026 : empêcher Windows d'éteindre la carte, et quelques réglages de pilote Wi-Fi / Ethernet.
+    # Retiré en 2.0 : Nagle (TcpAckFrequency / TCPNoDelay), RSC, Flow Control, Throughput Booster, options netsh
+    # et réservation QoS, sans effet sur les jeux et la navigation d'aujourd'hui.
+    Write-Log "=== Cartes réseau (Wi-Fi 6/7, Ethernet) ==="
     $adapters = @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })
     if ($adapters.Count -eq 0) { Write-Log "Aucune carte physique active détectée" 'WARN'; return }
 
     $On  = '^(Enabled|Activ.*|On)$'
     $Off = '^(Disabled|D.sactiv.*|Off)$'
-    $single = Confirm-Action "Le Wi-Fi passe par UN SEUL routeur/point d'accès (pas de réseau maillé) ? Réduit les recherches de roaming" $true
+    $single = Confirm-Action "Le Wi-Fi passe par UN SEUL routeur/point d'accès (pas de réseau maillé) ? Réduit les recherches de roaming" $false
     if (-not (Confirm-Action "Les cartes réseau vont redémarrer, la connexion sera coupée quelques secondes. Continuer ?" $true)) { return }
 
     foreach ($a in $adapters) {
@@ -534,27 +524,9 @@ function Optimize-Network {
             }
         } catch { Write-Log "Gestion d'alimentation de la carte : $($_.Exception.Message)" 'WARN' }
 
-        # RSC (coalescence de segments) : réduit la latence, sans effet notable sur ces débits
-        try {
-            $rsc = Get-NetAdapterRsc -Name $n -ErrorAction Stop
-            if ($rsc.IPv4Enabled -or $rsc.IPv6Enabled) {
-                Add-Orig "rsc|$n" @{ Type = 'rsc'; Adapter = $n }
-                Disable-NetAdapterRsc -Name $n -ErrorAction Stop
-                Write-Log "RSC désactivé" 'OK'
-            }
-        } catch {}
-
-        # Algorithme de Nagle : TCP sans attente d'ACK retardé (n'affecte pas l'UDP)
-        $k = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($a.InterfaceGuid)"
-        Set-Reg $k 'TcpAckFrequency' 1
-        Set-Reg $k 'TCPNoDelay' 1
-
         if ($isWifi) {
-            if (Set-AdvProp $n 'Throughput Booster' $On) { $changed = $true }
             if (Set-AdvProp $n 'U-?APSD' $Off) { $changed = $true }
             if (Set-AdvProp $n 'MIMO Power Save' '^(No SMPS|Pas de SMPS|Disabled|D.sactiv.*)') { $changed = $true }
-            if (Set-AdvProp $n 'Packet Coalescing' $Off) { $changed = $true }
-            if (Set-AdvProp $n 'Transmit Power' '^(5\.\s*)?(Highest|Maximum)') { $changed = $true }
             if (Set-AdvProp $n '802\.11be|11be|EHT' $On) { $changed = $true }
             if (Set-AdvProp $n '802\.11ax|11ax|HE Mode|Wireless Mode' $On) { $changed = $true }
             if (Set-AdvProp $n 'Multi-?Link|MLO' $On) { $changed = $true }
@@ -563,7 +535,6 @@ function Optimize-Network {
             }
         } else {
             if (Set-AdvProp $n 'Energy.?Efficient Ethernet|^EEE|Green Ethernet|Advanced EEE' $Off) { $changed = $true }
-            if (Set-AdvProp $n 'Flow Control|Contr.le de flux' $Off) { $changed = $true }
         }
 
         if ($changed) {
@@ -576,16 +547,7 @@ function Optimize-Network {
         }
     }
 
-    # Pile TCP : valeurs par défaut saines
-    Invoke-Native 'netsh.exe' 'int tcp set global autotuninglevel=normal'
-    Invoke-Native 'netsh.exe' 'int tcp set global rss=enabled'
-    Invoke-Native 'netsh.exe' 'int tcp set global ecncapability=disabled'
-    Invoke-Native 'netsh.exe' 'int tcp set global timestamps=disabled'
-    Invoke-Native 'netsh.exe' 'int tcp set heuristics disabled'
-
-    # Pas de réservation de bande passante QoS (le partage P2P des mises à jour se règle dans la page Mises à jour)
-    Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Psched' 'NonBestEffortLimit' 0
-    Write-Log "Optimisation réseau terminée" 'OK'
+    Write-Log "Cartes réseau réglées. La pile TCP de Windows 11 est laissée à ses valeurs par défaut." 'OK'
 }
 
 function Set-MullvadDns {
@@ -621,16 +583,14 @@ function Set-MullvadDns {
 
 # ---------------------------------------------------------------- Stockage NVMe / système
 function Optimize-Storage {
-    Write-Log "=== Optimisation SSD NVMe et système ==="
-    # TRIM
+    Write-Log "=== Disque SSD et démarrage ==="
+    # TRIM : actif par défaut, on le rétablit seulement s'il a été coupé.
     $o = & fsutil.exe behavior query DisableDeleteNotify 2>$null | Out-String
     if ($o -match 'NTFS DisableDeleteNotify\s*=\s*(\d)' -and $Matches[1] -ne '0') {
         Set-FsutilBehavior 'DisableDeleteNotify' 0
     } else { Write-Log "TRIM déjà actif" 'OK' }
-    # Pas d'écriture de l'horodatage d'accès à chaque lecture
-    Set-FsutilBehavior 'disablelastaccess' 1
-    # SysMain (Superfetch) et préchargement : inutiles sur SSD NVMe
-    Set-SvcMode 'SysMain' 'disabled' '(Superfetch, inutile sur NVMe)'
+    # Retiré en 2.0 : "disablelastaccess" (Windows le gère seul depuis Windows 10 1803) et la désactivation de
+    # SysMain (Windows adapte déjà SysMain aux SSD ; le couper ralentit le lancement des applications).
 
     if (Confirm-Action "Lancer un ReTrim immédiat des volumes SSD ?" $true) {
         foreach ($v in @(Get-Volume | Where-Object { $_.DriveLetter -and $_.DriveType -eq 'Fixed' -and $_.FileSystem -eq 'NTFS' })) {
@@ -654,44 +614,13 @@ function Optimize-Storage {
         & powercfg.exe /h off | Out-Null
         Write-Log "Hibernation désactivée" 'OK'
     }
-    Write-Log "Optimisation stockage terminée" 'OK'
+    Write-Log "Disque et démarrage : terminé" 'OK'
 }
 
-# ---------------------------------------------------------------- Services inutiles (niveau sûr)
-# La télémétrie (DiagTrack, tâches de collecte, stratégies) relève de la page Confidentialité (catalogue de réglages).
-$Script:SafeServices = @(
-    @{ Name = 'RetailDemo';        Mode = 'disabled'; Desc = '(mode démo magasin)' },
-    @{ Name = 'Fax';               Mode = 'disabled'; Desc = '(télécopie)' },
-    @{ Name = 'RemoteRegistry';    Mode = 'disabled'; Desc = '(registre à distance : risque de sécurité)' }
-)
-
-function Optimize-ServicesSafe {
-    Write-Log "=== Services inutiles (niveau sûr) ==="
-    Write-Log "Defender, pare-feu, Windows Update, audio, réseau et Bluetooth ne sont pas touchés"
-    foreach ($s in $Script:SafeServices) { Set-SvcMode $s.Name $s.Mode $s.Desc }
-}
-
-function Optimize-ServicesAdvanced {
-    Write-Log "=== Services : niveau avancé (choix un par un) ==="
-    $list = @(
-        @{ Name = 'Spooler';        Mode = 'disabled'; Q = "Spouleur d'impression : aucune imprimante utilisée ?" },
-        @{ Name = 'bthserv';        Mode = 'demand';   Q = "Service Bluetooth : aucun périphérique Bluetooth (casque, manette) utilisé ?" },
-        @{ Name = 'LanmanServer';   Mode = 'disabled'; Q = "Partage de fichiers/dossiers (serveur SMB) : aucun partage utilisé ?" },
-        @{ Name = 'TermService';    Mode = 'disabled'; Q = "Bureau à distance (RDP) : jamais utilisé sur ce PC ?" },
-        @{ Name = 'SSDPSRV';        Mode = 'disabled'; Q = "Découverte SSDP/UPnP : aucun appareil DLNA/UPnP utilisé ?" },
-        @{ Name = 'upnphost';       Mode = 'disabled'; Q = "Hôte de périphérique UPnP : idem ?" },
-        @{ Name = 'icssvc';         Mode = 'disabled'; Q = "Point d'accès mobile Windows : jamais utilisé ?" },
-        @{ Name = 'PhoneSvc';       Mode = 'disabled'; Q = "Service Téléphone (Phone Link) : jamais utilisé ?" },
-        @{ Name = 'TrkWks';         Mode = 'disabled'; Q = "Suivi de lien distribué (inutile hors domaine) ?" },
-        @{ Name = 'lfsvc';          Mode = 'disabled'; Q = "Géolocalisation : désactiver ?" },
-        @{ Name = 'WMPNetworkSvc';  Mode = 'disabled'; Q = "Partage réseau Windows Media Player : désactiver ?" },
-        @{ Name = 'DoSvc';          Mode = 'demand';   Q = "Optimisation de la distribution (passer en manuel) ?" }
-    )
-    foreach ($e in $list) {
-        if (-not (Get-SvcMode $e.Name)) { continue }
-        if (Confirm-Action $e.Q) { Set-SvcMode $e.Name $e.Mode }
-    }
-}
+# Retiré en 2.0 : désactivation de services ("niveau sûr" et "niveau avancé"). Sur Windows 11 la plupart ne
+# démarrent qu'à la demande : les désactiver ne rend pas le PC plus rapide, et casse une fonction le jour où on
+# en a besoin (impression, Bluetooth, partage). Les services déjà modifiés par une version 1.x se rétablissent depuis
+# le Journal ou « Comparer avec Windows 11 ».
 
 # ---------------------------------------------------------------- OLED
 function Set-OledCare {
@@ -1113,21 +1042,20 @@ function Restore-All {
 }
 
 function Invoke-FullProfile {
-    Write-Log "=== PROFIL COMPLET RECOMMANDÉ (réponses par défaut, aucun choix risqué) ==="
+    # Réglages recommandés pour tout PC Windows 11 : seulement ce qui est sûr et utile partout.
+    # Le plan d'alimentation, les cartes réseau, le DNS et la protection OLED dépendent du matériel et de
+    # l'usage : ils restent des choix à faire dans leurs pages.
+    Write-Log "=== RÉGLAGES RECOMMANDÉS (aucun choix risqué) ==="
     New-RestorePoint
     $Script:AssumeDefaults = $true
     try {
         Optimize-Gaming
-        Optimize-Power
-        Optimize-Network
         Optimize-Storage
-        Optimize-ServicesSafe
         # Télémétrie minimale : réglage du catalogue Confidentialité (présent dans l'interface, absent de la console seule)
         if (Get-Command Set-Tweaks -ErrorAction SilentlyContinue) { Set-Tweaks -Ids @('tel_win') }
-        Set-OledCare
     } finally { $Script:AssumeDefaults = $false }
     $Script:RebootNeeded = $true
-    Write-Log "=== PROFIL TERMINÉ ===" 'OK'
+    Write-Log "=== RÉGLAGES RECOMMANDÉS APPLIQUÉS ===" 'OK'
 }
 
 # ---------------------------------------------------------------- Explorateur et confidentialité (réversibles)
@@ -1167,24 +1095,22 @@ function Show-Menu {
     Write-Host "   13) État des optimisations"
     Write-Host ""
     Write-Host "   GAMING" -ForegroundColor Magenta
-    Write-Host "    3) Profil Gaming (HAGS, Mode Jeu, DVR off, VRR, MMCSS, souris)"
-    Write-Host "    4) Plan d'alimentation Performance (CPU, PCIe/NVMe, USB, Wi-Fi)"
-    Write-Host "    5) Réglages avancés (priorité CPU, Power Throttling, mémoire, VBS)"
+    Write-Host "    3) Profil Gaming (HAGS, Mode Jeu, DVR off, VRR, souris)"
+    Write-Host "    H) HAGS seule : activer / désactiver la planification GPU matérielle"
+    Write-Host "    4) Plan d'alimentation Performance pour PC fixe de jeu (CPU, PCIe/NVMe, USB, Wi-Fi)"
     Write-Host ""
     Write-Host "   RÉSEAU" -ForegroundColor Magenta
-    Write-Host "    6) Réseau Wi-Fi 6/7 + Ethernet + TCP (latence)"
+    Write-Host "    6) Cartes réseau Wi-Fi 6/7 et Ethernet (énergie, modes, itinérance)"
     Write-Host "    7) DNS chiffré Mullvad (DoH, IPv4 + IPv6)"
     Write-Host ""
     Write-Host "   SYSTÈME" -ForegroundColor Magenta
-    Write-Host "    8) SSD NVMe (TRIM, accès, SysMain, démarrage rapide)"
-    Write-Host "    9) Services inutiles - niveau sûr (démo magasin, télécopie, registre à distance)"
-    Write-Host "   10) Services - niveau avancé (choix un par un)"
+    Write-Host "    8) Disque SSD et démarrage (TRIM, démarrage rapide, hibernation)"
     Write-Host "   11) Protection OLED"
     Write-Host "   15) Explorateur : extensions visibles, ouverture sur Ce PC, démarrage sans délai"
     Write-Host "   16) Confidentialité : publicités, suggestions, résultats Bing dans la recherche"
     Write-Host "   14) Échelle d'affichage selon le PPI réel de l'écran (OLED/HDR)"
     Write-Host ""
-    Write-Host "   12) PROFIL COMPLET recommandé (2,3,4,6,8,9,11)" -ForegroundColor Green
+    Write-Host "   12) RÉGLAGES RECOMMANDÉS (2, 3, 8 et télémétrie minimale)" -ForegroundColor Green
     Write-Host "    R) ANNULER toutes les modifications (état d'origine)" -ForegroundColor Yellow
     Write-Host "    L) Dossier des logs     S) Redémarrer le PC     0) Quitter" -ForegroundColor Yellow
     Write-Host ""
@@ -1212,14 +1138,12 @@ do {
         '2'  { Show-Header "Point de restauration"; New-RestorePoint; Wait-Key }
         '3'  { Show-Header "Profil Gaming"; Optimize-Gaming; Wait-Key }
         '4'  { Show-Header "Plan d'alimentation"; Optimize-Power; Wait-Key }
-        '5'  { Show-Header "Réglages avancés"; Optimize-Advanced; Wait-Key }
+        'H'  { Show-Header "Planification GPU matérielle (HAGS)"; if (Confirm-Action "Activer HAGS ? (Non = la désactiver)" $true) { Set-Hags -Mode on } else { Set-Hags -Mode off }; Wait-Key }
         '6'  { Show-Header "Réseau"; Optimize-Network; Wait-Key }
         '7'  { Show-Header "DNS chiffré Mullvad"; Set-MullvadDns; Wait-Key }
-        '8'  { Show-Header "SSD NVMe et système"; Optimize-Storage; Wait-Key }
-        '9'  { Show-Header "Services - niveau sûr"; Optimize-ServicesSafe; Wait-Key }
-        '10' { Show-Header "Services - niveau avancé"; Optimize-ServicesAdvanced; Wait-Key }
+        '8'  { Show-Header "Disque SSD et démarrage"; Optimize-Storage; Wait-Key }
         '11' { Show-Header "Protection OLED"; Set-OledCare; Wait-Key }
-        '12' { Show-Header "Profil complet"; if (Confirm-Action "Appliquer le profil complet (point de restauration inclus) ?" $true) { Invoke-FullProfile }; Wait-Key }
+        '12' { Show-Header "Réglages recommandés"; if (Confirm-Action "Appliquer les réglages recommandés (point de restauration inclus) ?" $true) { Invoke-FullProfile }; Wait-Key }
         '13' { Show-State; Wait-Key }
         '14' { Show-Header "Échelle d'affichage (PPI)"; Set-DisplayScaling; Wait-Key }
         '15' { Show-Header "Explorateur Windows"; Optimize-Explorer; Wait-Key }

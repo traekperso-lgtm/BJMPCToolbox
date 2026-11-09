@@ -2,7 +2,7 @@
 
 🇫🇷 [Français](#-français) · 🇬🇧 [English](#-english)
 
-> **Version 1.8** · Windows 11 · Windows PowerShell 5.1 (WPF) · by **BJMPC Informatique**
+> **Version 2.1** · Windows 11 · Windows PowerShell 5.1 (WPF) · by **BJMPC Informatique**
 
 ---
 
@@ -10,15 +10,26 @@
 
 ### Qu'est-ce que c'est ?
 
-**BJMPC Toolbox** est une boîte à outils graphique pour **diagnostiquer, réparer, mettre à jour et optimiser Windows 11**. Elle est pensée pour un technicien qui intervient chez des clients : tout se fait avec des **boutons, des listes déroulantes et des cases à cocher** (aucune question à taper), et **chaque modification est réversible**.
+**BJMPC Toolbox** est une boîte à outils graphique pour **diagnostiquer, réparer, sauvegarder, mettre à jour et optimiser Windows 11**. Elle est pensée pour un technicien qui intervient chez des clients : tout se fait avec des **boutons, des listes déroulantes et des cases à cocher** (aucune question à taper), et **chaque modification est réversible**.
 
 Elle est écrite en Windows PowerShell 5.1 (interface WPF), sans installation : on lance, on travaille, on ferme.
+
+### Nouveautés de la version 2
+
+- **Interface plus simple** : 6 sections au lieu de 14 pages, chacune avec ses onglets.
+- **Réparation automatique** : la Toolbox lit l'Observateur d'événements, explique chaque erreur en clair et lance la réparation adaptée quand il en existe une. Surveillance en direct des nouvelles erreurs.
+- **Sauvegarde automatique des fichiers du client** vers un autre disque, à la demande ou planifiée.
+- **Optimisations dépassées retirées** : Nagle, priorités MMCSS, SysMain désactivé, services « inutiles », Win32PrioritySeparation, compression mémoire, désactivation de HVCI… Elles n'apportent rien de mesurable sur Windows 11 aujourd'hui, ou retirent une protection.
+- **Pilotes revus en profondeur** : entre deux familles de pilotes d'une même puce, c'est la date qui départage (comme le fait Windows), plus le seul numéro de version ; retour arrière réel après une mise à jour.
+
+Le détail, version par version, est dans [`LISEZMOI.txt`](LISEZMOI.txt).
 
 ### ⚠️ Statut : mature mais expérimental
 
 - **Mature** : l'outil est utilisé en conditions réelles, chaque fonction est contrôlée (autotest, points de restauration, sauvegardes avant modification, journal).
 - **Expérimental** : il agit sur le système (services, registre, pilotes, stratégies). Windows évolue, les configurations matérielles sont infinies, et certaines fonctions (recherche de pilotes sur le Microsoft Update Catalog, valeurs par défaut de Windows 11) reposent sur des sources ou des valeurs qui peuvent varier selon l'édition, la version ou le moment.
-- **Utilisez-le en connaissance de cause** : créez un point de restauration (l'outil le fait pour vous avant les opérations sensibles), testez d'abord sur une machine non critique, et relisez les listes avant de cliquer sur « Appliquer ». Aucune garantie n'est fournie ; vous restez responsable de vos machines.
+- **Nouveautés 2.x encore peu éprouvées sur le terrain** : la tâche planifiée de sauvegarde automatique, la mise à jour puis la restauration d'un pilote, et les réparations lancées depuis l'Observateur d'événements ont été testées hors ligne ou en simulation, pas encore sur un grand nombre de PC. Essayez-les d'abord sur une machine non critique.
+- **Utilisez-le en connaissance de cause** : créez un point de restauration (l'outil le fait pour vous avant les opérations sensibles) et relisez les listes avant de cliquer. Aucune garantie n'est fournie ; vous restez responsable de vos machines.
 
 ### Lancer l'outil
 
@@ -33,48 +44,61 @@ Prérequis : Windows 11, droits administrateur, Windows PowerShell 5.1 (inclus d
 | Fichier | Rôle |
 |---|---|
 | `BJMPC-Toolbox.ps1` | L'application (fenêtre) |
-| `BJMPC-Optimisation-Win11.ps1` | Moteur gaming / réseau / système / écran (utilisable seul en console) |
-| `BJMPC-Reglages-Win11.ps1` | Catalogue de 73 réglages Windows (confidentialité, interface, mises à jour…) |
+| `BJMPC-Evenements-Win11.ps1` | Réparation guidée par l'Observateur d'événements, surveillance en direct |
+| `BJMPC-Sauvegarde-Win11.ps1` | Sauvegarde des fichiers du client, à la demande et automatique |
+| `BJMPC-Optimisation-Win11.ps1` | Moteur jeux / réseau / disque / écran (utilisable seul en console) |
+| `BJMPC-Reglages-Win11.ps1` | Catalogue de réglages Windows (confidentialité, interface, mises à jour…) |
 | `BJMPC-Maintenance-Win11.ps1` | Moteur maintenance et réparation (utilisable seul en console) |
 | `BJMPC-Outils-Win11.ps1` | Diagnostics, dépannage, pilotes, catalogue winget, nettoyage, retour aux valeurs Windows |
 | `BJMPC-Toolbox.bat` | Lanceur (demande l'élévation administrateur) |
 | `Verif.bat` / `Apercu.bat` | Autotest en lecture seule / aperçu du résumé client |
 
-### Les pages
+### Les six sections
 
-- **Tableau de bord** : matériel, état du système, points d'attention.
-- **Outils** : mesures, rapports et inventaires en lecture seule (disques SMART, erreurs matérielles, Wi-Fi, audit de sécurité, licence…).
-- **Maintenance** : réparation de Windows (DISM, SFC, CHKDSK, WMI), réinitialisations, dépannage rapide (Explorateur, audio, impression, horloge, cache DNS) et entretien (nettoyage, caches de navigateurs et de shaders).
-- **Pilotes** *(refaite en 1.6)* : cinq onglets.
-  - *Mises à jour* : recherche sur le **Microsoft Update Catalog** (stricte, ou élargie), tableau installé / proposé / date / taille, installation des seuls pilotes cochés.
-  - *Pilotes installés* : équivalent de DriverStore Explorer (anciennes versions, suppression avec copie préalable, export CSV).
-  - *Ajouter un pilote* : depuis un dossier ou un .zip, avec contrôle de signature.
-  - *Appareils absents* : fantômes anciens, liste sauvegardée avant suppression.
-  - *Sauvegardes* : export de tous les pilotes tiers et restauration.
-- **Gaming et GPU / Réseau et DNS / Système et NVMe / Affichage et OLED** : optimisations ciblées pour PC moderne, sans toucher à la sécurité. *Système et NVMe* = disque, démarrage et services uniquement.
-- **Confidentialité / Interface et Explorateur / Mises à jour et sécurité** : catalogue de réglages Windows à cocher. Chaque réglage n'apparaît que dans la page de son thème (aucun doublon).
-- **Applications** : catalogue de logiciels (winget), mises à jour et inventaire, suppression des applications préinstallées.
-- **Résumé pour le client** : journal de session traduit en langage simple, pour expliquer ce qui a été fait.
-- **Journal et annulation** : annule tout, ou une catégorie ; points de restauration ; **nouveau en 1.7 : « Rétablir les valeurs par défaut de Windows 11 »**.
+| Section | Onglets |
+|---|---|
+| **Accueil** | Vue d'ensemble · Résumé pour le client |
+| **Réparer** | Réparation automatique · Réparer Windows · Nettoyage et dépannage · Diagnostics |
+| **Optimiser** | Jeux et alimentation · Réseau et DNS · Disque et démarrage · Affichage et OLED |
+| **Confidentialité et réglages** | Confidentialité · Interface et Explorateur · Mises à jour et sécurité |
+| **Logiciels et pilotes** | Applications · Pilotes |
+| **Sauvegarde et restauration** | Sauvegarde des fichiers · Restauration |
+
+- **Accueil** : ce qui est en ordre sur ce PC et où agir pour le reste (sauvegarde récente, point de restauration, place libre, santé des disques, plantages récents…). Un bouton « Réglages recommandés » applique seulement ce qui est sûr partout. Le *résumé pour le client* raconte l'intervention en langage simple.
+- **Réparation automatique** : chaque erreur de l'Observateur d'événements est rangée dans une famille.
+  - *À réparer* : services arrêtés, DNS, horloge, échecs répétés de Windows Update, fichiers de Windows abîmés, erreurs de disque, index de recherche, Store, compteurs de performance, plantage du pilote graphique.
+  - *À regarder* : pannes matérielles (WHEA, arrêts brutaux, surchauffe) et logiciels tiers qui plantent, avec ce qu'il faut vérifier. Aucun logiciel ne répare cela.
+  - *Non reconnues* : affichées telles quelles, jamais « corrigées » au hasard.
+  - *Sans gravité* : le bruit connu de Windows (DCOM 10016…).
+  - Après une réparation, l'analyse suivante dit si l'erreur est revenue. La *surveillance en direct* affiche chaque nouvelle erreur en quelques secondes.
+- **Réparer Windows / Nettoyage et dépannage / Diagnostics** : DISM, SFC, CHKDSK, réinitialisations, dépannage rapide, nettoyage, et des mesures en lecture seule (disques SMART, erreurs matérielles, Wi-Fi, audit de sécurité, licence…).
+- **Optimiser** : réglages de jeu de Windows, **HAGS** (carte dédiée : état, activer, désactiver), mode d'alimentation, cartes réseau, DNS chiffré, SSD et démarrage, échelle d'affichage, protection OLED.
+- **Confidentialité et réglages** : catalogue de réglages Windows à cocher.
+- **Applications** : catalogue de logiciels (winget), mises à jour, inventaire, retrait des applications préinstallées.
+- **Pilotes** : cinq onglets (mises à jour depuis le Microsoft Update Catalog, pilotes installés, ajouter un pilote, appareils absents, sauvegardes).
+- **Sauvegarde des fichiers** : dossiers personnels et favoris des navigateurs copiés vers un autre disque, seuls les fichiers nouveaux ou modifiés, rien n'est jamais supprimé dans la sauvegarde. Tâche planifiée quotidienne ou hebdomadaire, indépendante de la Toolbox.
+- **Restauration** : journal des modifications (annuler tout ou une catégorie), « Rétablir les valeurs par défaut de Windows 11 », points de restauration.
 
 ### Sécurité et réversibilité
 
-- Avant chaque modification, la **valeur d'origine** (registre, service, tâche, DNS, carte réseau, plan d'alimentation…) est enregistrée dans `C:\BJMPC-Logs\Backup\` ; la page *Journal* l'annule.
-- **Pilotes** : l'installation n'accepte qu'un paquet dont la signature est valide (WHQL Microsoft en mode strict), dont l'INF déclare bien la puce, l'architecture, la classe, avec une version plus récente. Au moindre doute : refus. Un point de restauration et une copie de l'ancien pilote sont créés avant ; l'application effective est vérifiée après.
-- **Retour aux valeurs Windows 11** : compare le PC à un Windows 11 d'origine (services, priorités système, Nagle, télémétrie, stratégies, tâches…), tableau *valeur par défaut / valeur actuelle*, cases à cocher, point de restauration puis fichier `AvantDefauts_<PC>_<date>.json` pour tout annuler. Une valeur « non définie par défaut » est **supprimée** (pas mise à 0). Les stratégies ne sont retirées que si elles ont la valeur posée par l'outil, jamais sur un PC en domaine. Pilotes de démarrage, Defender, pare-feu et Windows Update ne sont jamais touchés.
+- Avant chaque modification, la **valeur d'origine** (registre, service, tâche, DNS, carte réseau, plan d'alimentation…) est enregistrée dans `C:\BJMPC-Logs\Backup\` ; l'onglet *Restauration* l'annule.
+- **Pilotes** : l'installation n'accepte qu'un paquet dont la signature est valide (WHQL Microsoft en mode strict), dont l'INF déclare bien la puce, l'architecture et la classe, et qui est plus récent que l'installé. Le fichier téléchargé est comparé à l'empreinte SHA-256 annoncée par le Catalog. Un point de restauration et une copie de l'ancien pilote sont créés avant ; « Restaurer » retire le nouveau pilote puis remet l'ancien.
+- **Réparations automatiques** : les réparations rapides et sans risque sont cochées d'office ; les lourdes (DISM/SFC, CHKDSK, Windows Update) se cochent à la main et ne partent jamais seules.
+- **Retour aux valeurs Windows 11** : compare le PC à un Windows 11 d'origine, tableau *valeur par défaut / valeur actuelle*, cases à cocher, point de restauration puis fichier `AvantDefauts_<PC>_<date>.json` pour tout annuler. Les stratégies ne sont retirées que si elles ont la valeur posée par l'outil, jamais sur un PC en domaine.
 - Jamais de désactivation de Defender, du pare-feu ou de Windows Update.
-- Les journaux sont dans `C:\BJMPC-Logs\` ; en cas d'erreur de lancement : `Toolbox_erreurs.log`.
+- `C:\BJMPC-Logs\` (journaux, sauvegardes de pilotes) est réservé en écriture aux administrateurs dès le premier lancement.
 
 ### Limites connues
 
+- **Sauvegarde des fichiers** : ce sont les fichiers personnels, pas Windows ni les logiciels ; une seule version de chaque fichier est gardée ; un fichier ouvert pendant la copie est repris la fois suivante ; les mots de passe des navigateurs ne sont pas copiés.
+- **Réparation automatique** : 33 règles couvrent les erreurs courantes ; le reste est montré sans réparation inventée.
 - Le Microsoft Update Catalog est approximatif et peut limiter les requêtes : un résultat anormal est signalé « Erreur », jamais pris pour « aucun pilote ».
 - La suppression « forcée » de pilotes (DriverStore Explorer) n'est volontairement pas reprise.
 - Les valeurs « par défaut de Windows 11 » peuvent varier selon l'édition et la version : comparez avant d'appliquer.
-- Les réglages réseau avancés, DNS et plans d'alimentation se défont depuis le Journal, pas depuis la carte « valeurs par défaut ».
 
 ### Retours
 
-Ouvrez une *issue* en précisant la version de Windows, la version de l'outil (1.8) et, si possible, le journal de `C:\BJMPC-Logs\`.
+Ouvrez une *issue* en précisant la version de Windows, la version de l'outil (2.1) et, si possible, le journal de `C:\BJMPC-Logs\`.
 
 ---
 
@@ -82,15 +106,26 @@ Ouvrez une *issue* en précisant la version de Windows, la version de l'outil (1
 
 ### What is it?
 
-**BJMPC Toolbox** is a graphical toolbox to **diagnose, repair, update and optimise Windows 11**. It is designed for a technician working on customers' PCs: everything is driven by **buttons, drop-downs and checkboxes** (nothing to type), and **every change is reversible**.
+**BJMPC Toolbox** is a graphical toolbox to **diagnose, repair, back up, update and optimise Windows 11**. It is designed for a technician working on customers' PCs: everything is driven by **buttons, drop-downs and checkboxes** (nothing to type), and **every change is reversible**.
 
 It is written in Windows PowerShell 5.1 (WPF UI) and needs no installation: launch it, work, close it.
+
+### What's new in version 2
+
+- **Simpler interface**: 6 sections instead of 14 pages, each with its own tabs.
+- **Automatic repair**: the Toolbox reads the Event Viewer, explains each error in plain words and runs the matching repair when one exists. Live monitoring of new errors.
+- **Automatic backup of the customer's files** to another disk, on demand or scheduled.
+- **Outdated tweaks removed**: Nagle, MMCSS priorities, disabling SysMain, "useless" services, Win32PrioritySeparation, memory compression, disabling HVCI… They bring nothing measurable on today's Windows 11, or remove a protection.
+- **Drivers reviewed in depth**: between two driver families for the same chip, the date decides (as Windows does), no longer the version number alone; a real rollback after an update.
+
+The version-by-version detail is in [`LISEZMOI.txt`](LISEZMOI.txt) (French).
 
 ### ⚠️ Status: mature but experimental
 
 - **Mature**: the tool is used in real-world conditions; each feature is checked (self-test, restore points, backups before changes, logs).
 - **Experimental**: it changes the system (services, registry, drivers, policies). Windows keeps evolving, hardware setups are endless, and some features (driver search on the Microsoft Update Catalog, Windows 11 default values) rely on sources or values that can vary with the edition, build or time.
-- **Use it knowingly**: create a restore point (the tool does it for you before sensitive operations), try it on a non-critical machine first, and review the lists before clicking "Apply". No warranty is provided; you remain responsible for your machines.
+- **2.x features with little field time yet**: the scheduled backup task, updating then restoring a driver, and repairs launched from the Event Viewer were tested offline or in simulation, not yet on many PCs. Try them on a non-critical machine first.
+- **Use it knowingly**: create a restore point (the tool does it for you before sensitive operations) and review the lists before clicking. No warranty is provided; you remain responsible for your machines.
 
 ### Getting started
 
@@ -105,45 +140,58 @@ Requirements: Windows 11, administrator rights, Windows PowerShell 5.1 (built in
 | File | Purpose |
 |---|---|
 | `BJMPC-Toolbox.ps1` | The application (window) |
-| `BJMPC-Optimisation-Win11.ps1` | Gaming / network / system / display engine (can be used alone in a console) |
-| `BJMPC-Reglages-Win11.ps1` | Catalogue of 73 Windows tweaks (privacy, interface, updates…) |
+| `BJMPC-Evenements-Win11.ps1` | Event Viewer guided repair, live monitoring |
+| `BJMPC-Sauvegarde-Win11.ps1` | Backup of the customer's files, on demand and scheduled |
+| `BJMPC-Optimisation-Win11.ps1` | Gaming / network / disk / display engine (can be used alone in a console) |
+| `BJMPC-Reglages-Win11.ps1` | Catalogue of Windows tweaks (privacy, interface, updates…) |
 | `BJMPC-Maintenance-Win11.ps1` | Maintenance and repair engine (can be used alone in a console) |
 | `BJMPC-Outils-Win11.ps1` | Diagnostics, troubleshooting, drivers, winget catalogue, cleanup, Windows defaults restore |
 | `BJMPC-Toolbox.bat` | Launcher (asks for administrator elevation) |
 | `Verif.bat` / `Apercu.bat` | Read-only self-test / customer summary preview |
 
-### Pages
+### The six sections
 
-- **Dashboard**: hardware, system state, points of attention.
-- **Tools**: read-only measurements, reports and inventories (SMART disks, hardware errors, Wi-Fi, security audit, licence…).
-- **Maintenance**: Windows repair (DISM, SFC, CHKDSK, WMI), resets, quick troubleshooting (Explorer, audio, printing, clock, DNS cache) and upkeep (cleanup, browser and shader caches).
-- **Drivers** *(rebuilt in 1.6)*: five tabs.
-  - *Updates*: search on the **Microsoft Update Catalog** (strict or extended), table of installed / proposed / date / size, installs only the ticked drivers.
-  - *Installed drivers*: DriverStore Explorer equivalent (old versions, deletion with prior copy, CSV export).
-  - *Add a driver*: from a folder or .zip, with signature check.
-  - *Absent devices*: old ghost devices, list saved before removal.
-  - *Backups*: export of all third-party drivers and restore.
-- **Gaming & GPU / Network & DNS / System & NVMe / Display & OLED**: targeted optimisations for modern PCs, without touching security. *System & NVMe* = disk, startup and services only.
-- **Privacy / Interface & Explorer / Updates & security**: a catalogue of Windows tweaks to tick. Each tweak appears only on the page matching its topic (no duplicates).
-- **Applications**: software catalogue (winget), updates and inventory, removal of preinstalled apps.
-- **Customer summary**: the session log translated into plain language to explain what was done.
-- **Journal & undo**: undo everything or one category; restore points; **new in 1.7: "Restore Windows 11 defaults"**.
+| Section | Tabs |
+|---|---|
+| **Home** | Overview · Customer summary |
+| **Repair** | Automatic repair · Repair Windows · Cleanup & troubleshooting · Diagnostics |
+| **Optimise** | Gaming & power · Network & DNS · Disk & startup · Display & OLED |
+| **Privacy & settings** | Privacy · Interface & Explorer · Updates & security |
+| **Software & drivers** | Applications · Drivers |
+| **Backup & restore** | File backup · Restore |
+
+- **Home**: what is in order on this PC and where to act for the rest (recent backup, restore point, free space, disk health, recent crashes…). A "Recommended settings" button applies only what is safe everywhere. The *customer summary* tells the story of the visit in plain language.
+- **Automatic repair**: each Event Viewer error is sorted into a family.
+  - *To repair*: stopped services, DNS, clock, repeated Windows Update failures, damaged Windows files, disk errors, search index, Store, performance counters, graphics driver crashes.
+  - *To look at*: hardware faults (WHEA, sudden shutdowns, overheating) and crashing third-party software, with what to check. No software can repair those.
+  - *Unrecognised*: shown as they are, never "fixed" at random.
+  - *Harmless*: well-known Windows noise (DCOM 10016…).
+  - After a repair, the next scan tells whether the error came back. *Live monitoring* shows each new error within seconds.
+- **Repair Windows / Cleanup & troubleshooting / Diagnostics**: DISM, SFC, CHKDSK, resets, quick fixes, cleanup, and read-only measurements (SMART disks, hardware errors, Wi-Fi, security audit, licence…).
+- **Optimise**: Windows gaming settings, **HAGS** (dedicated card: state, enable, disable), power mode, network adapters, encrypted DNS, SSD and startup, display scaling, OLED care.
+- **Privacy & settings**: a catalogue of Windows tweaks to tick.
+- **Applications**: software catalogue (winget), updates, inventory, removal of preinstalled apps.
+- **Drivers**: five tabs (updates from the Microsoft Update Catalog, installed drivers, add a driver, absent devices, backups).
+- **File backup**: personal folders and browser bookmarks copied to another disk, only new or changed files, nothing is ever deleted from the backup. Daily or weekly scheduled task, independent of the Toolbox.
+- **Restore**: change journal (undo everything or one category), "Restore Windows 11 defaults", restore points.
 
 ### Safety and reversibility
 
-- Before every change, the **original value** (registry, service, task, DNS, network adapter, power plan…) is saved in `C:\BJMPC-Logs\Backup\`; the *Journal* page undoes it.
-- **Drivers**: only a package with a valid signature (Microsoft WHQL in strict mode), whose INF declares the chip, architecture and class, with a newer version, is accepted. Any doubt means refusal. A restore point and a copy of the old driver are made first; the effective application is verified afterwards.
-- **Windows 11 defaults restore**: compares the PC with a pristine Windows 11 (services, system priorities, Nagle, telemetry, policies, tasks…), shows a *default value / current value* table with checkboxes, creates a restore point and an `AvantDefauts_<PC>_<date>.json` file so everything can be undone. A value that is "not defined by default" is **deleted** (not set to 0). Policies are removed only if they hold the value set by the tool, and never on a domain-joined PC. Boot drivers, Defender, firewall and Windows Update are never touched.
+- Before every change, the **original value** (registry, service, task, DNS, network adapter, power plan…) is saved in `C:\BJMPC-Logs\Backup\`; the *Restore* tab undoes it.
+- **Drivers**: only a package with a valid signature (Microsoft WHQL in strict mode), whose INF declares the chip, architecture and class, and which is newer than the installed one, is accepted. The downloaded file is checked against the SHA-256 hash announced by the Catalog. A restore point and a copy of the old driver are made first; "Restore" removes the new driver, then puts the old one back.
+- **Automatic repairs**: quick, risk-free repairs are ticked by default; heavy ones (DISM/SFC, CHKDSK, Windows Update) must be ticked by hand and never start on their own.
+- **Windows 11 defaults restore**: compares the PC with a pristine Windows 11, shows a *default value / current value* table with checkboxes, creates a restore point and an `AvantDefauts_<PC>_<date>.json` file so everything can be undone. Policies are removed only if they hold the value set by the tool, and never on a domain-joined PC.
 - Defender, the firewall and Windows Update are never disabled.
-- Logs are in `C:\BJMPC-Logs\`; if the launch fails: `Toolbox_erreurs.log`.
+- `C:\BJMPC-Logs\` (logs, driver backups) becomes writable by administrators only on first launch.
 
 ### Known limitations
 
+- **File backup**: personal files only, not Windows or installed software; a single version of each file is kept; a file open during the copy is picked up next time; browser passwords are not copied.
+- **Automatic repair**: 33 rules cover common errors; the rest is shown without an invented fix.
 - The Microsoft Update Catalog is fuzzy and may rate-limit: an abnormal response is reported as "Error", never mistaken for "no driver".
 - "Forced" driver deletion (as in DriverStore Explorer) is intentionally not implemented.
 - "Windows 11 default" values may vary with the edition and build: compare before applying.
-- Advanced network settings, DNS and power plans are undone from the Journal, not from the "defaults" card.
 
 ### Feedback
 
-Open an *issue* with your Windows version, the tool version (1.8) and, if possible, the log from `C:\BJMPC-Logs\`.
+Open an *issue* with your Windows version, the tool version (2.1) and, if possible, the log from `C:\BJMPC-Logs\`.

@@ -4,14 +4,18 @@
     BJMPC Toolbox - interface graphique (WPF) pour les scripts de maintenance et d'optimisation Windows 11.
 .DESCRIPTION
     Cette application ne duplique aucune logique : elle charge les fonctions de
-        BJMPC-Maintenance-Win11.ps1, BJMPC-Optimisation-Win11.ps1, BJMPC-Reglages-Win11.ps1, BJMPC-Outils-Win11.ps1
+        BJMPC-Maintenance-Win11.ps1, BJMPC-Optimisation-Win11.ps1, BJMPC-Reglages-Win11.ps1, BJMPC-Outils-Win11.ps1,
+        BJMPC-Sauvegarde-Win11.ps1
     (qui doivent rester dans le même dossier) et les exécute en arrière-plan.
     Les questions du script (Read-Host, confirmations) s'affichent sous forme de boîtes de dialogue.
-    Chaque modification est enregistrée avant d'être faite (C:\BJMPC-Logs\Backup) : voir la page "Journal et annulation".
+    Chaque modification est enregistrée avant d'être faite (C:\BJMPC-Logs\Backup) : voir Sauvegarde et restauration > "Restauration".
+
+    Interface 2.0 : six sections dans le menu de gauche (Accueil, Réparer, Optimiser, Confidentialité et réglages,
+    Logiciels et pilotes, Sauvegardes), chacune avec ses onglets. Une page = un onglet.
 #>
 
 $ErrorActionPreference = 'Continue'
-$Script:AppVersion = '1.8'
+$Script:AppVersion = '2.1'
 $Script:Root       = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $Script:LogDir     = Join-Path $env:SystemDrive 'BJMPC-Logs'
 $Script:BackupDir  = Join-Path $Script:LogDir 'Backup'
@@ -49,6 +53,34 @@ if (-not $isAdmin -and -not $env:BJMPC_SELFTEST) {
     exit 1
 }
 
+function Protect-LogFolder {
+    # C:\BJMPC-Logs est créé à la racine du disque : par défaut, n'importe quel utilisateur peut y écrire. Or la Toolbox
+    # y range des pilotes (sauvegardes, paquets en cours de contrôle) qu'elle installe ensuite en administrateur.
+    # L'écriture est donc réservée aux administrateurs et au système ; tout le monde garde la lecture.
+    # Exception : le sous-dossier Sauvegarde (journaux et dernier résultat seulement), car la sauvegarde vers un partage
+    # réseau tourne dans la session de l'utilisateur.
+    # Fait une seule fois : un dossier déjà protégé (héritage coupé) n'est plus touché. $Path sert aux essais.
+    param([string]$Path = $Script:LogDir)
+    try {
+        if (-not (Test-Path -LiteralPath $Path)) { return $false }
+        if ((Get-Acl -LiteralPath $Path -ErrorAction Stop).AreAccessRulesProtected) { return $true }
+        # D'abord tout ce qui demande d'écrire et les droits voulus, en dernier seulement la coupure de l'héritage :
+        # le dossier n'est jamais sans accès, même si une étape échoue.
+        $bak = Join-Path $Path 'Sauvegarde'
+        New-Item -ItemType Directory -Path $bak -Force -ErrorAction Stop | Out-Null
+        & icacls.exe $Path /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' /Q | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "icacls /grant a échoué (code $LASTEXITCODE)" }
+        & icacls.exe $bak /grant '*S-1-5-11:(OI)(CI)M' /Q | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "icacls /grant (Sauvegarde) a échoué (code $LASTEXITCODE)" }
+        & icacls.exe $Path /inheritance:r /Q | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "icacls /inheritance a échoué (code $LASTEXITCODE)" }
+        # Ancien dossier de travail des pilotes (versions 2.0 et antérieures), dans le dossier temporaire de l'utilisateur.
+        try { Remove-Item -LiteralPath (Join-Path $env:TEMP 'bjmpc_drivers') -Recurse -Force -ErrorAction Stop } catch {}
+        return $true
+    } catch { Write-Crash ("Protection de " + $Path + " : " + $_.Exception.Message); return $false }
+}
+if ($isAdmin) { [void](Protect-LogFolder) }
+
 # ================================================================ MOTEUR
 #region Moteur
 
@@ -64,6 +96,10 @@ $Script:Sync = [hashtable]::Synchronized(@{
     Result       = $null
     Diag         = [hashtable]::Synchronized(@{})
     LogFile      = $Script:LogFile
+    Root         = $Script:Root
+    EvtQueue     = (New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]')   # surveillance en direct de l'Observateur d'événements
+    EvtStop      = $true
+    EvtBeat      = $null
 })
 
 # Extrait d'un script les fonctions et variables globales, sans exécuter le menu ni la relance admin.
@@ -153,6 +189,10 @@ try {
     $Script:EngineCode['opt']   = (Get-EngineCode (Join-Path $Script:Root 'BJMPC-Optimisation-Win11.ps1')) + "`r`n" + (Get-EngineCode (Join-Path $Script:Root 'BJMPC-Reglages-Win11.ps1'))
     $Script:EngineCode['maint'] = Get-EngineCode (Join-Path $Script:Root 'BJMPC-Maintenance-Win11.ps1')
     $Script:EngineCode['tools'] = Get-EngineCode (Join-Path $Script:Root 'BJMPC-Outils-Win11.ps1')
+    $Script:EngineCode['bak']   = Get-EngineCode (Join-Path $Script:Root 'BJMPC-Sauvegarde-Win11.ps1')
+    # Réparation guidée par l'Observateur d'événements : ses réparations appellent les fonctions de Maintenance et d'Outils.
+    $Script:EvtCore             = Get-EngineCode (Join-Path $Script:Root 'BJMPC-Evenements-Win11.ps1')
+    $Script:EngineCode['evt']   = $Script:EngineCode['maint'] + "`r`n" + $Script:EngineCode['tools'] + "`r`n" + $Script:EvtCore
     $Script:EngineCode['none']  = ''
 } catch {
     $Script:EngineError = $_.Exception.Message
@@ -286,6 +326,31 @@ $Script:Xaml = @'
         </Setter.Value>
       </Setter>
     </Style>
+    <Style x:Key="Tab" TargetType="RadioButton">
+      <Setter Property="Foreground" Value="#9298A3"/>
+      <Setter Property="Height" Value="42"/>
+      <Setter Property="FontSize" Value="14"/>
+      <Setter Property="Margin" Value="0,0,4,0"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="RadioButton">
+            <Border x:Name="B" Background="Transparent" BorderBrush="Transparent" BorderThickness="0,0,0,2" Padding="14,0">
+              <ContentPresenter VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True"><Setter Property="Foreground" Value="#ECEDEF"/></Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="B" Property="Background" Value="#101318"/></Trigger>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="B" Property="BorderBrush" Value="#5AD1FF"/>
+                <Setter Property="Foreground" Value="#ECEDEF"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
     <Style TargetType="ScrollBar">
       <Setter Property="Width" Value="12"/>
       <Setter Property="Background" Value="Transparent"/>
@@ -310,7 +375,7 @@ $Script:Xaml = @'
   </Window.Resources>
   <Grid>
     <Grid.ColumnDefinitions>
-      <ColumnDefinition Width="248"/>
+      <ColumnDefinition Width="280"/>
       <ColumnDefinition Width="*"/>
     </Grid.ColumnDefinitions>
 
@@ -366,7 +431,16 @@ $Script:Xaml = @'
         </DockPanel>
       </Border>
 
-      <Grid x:Name="PageHost" Grid.Row="1"/>
+      <Grid Grid.Row="1">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+        <Border Grid.Row="0" BorderBrush="#1A1D22" BorderThickness="0,0,0,1" Padding="22,0">
+          <Grid x:Name="TabHost"/>
+        </Border>
+        <Grid x:Name="PageHost" Grid.Row="1"/>
+      </Grid>
 
       <GridSplitter Grid.Row="2" Height="6" HorizontalAlignment="Stretch" VerticalAlignment="Center" Background="#0A0B0D" ResizeDirection="Rows"/>
 
@@ -401,6 +475,7 @@ try {
 }
 $Script:NavPanel   = $Script:Window.FindName('NavPanel')
 $Script:PageHost   = $Script:Window.FindName('PageHost')
+$Script:TabHost    = $Script:Window.FindName('TabHost')
 $Script:Console    = $Script:Window.FindName('Console')
 $Script:StatusText = $Script:Window.FindName('StatusText')
 $Script:Prog       = $Script:Window.FindName('Prog')
@@ -550,36 +625,79 @@ function New-Page {
     return $sp
 }
 
-function Add-NavGroup {
-    param([string]$Label)
-    $t = New-Text $Label.ToUpper() 12 '#8A909B'
-    $t.Margin = '12,16,0,6'
-    [void]$Script:NavPanel.Children.Add($t)
-}
+# Navigation : le menu de gauche liste les sections ; chaque section a une rangée d'onglets, un onglet = une page.
+$Script:Sections = @{}        # clé de section -> @{ Item; Strip; Tabs (clé de page -> onglet); First }
+$Script:PageSection = @{}     # clé de page -> clé de section
+$Script:CurrentSection = ''
 
-function Add-NavItem {
-    param([string]$Key, [string]$Label, [string]$Glyph)
+function Add-Section {
+    # $Tabs = @(@('clé de page', 'libellé de l''onglet'), …)
+    param([string]$Key, [string]$Label, [string]$Glyph, $Tabs)
     $rb = New-Object Windows.Controls.RadioButton
     $rb.GroupName = 'nav'
     $rb.Style = $Script:Window.FindResource('Nav')
     $rb.Tag = $Key
+    $rb.Height = 48
     $sp = New-Object Windows.Controls.StackPanel
     $sp.Orientation = 'Horizontal'
     $ic = New-Object Windows.Controls.TextBlock
     $ic.Text = $Glyph
     $ic.FontFamily = New-Object Windows.Media.FontFamily 'Segoe MDL2 Assets'
-    $ic.FontSize = 16
-    $ic.Width = 24
+    $ic.FontSize = 17
+    $ic.Width = 28
     $ic.VerticalAlignment = 'Center'
     $tx = New-Object Windows.Controls.TextBlock
     $tx.Text = $Label
-    $tx.FontSize = 14
+    $tx.FontSize = 14.5
     $tx.VerticalAlignment = 'Center'
     [void]$sp.Children.Add($ic); [void]$sp.Children.Add($tx)
     $rb.Content = $sp
-    $rb.Add_Checked({ param($s, $e) Show-Page ([string]$s.Tag) })
+    $rb.Add_Checked({ param($s, $e) Show-Section ([string]$s.Tag) })
     [void]$Script:NavPanel.Children.Add($rb)
-    $Script:NavItems[$Key] = $rb
+
+    $strip = New-Object Windows.Controls.StackPanel
+    $strip.Orientation = 'Horizontal'; $strip.Visibility = 'Collapsed'
+    $map = @{}; $first = ''
+    foreach ($t in $Tabs) {
+        $pk = [string]$t[0]
+        $tb = New-Object Windows.Controls.RadioButton
+        $tb.GroupName = 'tab_' + $Key
+        $tb.Style = $Script:Window.FindResource('Tab')
+        $tb.Content = [string]$t[1]
+        $tb.Tag = $pk
+        $tb.Add_Checked({ param($s, $e) $k = [string]$s.Tag; if ([string]$Script:PageSection[$k] -eq $Script:CurrentSection) { Show-Page $k } })
+        [void]$strip.Children.Add($tb)
+        $map[$pk] = $tb
+        $Script:PageSection[$pk] = $Key
+        $Script:NavItems[$pk] = $tb
+        if (-not $first) { $first = $pk }
+    }
+    [void]$Script:TabHost.Children.Add($strip)
+    $Script:Sections[$Key] = @{ Item = $rb; Strip = $strip; Tabs = $map; First = $first }
+}
+
+function Show-Section {
+    param([string]$Key)
+    $sec = $Script:Sections[$Key]
+    if (-not $sec) { return }
+    $Script:CurrentSection = $Key
+    foreach ($k in @($Script:Sections.Keys)) { $Script:Sections[$k].Strip.Visibility = $(if ($k -eq $Key) { 'Visible' } else { 'Collapsed' }) }
+    $sel = @($sec.Tabs.Values | Where-Object { $_.IsChecked }) | Select-Object -First 1
+    if ($sel) { Show-Page ([string]$sel.Tag) } else { $sec.Tabs[$sec.First].IsChecked = $true }
+}
+
+function Open-Page {
+    # Ouvre une page depuis n'importe où (bouton, démarrage) : sélectionne son onglet et sa section.
+    param([string]$Key)
+    $sk = [string]$Script:PageSection[$Key]
+    if (-not $sk) { return }
+    $sec = $Script:Sections[$sk]
+    if ($Script:CurrentSection -eq $sk) {
+        if ($sec.Tabs[$Key].IsChecked) { Show-Page $Key } else { $sec.Tabs[$Key].IsChecked = $true }
+    } else {
+        $sec.Tabs[$Key].IsChecked = $true
+        $sec.Item.IsChecked = $true
+    }
 }
 
 function Show-Page {
@@ -587,6 +705,8 @@ function Show-Page {
     foreach ($k in @($Script:Pages.Keys)) { $Script:Pages[$k].Visibility = $(if ($k -eq $Key) { 'Visible' } else { 'Collapsed' }) }
     $Script:CurrentPage = $Key
     if ($Key -eq 'journal') { Load-Journal; Load-RestorePoints }
+    elseif ($Key -eq 'files') { Refresh-BackupStatus }
+    elseif ($Key -eq 'events') { if (-not $Script:Evt.Analyzed -and -not $Script:Run -and -not $Script:EngineError) { Start-EventAnalysis } }
 }
 
 # ---------------------------------------------------------------- Console
@@ -802,6 +922,8 @@ function Complete-Run {
     $Script:RunFlags.Warn += $errCount
     try { Add-SessionEntry $r $res } catch { Write-Crash ("Session : " + $_.Exception.Message) }
     if ($r.OnDone) { try { & $r.OnDone $res } catch { Add-Console ("  [X]   " + $_.Exception.Message) 'Red' } }
+    # La page Sauvegardes a demandé son état pendant qu'une autre opération tournait : on le lit maintenant.
+    if ($Script:BakPending -and -not $Script:Run -and $Script:CurrentPage -eq 'files') { try { Refresh-BackupStatus } catch {} }
 }
 
 function Update-Ui {
@@ -816,6 +938,11 @@ function Update-Ui {
         elseif ($item.K -eq 'prompt') { $Script:Timer.Stop(); try { Resolve-Prompt } finally { $Script:Timer.Start() } }
     }
     if ($Script:Run -and $Script:Run.Handle.IsCompleted -and $Script:Sync.Queue.IsEmpty) { Complete-Run }
+    # Surveillance en direct : nouveaux constats envoyés par le fil de surveillance
+    $ev = $null; $m = 0
+    while ($m -lt 40 -and $Script:Sync.EvtQueue.TryDequeue([ref]$ev)) { $m++; try { Add-LiveEvent $ev } catch { Write-Crash ("Surveillance : " + $_.Exception.ToString()) } }
+    if ($Script:Evt.AutoPending.Count -gt 0 -and -not $Script:Run) { Start-EventAutoFix }
+    if ($Script:EvtWatch -and $Script:EvtWatch.Handle.IsCompleted) { Stop-EventWatch; Add-Console '  [!]   La surveillance en direct s''est arrêtée. Relancez-la depuis Réparer > Réparation automatique.' 'Yellow' }
 }
 
 #endregion
@@ -856,29 +983,54 @@ try {
     $a = Get-NetAdapter -Physical -ErrorAction Stop | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1
     $i.Net = @($a.InterfaceDescription, ("{0} · {1}" -f $a.Name, $a.LinkSpeed))
 } catch { $i.Net = @('Aucune carte active', '') }
+$hv = Get-RegVal 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' 'HwSchMode'
+$i.Hags = @($(if ($hv -eq 2) { 'activée' } elseif ($hv -eq 1) { 'désactivée' } else { 'non définie (désactivée par défaut)' }), [string]$hv)
 
 $list = New-Object System.Collections.ArrayList
 function Chk { param($l, $g, $d) [void]$list.Add([pscustomobject]@{ Label = $l; Good = [bool]$g; Detail = $d }) }
-Chk 'Planification GPU matérielle (HAGS)' ((Get-RegVal 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' 'HwSchMode') -eq 2) 'Réduit la latence GPU'
-Chk 'Capture Game DVR désactivée' ((Get-RegVal 'HKCU:\System\GameConfigStore' 'GameDVR_Enabled') -eq 0) 'Moins de surcharge en jeu'
-Chk 'Bridage réseau multimédia supprimé' ((Get-RegVal 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile' 'NetworkThrottlingIndex') -eq -1) 'MMCSS'
-$plan = (& powercfg.exe /getactivescheme | Out-String)
-Chk 'Plan d''alimentation BJMPC Gaming' ($plan -match 'BJMPC') 'Boost CPU, PCIe, USB'
-$sm = Get-Service -Name SysMain -ErrorAction SilentlyContinue
-Chk 'SysMain désactivé (inutile sur NVMe)' ($sm -and $sm.StartType -eq 'Disabled') 'Superfetch'
-$dt = Get-Service -Name DiagTrack -ErrorAction SilentlyContinue
-Chk 'Télémétrie DiagTrack désactivée' ($dt -and $dt.StartType -eq 'Disabled') 'Confidentialité'
+# --- Vos fichiers et votre filet de sécurité
+$bak = $null
+try { $bak = Get-Content -LiteralPath (Join-Path $env:SystemDrive 'BJMPC-Logs\Sauvegarde\etat.json') -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json } catch {}
+$bakDays = $null
+if ($bak -and $bak.LastSuccess) { try { $bakDays = [int][math]::Floor(((Get-Date) - [datetime]$bak.LastSuccess).TotalDays) } catch {} }
+$bakHint = if ($null -eq $bakDays) { 'Aucune sauvegarde : section Sauvegarde et restauration' } else { "Dernière il y a $bakDays jour(s) : section Sauvegarde et restauration" }
+Chk 'Fichiers personnels sauvegardés depuis moins de 8 jours' ($null -ne $bakDays -and $bakDays -le 7) $bakHint
+$auto = $false
+try { $tk = Get-ScheduledTask -TaskName 'BJMPC Sauvegarde automatique' -TaskPath '\BJMPC\' -ErrorAction Stop; $auto = ([string]$tk.State -ne 'Disabled') } catch {}
+Chk 'Sauvegarde automatique programmée' $auto 'À activer : section Sauvegarde et restauration'
+$rpDays = $null
+try {
+    $rp = Get-ComputerRestorePoint -ErrorAction Stop | Sort-Object CreationTime -Descending | Select-Object -First 1
+    if ($rp) { $rpDays = [int][math]::Floor(((Get-Date) - [Management.ManagementDateTimeConverter]::ToDateTime($rp.CreationTime)).TotalDays) }
+} catch {}
+Chk 'Point de restauration de moins de 30 jours' ($null -ne $rpDays -and $rpDays -le 30) 'À créer : Sauvegarde et restauration > Restauration'
+# --- Santé du PC
+$pct = -1
+try { $ld = Get-CimInstance Win32_LogicalDisk -Filter ("DeviceID='{0}'" -f $env:SystemDrive) -ErrorAction Stop; if ($ld.Size) { $pct = [int](100 * $ld.FreeSpace / $ld.Size) } } catch {}
+Chk 'Assez de place libre sur le disque de Windows' ($pct -ge 15) ("{0} % libres : Réparer > Nettoyage et dépannage" -f $pct)
+$sick = @()
+try { $sick = @(Get-PhysicalDisk -ErrorAction Stop | Where-Object { [string]$_.HealthStatus -ne 'Healthy' }) } catch {}
+Chk 'Disques en bonne santé' ($sick.Count -eq 0) 'À contrôler : Réparer > Diagnostics'
+$pend = (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') -or (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired')
+Chk 'Aucun redémarrage en attente' (-not $pend) 'Redémarrez le PC pour finir une mise à jour'
+$crit = 0
+try { $crit = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Level = 1; StartTime = (Get-Date).AddDays(-7) } -MaxEvents 20 -ErrorAction Stop).Count } catch {}
+Chk 'Aucun plantage ni arrêt brutal depuis 7 jours' ($crit -eq 0) ("{0} événement(s) critique(s) : Réparer > Réparation automatique" -f $crit)
+# --- Réglages recommandés
 $o = & fsutil.exe behavior query DisableDeleteNotify 2>$null | Out-String
-Chk 'TRIM actif sur le SSD' ($o -match 'NTFS DisableDeleteNotify\s*=\s*0') 'Performances d''écriture'
-$nag = $false
+Chk 'TRIM actif sur le SSD' ($o -match 'NTFS DisableDeleteNotify\s*=\s*0') 'Optimiser > Disque et démarrage'
+Chk 'Capture de jeu en arrière-plan coupée' ((Get-RegVal 'HKCU:\System\GameConfigStore' 'GameDVR_Enabled') -eq 0) 'Bouton « Réglages recommandés »'
+$dt = Get-Service -Name DiagTrack -ErrorAction SilentlyContinue
+Chk 'Télémétrie réduite au minimum' ($dt -and $dt.StartType -eq 'Disabled') 'Bouton « Réglages recommandés »'
+# --- Anciens réglages des versions 1.x, sans effet mesurable sur Windows 11 : à remettre par défaut
+$old = @()
+if ((Get-RegVal 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile' 'NetworkThrottlingIndex') -eq -1) { $old += 'MMCSS' }
+$sm = Get-Service -Name SysMain -ErrorAction SilentlyContinue
+if ($sm -and $sm.StartType -eq 'Disabled') { $old += 'SysMain' }
 foreach ($ad in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
-    if ((Get-RegVal "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($ad.InterfaceGuid)" 'TCPNoDelay') -eq 1) { $nag = $true }
+    if ((Get-RegVal "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($ad.InterfaceGuid)" 'TCPNoDelay') -eq 1) { $old += 'Nagle'; break }
 }
-Chk 'Algorithme de Nagle désactivé' $nag 'Latence réseau'
-$dnsOk = $false
-try { $dnsOk = [bool](@(Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction Stop | ForEach-Object { $_.ServerAddresses }) | Where-Object { $_ -like '194.242.2.*' }) } catch {}
-Chk 'DNS chiffré Mullvad' $dnsOk 'DoH IPv4 + IPv6'
-Chk 'Démarrage rapide désactivé' ((Get-RegVal 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power' 'HiberbootEnabled') -eq 0) 'Pilotes rechargés à chaque démarrage'
+if ($old.Count -gt 0) { Chk 'Aucun ancien réglage dépassé' $false (($old -join ', ') + ' : Sauvegarde et restauration > Restauration > Comparer avec Windows 11') }
 $Sync.Result = @{ Info = $i; Checks = @($list) }
 '@
 
@@ -908,6 +1060,11 @@ function Refresh-Dashboard {
     Start-Run -Engine 'none' -Code $Script:DashCode -Title '' -OnDone {
         param($res)
         if (-not $res) { return }
+        if ($Script:HagsText -and $res.Info.Contains('Hags')) {
+            $on = ([string]$res.Info['Hags'][1] -eq '2')
+            $Script:HagsText.Text = 'État actuel : ' + [string]$res.Info['Hags'][0]
+            $Script:HagsText.Foreground = (Br $(if ($on) { '#62D98B' } else { '#F5B94A' }))
+        }
         foreach ($k in @('Os', 'Cpu', 'Ram', 'Gpu', 'Disk', 'Net')) {
             $t = $Script:Tiles[$k.ToLower()]
             if ($t -and $res.Info.Contains($k)) { $t.V.Text = [string]$res.Info[$k][0]; $t.S.Text = [string]$res.Info[$k][1] }
@@ -915,7 +1072,7 @@ function Refresh-Dashboard {
         $checks = @($res.Checks)
         $good = @($checks | Where-Object { $_.Good }).Count
         $Script:ScoreText.Text = "$good"
-        $Script:ScoreSub.Text = if ($checks.Count - $good -eq 0) { "Tout est optimisé." } else { "{0} optimisation(s) restent à appliquer." -f ($checks.Count - $good) }
+        $Script:ScoreSub.Text = if ($checks.Count - $good -eq 0) { "Tout est en ordre." } else { "{0} point(s) à regarder, détaillés ci-dessous." -f ($checks.Count - $good) }
         $Script:SegPanel.Children.Clear()
         $Script:SegPanel.Columns = [math]::Max(1, $checks.Count)
         foreach ($c in $checks) {
@@ -934,7 +1091,7 @@ function Refresh-Dashboard {
             $dot.Fill = (Br $(if ($c.Good) { '#62D98B' } else { '#F5B94A' }))
             [void]$row.Children.Add($dot)
             [void]$row.Children.Add((New-Text $c.Label 14 $(if ($c.Good) { '#C5C9D0' } else { '#ECEDEF' })))
-            $st = New-Text $(if ($c.Good) { 'actif' } else { 'à appliquer' }) 13 $(if ($c.Good) { '#62D98B' } else { '#F5B94A' })
+            $st = New-Text $(if ($c.Good) { 'OK' } else { [string]$c.Detail }) 13 $(if ($c.Good) { '#62D98B' } else { '#F5B94A' })
             $st.Margin = '12,0,0,0'
             [void]$row.Children.Add($st)
             [void]$Script:RecoPanel.Children.Add($row)
@@ -945,24 +1102,25 @@ function Refresh-Dashboard {
 $Script:ScoreTotal = $null
 
 function Build-Dashboard {
-    $p = New-Page 'dash' 'Tableau de bord' 'Votre PC en un coup d''œil, et les optimisations recommandées.'
+    $p = New-Page 'dash' 'Accueil' 'L''état de ce PC en un coup d''œil : ce qui est en ordre, ce qui reste à faire, et où le faire.'
     $grid = New-Object Windows.Controls.Grid
     $c1 = New-Object Windows.Controls.ColumnDefinition; $c1.Width = [Windows.GridLength]::new(3, 'Star')
     $c2 = New-Object Windows.Controls.ColumnDefinition; $c2.Width = [Windows.GridLength]::new(2, 'Star')
     [void]$grid.ColumnDefinitions.Add($c1); [void]$grid.ColumnDefinitions.Add($c2)
 
-    $hero = New-Card 'Profil complet recommandé' 'Gaming, alimentation, réseau, stockage, services inutiles, télémétrie minimale et protection OLED. Un point de restauration est créé d''abord, et chaque valeur d''origine est mémorisée.' 'Recommandé' 'a' '0,0,10,20'
-    $act = New-Object Windows.Controls.StackPanel
-    $act.Orientation = 'Horizontal'; $act.Margin = '0,18,0,0'
-    $spec = New-Spec 'opt' 'Invoke-FullProfile' 'Profil complet recommandé' @{} 'Appliquer le profil complet ? Un point de restauration est créé avant.' $Script:AfterChange
-    $b1 = New-Btn 'Appliquer le profil complet' $spec -Primary; $b1.Margin = '0,0,0,0'
+    $hero = New-Card 'Réglages recommandés' 'Seulement ce qui est sûr et utile sur tout PC Windows 11 : réglages de jeu de Windows (planification GPU, Mode Jeu, capture en arrière-plan coupée), contrôle du TRIM du SSD et télémétrie minimale. Un point de restauration est créé d''abord et chaque valeur d''origine est mémorisée. Le reste (alimentation, réseau, DNS, écran) dépend du PC : voir la section Optimiser.' 'Sans risque' 'g' '0,0,10,20'
+    $act = New-Object Windows.Controls.WrapPanel
+    $act.Margin = '0,18,0,0'
+    $spec = New-Spec 'opt' 'Invoke-FullProfile' 'Réglages recommandés' @{} 'Appliquer les réglages recommandés ? Un point de restauration est créé avant.' $Script:AfterChange
+    $b1 = New-Btn 'Appliquer les réglages recommandés' $spec -Primary; $b1.Margin = '0,4,0,4'
     [void]$act.Children.Add($b1)
+    [void]$act.Children.Add((New-Btn 'Sauvegarder les fichiers' @{ Fn = { Open-Page 'files' } }))
     [void]$act.Children.Add((New-Btn 'Actualiser' @{ Fn = { Refresh-Dashboard } }))
     [void]$hero.Body.Children.Add($act)
     [Windows.Controls.Grid]::SetColumn($hero.Card, 0)
     [void]$grid.Children.Add($hero.Card)
 
-    $score = New-Card 'Optimisations actives' '' '' 'n' '10,0,0,20'
+    $score = New-Card 'Points en ordre' '' '' 'n' '10,0,0,20'
     $line = New-Object Windows.Controls.StackPanel
     $line.Orientation = 'Horizontal'; $line.Margin = '0,10,0,10'
     $Script:ScoreText = New-Text '–' 44 '#ECEDEF' 'SemiBold' -Font 'Consolas'
@@ -991,14 +1149,14 @@ function Build-Dashboard {
     Add-Tile $hw 'net' 'Réseau' '10,0,0,10'
     [void]$p.Children.Add($hw)
 
-    $reco = New-Card 'Recommandations' 'Vert : déjà en place. Orange : à appliquer depuis les pages Gaming, Réseau, Système ou Confidentialité.'
+    $reco = New-Card 'État de ce PC' 'Vert : en ordre. Orange : à regarder, avec l''endroit où agir.'
     $Script:RecoPanel = New-Object Windows.Controls.StackPanel
     $Script:RecoPanel.Margin = '0,10,0,0'
     [void]$reco.Body.Children.Add($Script:RecoPanel)
     [void]$p.Children.Add($reco.Card)
 
-    $tools = New-Card 'Outils de diagnostic'
-    Add-Row $tools.Body 'État détaillé des optimisations' 'Affiche chaque réglage et sa valeur actuelle dans la console.' '' 'n' @((New-Btn 'Afficher' (New-Spec 'opt' 'Show-State' 'État des optimisations')))
+    $tools = New-Card 'En savoir plus sur ce PC' 'Le résultat s''affiche dans la zone « Sortie en direct » en bas de la fenêtre.'
+    Add-Row $tools.Body 'État détaillé des réglages' 'Affiche chaque réglage et sa valeur actuelle.' '' 'n' @((New-Btn 'Afficher' (New-Spec 'opt' 'Show-State' 'État des optimisations')))
     Add-Row $tools.Body 'Profil matériel détecté' 'CPU, RAM, GPU, NVMe, Wi-Fi et écran, avec les points d''attention.' '' 'n' @((New-Btn 'Afficher' (New-Spec 'opt' 'Show-HardwareProfile' 'Profil matériel')))
     Add-Row $tools.Body 'Informations système et santé des disques' '' '' 'n' @((New-Btn 'Afficher' (New-Spec 'maint' 'Get-SystemSummary' 'Informations système')))
     [void]$p.Children.Add($tools.Card)
@@ -1006,7 +1164,7 @@ function Build-Dashboard {
 
 # ---------------------------------------------------------------- Outils et diagnostics
 function Build-Tools {
-    $p = New-Page 'tools' 'Outils et diagnostics' 'Mesures, rapports et inventaires : rien n''est modifié ici. Les dépannages qui agissent sur le système sont dans la page Maintenance.'
+    $p = New-Page 'tools' 'Diagnostics' 'Mesures, rapports et inventaires : rien n''est modifié ici. Les actions qui corrigent sont dans les deux onglets voisins.'
     function ToolSpec { param([string]$Code, [string]$Title, [string]$Confirm = '') return (New-Spec 'tools' $Code $Title @{} $Confirm) }
 
     $hw = New-Card 'Matériel' 'Santé des disques, erreurs système liées au matériel, rapports énergétiques.' 'Lecture seule' 'g'
@@ -1040,7 +1198,7 @@ function Build-Tools {
 
 # ---------------------------------------------------------------- Maintenance
 function Build-Maintenance {
-    $p = New-Page 'maint' 'Maintenance et réparation' 'Dans l''ordre recommandé : l''image Windows d''abord, puis les fichiers système, puis le disque.'
+    $p = New-Page 'maint' 'Réparer Windows' 'Dans l''ordre recommandé : l''image Windows d''abord, puis les fichiers système, puis le disque.'
     $seq = New-Card 'Réparation guidée' '' '' 'n'
     $seqSpec = New-Spec 'maint' 'Invoke-FullSequence' 'Séquence complète' @{ 'RestoreHealth' = 'yes'; 'composants' = 'yes' } 'Lancer toute la séquence ? Elle peut durer 30 minutes et plus.'
     $seqSpec.AutoDefault = 'no'
@@ -1058,7 +1216,7 @@ function Build-Maintenance {
     Add-Row $seq.Body '4. WMI : dépôt' 'Vérification, puis réparation sur confirmation.' '' 'n' @((New-Btn 'Vérifier' (New-Spec 'maint' 'Repair-WMI' 'WMI')))
     [void]$p.Children.Add($seq.Card)
 
-    $rst = New-Card 'Réinitialisations' 'Créez un point de restauration (page Journal et annulation) avant les actions sensibles.'
+    $rst = New-Card 'Réinitialisations' 'Quand un composant de Windows ne répond plus. Créez d''abord un point de restauration (Sauvegarde et restauration > Restauration).'
     Add-Row $rst.Body 'Services Windows' 'Remet les services essentiels à leur démarrage par défaut.' '' 'n' @((New-Btn 'Réinitialiser' (New-Spec 'maint' 'Reset-Services' 'Services Windows')))
     Add-Row $rst.Body 'Réseau' 'DNS, Winsock, TCP/IP, ARP.' 'Coupe la connexion' 'w' @((New-Btn 'Réinitialiser' (New-Spec 'maint' 'Reset-Network' 'Réseau' @{} 'La connexion Internet sera coupée brièvement. Continuer ?')))
     Add-Row $rst.Body 'Windows Update' 'Dossiers renommés en .bak, DLL ré-enregistrées.' 'Redémarrage' 'n' @((New-Btn 'Réinitialiser' (New-Spec 'maint' 'Reset-WindowsUpdate' 'Windows Update')))
@@ -1069,6 +1227,9 @@ function Build-Maintenance {
     Add-Row $rst.Body 'Windows Search' 'L''index est reconstruit en arrière-plan.' '' 'n' @((New-Btn 'Reconstruire' (New-Spec 'maint' 'Reset-Search' 'Windows Search')))
     Add-Row $rst.Body 'Modes d''alimentation' 'Restaure les plans par défaut de Windows.' '' 'n' @((New-Btn 'Restaurer' (New-Spec 'maint' 'Reset-PowerPlan' 'Modes d''alimentation')))
     [void]$p.Children.Add($rst.Card)
+
+    # Deuxième onglet de la section Réparer : les petites actions du quotidien.
+    $p = New-Page 'care' 'Nettoyage et dépannage' 'Libérer de la place et régler les petits soucis courants, sans toucher aux fichiers personnels.'
 
     $dp = New-Card 'Dépannage rapide' 'Petites actions courantes en atelier.' 'Modifie le système' 'w'
     Add-Row $dp.Body 'Redémarrer l''Explorateur' 'Règle les problèmes de barre des tâches, de menu Démarrage ou de bureau figé. L''écran clignote une seconde.' '' 'n' @((New-Btn 'Redémarrer' (New-Spec 'tools' 'Restart-ExplorerShell' 'Explorateur Windows')))
@@ -1098,61 +1259,61 @@ function Build-Maintenance {
 # ---------------------------------------------------------------- Gaming
 $Script:GamingChecks = @{}
 function Build-Gaming {
-    $p = New-Page 'gaming' 'Gaming et GPU' 'Profil pensé pour une carte graphique récente, un écran OLED et un PC moderne. Chaque réglage mémorise sa valeur d''origine.'
-    $c = New-Card 'Réglages GPU et jeux' 'HAGS (redémarrage), Mode Jeu, capture Game DVR désactivée, jeux fenêtrés avec fréquence variable et MMCSS sont toujours appliqués. Les deux options ci-dessous sont facultatives.'
+    $p = New-Page 'gaming' 'Jeux et alimentation' 'Les réglages de Windows qui comptent vraiment pour les jeux, et le mode d''alimentation. Chaque réglage mémorise sa valeur d''origine.'
+    # ---- HAGS : un réglage à part entière, avec son état et ses deux boutons
+    $hg = New-Card 'Planification GPU matérielle (HAGS)' 'La carte graphique gère elle-même sa file de travail. Requise pour la génération d''images (DLSS 3 et suivants) dans beaucoup de jeux. À désactiver seulement si un jeu ou un logiciel de capture saccade depuis son activation. Redémarrage nécessaire ; sans effet si le pilote graphique ne la propose pas.' 'Redémarrage' 'n'
+    $Script:HagsText = New-Text 'État actuel : lecture…' 14 '#C5C9D0' 'Medium'
+    $Script:HagsText.Margin = '0,12,0,0'
+    [void]$hg.Body.Children.Add($Script:HagsText)
+    $hbar = New-Object Windows.Controls.WrapPanel
+    $hbar.Margin = '0,12,0,0'
+    $hOn = New-Btn 'Activer HAGS' (New-Spec 'opt' 'Set-Hags -Mode on' 'HAGS (activation)' @{} '' $Script:AfterChange) -Primary
+    $hOn.Margin = '0,4,0,4'
+    [void]$hbar.Children.Add($hOn)
+    [void]$hbar.Children.Add((New-Btn 'Désactiver HAGS' (New-Spec 'opt' 'Set-Hags -Mode off' 'HAGS (désactivation)' @{} 'Désactiver la planification GPU matérielle ? La génération d''images DLSS ne fonctionnera plus dans les jeux qui l''exigent.' $Script:AfterChange)))
+    [void]$hbar.Children.Add((New-Btn 'Ouvrir le réglage dans Windows' @{ Fn = { try { Start-Process 'ms-settings:display-advancedgraphics' } catch {} } }))
+    [void]$hg.Body.Children.Add($hbar)
+    [void]$p.Children.Add($hg.Card)
+
+    $c = New-Card 'Réglages de jeu de Windows' 'Mode Jeu, capture en arrière-plan désactivée, jeux fenêtrés optimisés avec fréquence variable. Les options ci-dessous se cochent ou non.'
+    $Script:GamingChecks.Hags = New-Check 'Activer aussi la planification GPU matérielle (HAGS, voir ci-dessus)' $true
     $Script:GamingChecks.Mouse = New-Check 'Désactiver l''accélération de la souris (précision du pointeur, effet à la prochaine session)' $false
     $Script:GamingChecks.Mpo = New-Check 'Désactiver MPO (Multiplane Overlay) : seulement en cas de scintillement ou de bug d''affichage OLED/VRR' $false
+    [void]$c.Body.Children.Add($Script:GamingChecks.Hags)
     [void]$c.Body.Children.Add($Script:GamingChecks.Mouse)
     [void]$c.Body.Children.Add($Script:GamingChecks.Mpo)
     $gs = New-Spec 'opt' 'Optimize-Gaming' 'Profil Gaming' @{} '' $Script:AfterChange
-    $gs.AutoFn = { @{ 'accélération de la souris' = $(if ($Script:GamingChecks.Mouse.IsChecked) { 'yes' } else { 'no' }); 'Multiplane' = $(if ($Script:GamingChecks.Mpo.IsChecked) { 'yes' } else { 'no' }) } }
-    $gb = New-Btn 'Appliquer le profil Gaming' $gs -Primary
+    $gs.AutoFn = { @{
+            'planification GPU'          = $(if ($Script:GamingChecks.Hags.IsChecked) { 'yes' } else { 'no' })
+            'accélération de la souris'  = $(if ($Script:GamingChecks.Mouse.IsChecked) { 'yes' } else { 'no' })
+            'Multiplane'                 = $(if ($Script:GamingChecks.Mpo.IsChecked) { 'yes' } else { 'no' })
+        } }
+    $gb = New-Btn 'Appliquer les réglages de jeu' $gs -Primary
     $gb.HorizontalAlignment = 'Left'; $gb.Margin = '0,14,0,0'
     [void]$c.Body.Children.Add($gb)
     [void]$p.Children.Add($c.Card)
 
-    $pw = New-Card 'Plan d''alimentation BJMPC Gaming' 'Boost processeur agressif, préférence énergie 0, PCIe ASPM désactivé, suspension USB jamais, Wi-Fi en performances maximales, disque jamais éteint. L''annulation réactive le plan d''origine.'
-    Add-Row $pw.Body 'Créer et activer le plan' '' '' 'n' @((New-Btn 'Appliquer' (New-Spec 'opt' 'Optimize-Power' 'Plan d''alimentation' @{} '' $Script:AfterChange) -Primary))
-    Add-Row $pw.Body 'Ou un plan intégré de Windows' 'Sans réglage supplémentaire. « Performances optimales » est créé s''il n''existe pas ; l''annulation revient au plan d''origine.' '' 'n' @(
-        (New-Btn 'Équilibré' (New-Spec 'opt' 'Set-BuiltinPowerPlan -Mode balanced' 'Plan Équilibré' @{} '' $Script:AfterChange)),
+    $pw = New-Card 'Mode d''alimentation' 'Sur les processeurs récents, « Équilibré » donne déjà pratiquement toute la puissance en jeu : c''est le bon choix pour un portable ou un PC de bureautique. Les autres modes servent surtout aux PC fixes de jeu. L''annulation revient au plan d''origine.'
+    Add-Row $pw.Body 'Équilibré' 'Le réglage par défaut de Windows.' 'Recommandé' 'g' @((New-Btn 'Activer' (New-Spec 'opt' 'Set-BuiltinPowerPlan -Mode balanced' 'Plan Équilibré' @{} '' $Script:AfterChange)))
+    Add-Row $pw.Body 'Performances pour PC fixe de jeu (BJMPC Gaming)' 'Copie du plan actif avec le processeur au maximum, PCIe et USB sans économie d''énergie, Wi-Fi en performances maximales. Consomme plus au repos.' 'PC fixe' 'n' @((New-Btn 'Créer et activer' (New-Spec 'opt' 'Optimize-Power' 'Plan d''alimentation' @{} '' $Script:AfterChange)))
+    Add-Row $pw.Body 'Plans intégrés de Windows' '« Performances optimales » est créé s''il n''existe pas.' '' 'n' @(
         (New-Btn 'Hautes performances' (New-Spec 'opt' 'Set-BuiltinPowerPlan -Mode high' 'Plan Hautes performances' @{} '' $Script:AfterChange)),
         (New-Btn 'Performances optimales' (New-Spec 'opt' 'Set-BuiltinPowerPlan -Mode ultimate' 'Plan Performances optimales' @{} '' $Script:AfterChange)))
     [void]$p.Children.Add($pw.Card)
 
-    $ad = New-Card 'Réglages avancés' 'Pour les techniciens : cochez ce que vous voulez appliquer.' 'Expérimenté' 'w'
-    $Script:GamingChecks.Prio = New-Check 'Priorité du processus au premier plan plus réactive (Win32PrioritySeparation = 0x26)' $true
-    $Script:GamingChecks.Throttle = New-Check 'Désactiver le Power Throttling (CPU hybride Intel : évite le bridage des tâches de fond)' $true
-    $Script:GamingChecks.Mma = New-Check 'Désactiver la compression mémoire (avec 32 Go, gain marginal ; redémarrage)' $false
-    $Script:GamingChecks.Hvci = New-Check 'Désactiver l''intégrité de la mémoire (HVCI) : retire une protection, demande de taper OUI' $false
-    foreach ($k in 'Prio', 'Throttle', 'Mma', 'Hvci') { [void]$ad.Body.Children.Add($Script:GamingChecks[$k]) }
-    $as = New-Spec 'opt' 'Optimize-Advanced' 'Réglages avancés' @{} '' $Script:AfterChange
-    $as.AutoFn = {
-        $h = @{
-            'Priorité du processus' = $(if ($Script:GamingChecks.Prio.IsChecked) { 'yes' } else { 'no' })
-            'Power Throttling'      = $(if ($Script:GamingChecks.Throttle.IsChecked) { 'yes' } else { 'no' })
-            'compression mémoire'   = $(if ($Script:GamingChecks.Mma.IsChecked) { 'yes' } else { 'no' })
-        }
-        if (-not $Script:GamingChecks.Hvci.IsChecked) { $h['intégrité de la mémoire'] = 'no' }
-        $h
-    }
-    $ab = New-Btn 'Appliquer les réglages cochés' $as
-    $ab.HorizontalAlignment = 'Left'; $ab.Margin = '0,14,0,0'
-    [void]$ad.Body.Children.Add($ab)
-    [void]$p.Children.Add($ad.Card)
-
-    [void](New-TweakCard $p 'Barre de jeu et capture' 'Le profil Gaming coupe déjà la capture pour votre session. Cette option applique la désactivation complète (stratégie) pour tous les comptes.')
+    [void](New-TweakCard $p 'Barre de jeu et capture' 'Les réglages de jeu coupent déjà la capture pour votre session. Cette option applique la désactivation complète (stratégie) pour tous les comptes.')
 }
 
 # ---------------------------------------------------------------- Réseau
 $Script:NetChecks = @{}
 function Build-Network {
-    $p = New-Page 'net' 'Réseau et DNS' 'Carte Wi-Fi 6/7 et Ethernet, pile TCP et DNS chiffré, avec retour arrière possible.'
-    $c = New-Card 'Cartes réseau et pile TCP' 'Économie d''énergie de la carte, Receive Side Scaling, itinérance Wi-Fi, TcpAckFrequency, TCPNoDelay (Nagle), RSC, réservation QoS. Les cartes redémarrent : la connexion est coupée quelques secondes.'
-    $Script:NetChecks.Single = New-Check 'Le Wi-Fi passe par un seul routeur ou point d''accès (pas de réseau maillé) : réduit les recherches de roaming' $true
+    $p = New-Page 'net' 'Réseau et DNS' 'Stabilité des cartes Wi-Fi et Ethernet, et DNS chiffré. La pile TCP de Windows 11 est laissée à ses valeurs par défaut. Retour arrière possible.'
+    $c = New-Card 'Cartes réseau' 'Pour un Wi-Fi ou un Ethernet qui décroche ou se met en veille : Windows ne peut plus éteindre la carte, les modes Wi-Fi 6/7 sont activés, les économies d''énergie du pilote (U-APSD, MIMO, Ethernet vert) sont coupées. Les cartes redémarrent : la connexion est coupée quelques secondes.'
+    $Script:NetChecks.Single = New-Check 'Le Wi-Fi passe par un seul routeur ou point d''accès (pas de réseau maillé) : réduit les recherches d''un autre point d''accès' $false
     [void]$c.Body.Children.Add($Script:NetChecks.Single)
     $ns = New-Spec 'opt' 'Optimize-Network' 'Réseau' @{} '' $Script:AfterChange
     $ns.AutoFn = { @{ 'UN SEUL routeur' = $(if ($Script:NetChecks.Single.IsChecked) { 'yes' } else { 'no' }); 'cartes réseau vont redémarrer' = 'yes' } }
-    $nb = New-Btn 'Appliquer l''optimisation réseau' $ns -Primary
+    $nb = New-Btn 'Régler les cartes réseau' $ns -Primary
     $nb.HorizontalAlignment = 'Left'; $nb.Margin = '0,14,0,0'
     [void]$c.Body.Children.Add($nb)
     [void]$p.Children.Add($c.Card)
@@ -1172,7 +1333,7 @@ function Build-Network {
     Add-Row $o.Body 'Google' '8.8.8.8 · très rapide, mais Google voit vos requêtes' '' 'n' @((New-Btn 'Appliquer' (New-Spec 'opt' 'Set-DnsPreset -Provider google' 'DNS Google' @{} '' $Script:AfterChange)))
     Add-Row $o.Body 'OpenDNS' '208.67.222.222 · filtrage de base (Cisco)' '' 'n' @((New-Btn 'Appliquer' (New-Spec 'opt' 'Set-DnsPreset -Provider opendns' 'DNS OpenDNS' @{} '' $Script:AfterChange)))
     [void]$p.Children.Add($o.Card)
-    $t = New-Text 'Contrôle : ouvrez https://mullvad.net/check après l''application. Tests de latence et de perte : page Outils et diagnostics.' 13 '#9298A3' 'Normal' -Wrap
+    $t = New-Text 'Contrôle : ouvrez https://mullvad.net/check après l''application. Tests de latence et de perte : Réparer > Diagnostics.' 13 '#9298A3' 'Normal' -Wrap
     [void]$p.Children.Add($t)
 }
 
@@ -1180,8 +1341,8 @@ function Build-Network {
 $Script:HibRadios = @()
 $Script:SysChecks = @{}
 function Build-System {
-    $p = New-Page 'sys' 'Système et NVMe' 'Disque, démarrage et services. Niveau sûr par défaut, niveau avancé sur demande.'
-    $c = New-Card 'SSD NVMe' 'TRIM, horodatage d''accès désactivé et SysMain (Superfetch) désactivé sont toujours appliqués. Choisissez le reste ci-dessous.'
+    $p = New-Page 'sys' 'Disque et démarrage' 'Le SSD, le démarrage rapide et l''hibernation. Windows 11 gère seul le reste (SysMain, services) : la Toolbox n''y touche plus.'
+    $c = New-Card 'SSD et démarrage' 'Vérifie que le TRIM est actif (et le rétablit s''il a été coupé). Choisissez le reste ci-dessous.'
     $Script:SysChecks.Retrim = New-Check 'Lancer un ReTrim immédiat des volumes SSD' $true
     [void]$c.Body.Children.Add($Script:SysChecks.Retrim)
     $rp = New-Object Windows.Controls.StackPanel
@@ -1200,50 +1361,20 @@ function Build-System {
         $Script:HibRadios += $rb
     }
     [void]$c.Body.Children.Add($rp)
-    $spec = New-Spec 'opt' 'Optimize-Storage' 'SSD NVMe et système' @{} '' $Script:AfterChange
+    $spec = New-Spec 'opt' 'Optimize-Storage' 'SSD et démarrage' @{} '' $Script:AfterChange
     $spec.AutoFn = {
         $sel = $Script:HibRadios | Where-Object { $_.IsChecked } | Select-Object -First 1
         @{ 'ReTrim' = $(if ($Script:SysChecks.Retrim.IsChecked) { 'yes' } else { 'no' }); '^\s*Choix' = $(if ($sel) { [string]$sel.Tag } else { '3' }) }
     }
-    $b = New-Btn 'Optimiser le SSD' $spec -Primary
+    $b = New-Btn 'Appliquer' $spec -Primary
     $b.HorizontalAlignment = 'Left'; $b.Margin = '0,14,0,0'
     [void]$c.Body.Children.Add($b)
     [void]$p.Children.Add($c.Card)
 
     [void](New-TweakCard $p 'Démarrage et diagnostic' 'Affichage au démarrage, écran bleu et horloge matérielle.')
 
-    $s = New-Card 'Services inutiles · niveau sûr' 'Mode démonstration magasin (RetailDemo), télécopie (Fax) et registre à distance (RemoteRegistry). La télémétrie se règle dans la page Confidentialité. Defender, pare-feu et Windows Update restent intacts.' 'Réversible' 'g'
-    Add-Row $s.Body 'Appliquer le niveau sûr' '' '' 'n' @((New-Btn 'Appliquer' (New-Spec 'opt' 'Optimize-ServicesSafe' 'Services niveau sûr' @{} '' $Script:AfterChange) -Primary))
-    [void]$p.Children.Add($s.Card)
-
-    $a = New-Card 'Services · niveau avancé' 'Cochez les services dont vous n''avez pas l''usage sur ce PC. Seuls les services cochés sont modifiés.' 'Expérimenté' 'w'
-    $svcOpts = @(
-        @('Spouleur', 'Spouleur d''impression : aucune imprimante utilisée'),
-        @('Bluetooth', 'Bluetooth : aucun périphérique Bluetooth (casque, manette) utilisé'),
-        @('Partage de fichiers', 'Partage de fichiers et dossiers (serveur SMB) : aucun partage utilisé'),
-        @('Bureau à distance', 'Bureau à distance (RDP) : jamais utilisé sur ce PC'),
-        @('SSDP', 'Découverte SSDP/UPnP : aucun appareil DLNA/UPnP utilisé'),
-        @('Hôte de périphérique UPnP', 'Hôte de périphérique UPnP'),
-        @('Point d.accès mobile', 'Point d''accès mobile Windows : jamais utilisé'),
-        @('Phone Link', 'Service Téléphone (Phone Link) : jamais utilisé'),
-        @('Suivi de lien', 'Suivi de lien distribué (inutile hors domaine)'),
-        @('Géolocalisation', 'Géolocalisation'),
-        @('Windows Media Player', 'Partage réseau Windows Media Player'),
-        @('Optimisation de la distribution', 'Optimisation de la distribution : passer en manuel'))
-    $Script:SvcChecks = @()
-    foreach ($o in $svcOpts) {
-        $cb = New-Check $o[1] $false
-        $cb.Tag = $o[0]
-        [void]$a.Body.Children.Add($cb)
-        $Script:SvcChecks += $cb
-    }
-    $ss = New-Spec 'opt' 'Optimize-ServicesAdvanced' 'Services niveau avancé' @{} '' $Script:AfterChange
-    $ss.AutoDefault = 'no'
-    $ss.AutoFn = { $h = @{}; foreach ($cb in $Script:SvcChecks) { $h[[string]$cb.Tag] = $(if ($cb.IsChecked) { 'yes' } else { 'no' }) }; $h }
-    $sb = New-Btn 'Appliquer aux services cochés' $ss
-    $sb.HorizontalAlignment = 'Left'; $sb.Margin = '0,14,0,0'
-    [void]$a.Body.Children.Add($sb)
-    [void]$p.Children.Add($a.Card)
+    $n = New-Text 'Les anciennes cartes « Services inutiles » ont été retirées : désactiver des services ne rend pas Windows 11 plus rapide. Pour remettre par défaut des services modifiés par une ancienne version : Sauvegarde et restauration > Restauration > « Comparer avec Windows 11 ».' 13 '#9298A3' 'Normal' -Wrap
+    [void]$p.Children.Add($n)
 }
 
 # ---------------------------------------------------------------- Affichage
@@ -1313,7 +1444,7 @@ function Show-Monitors {
             if ($pct -eq $m.RecPct) { $notes += 'Windows' }
             if ($pct -eq $m.Sug) { $notes += 'suggestion' }
             if ($notes.Count -gt 0) { $label = "$pct %  ·  " + ($notes -join ', ') }
-            $code = $Script:ApplyScaleCode.Replace('__PATH__', ([string]$m.DevicePath -replace "'", "''")).Replace('__PCT__', [string]$pct)
+            $code = $Script:ApplyScaleCode.Replace('__PATH__', ([string]$m.DevicePath -replace "(['\u2018\u2019\u201A\u201B])", '$1$1')).Replace('__PCT__', [string]$pct)
             $spec = New-Spec 'opt' $code ("Échelle {0} % sur {1}" -f $pct, $m.Name) @{} '' { param($r) Analyze-Monitors }
             $b = New-Btn $label $spec -Primary:($pct -eq $m.Sug)
             $b.Margin = '0,4,8,4'
@@ -1348,7 +1479,7 @@ function Show-Monitors {
 }
 
 function Build-Display {
-    $p = New-Page 'display' 'Affichage et OLED' 'Windows prend 96 PPI comme référence (100 %). Cette page calcule l''échelle à partir des pixels par pouce réels de votre écran.'
+    $p = New-Page 'display' 'Affichage et OLED' 'Taille de l''affichage calculée à partir des pixels par pouce réels de l''écran (Windows prend 96 PPI comme référence, soit 100 %), et protection des écrans OLED.'
     $c = New-Card 'Densité et échelle' 'Windows se base sur la taille physique lue dans l''EDID, souvent fausse sur les TV et certains OLED. Réglez la distance puis analysez.'
     $dRow = New-Object Windows.Controls.StackPanel
     $dRow.Orientation = 'Horizontal'; $dRow.Margin = '0,14,0,0'
@@ -1386,7 +1517,7 @@ function Build-Display {
         if ($cur -ge 100 -and $cur -le 225) { $Script:TextSlider.Value = $cur }
     } catch {}
 
-    $o = New-Card 'Protection OLED' 'Mode sombre, barre des tâches masquée, écran de veille court et extinction de l''écran. Rappelle aussi les réglages à faire dans le menu de l''écran (rafraîchissement des pixels, décalage des pixels).'
+    $o = New-Card 'Protection OLED' 'Seulement pour un écran OLED : mode sombre et extinction de l''écran après 10 minutes. Rappelle aussi les réglages à faire à la main (barre des tâches masquée, rafraîchissement et décalage des pixels dans le menu de l''écran).' 'Écran OLED' 'n'
     Add-Row $o.Body 'Appliquer la protection OLED' '' '' 'n' @((New-Btn 'Appliquer' (New-Spec 'opt' 'Set-OledCare' 'Protection OLED' @{} '' $Script:AfterChange) -Primary))
     [void]$p.Children.Add($o.Card)
 }
@@ -1535,8 +1666,8 @@ function Show-DefaultsRows {
 }
 
 function Build-Journal {
-    $p = New-Page 'journal' 'Journal et annulation' 'Chaque modification garde sa valeur d''origine. Annulez tout, ou seulement une catégorie.'
-    $c = New-Card 'Valeurs d''origine enregistrées' 'Cochez les catégories à annuler. Les valeurs sont restaurées dans l''ordre inverse des modifications.'
+    $p = New-Page 'journal' 'Restauration' 'Revenir en arrière : annuler ce que la Toolbox a modifié, rétablir les réglages d''origine de Windows 11, ou utiliser un point de restauration.'
+    $c = New-Card 'Journal : annuler les modifications de la Toolbox' 'Chaque modification a gardé sa valeur d''origine. Cochez les catégories à annuler ; les valeurs sont restaurées dans l''ordre inverse des modifications.'
     $Script:JournalPanel = New-Object Windows.Controls.StackPanel
     $Script:JournalPanel.Margin = '0,10,0,0'
     [void]$c.Body.Children.Add($Script:JournalPanel)
@@ -1544,7 +1675,7 @@ function Build-Journal {
     $bar.Orientation = 'Horizontal'; $bar.Margin = '0,16,0,0'
     $selSpec = New-Spec 'opt' '' 'Annulation de la sélection' @{} 'Annuler les modifications des catégories cochées ?' { param($r) Load-Journal; Refresh-Dashboard }
     $selSpec.CodeFn = {
-        $types = @($Script:JournalChecks | Where-Object { $_.IsChecked } | ForEach-Object { "'" + ([string]$_.Tag -replace "'", "''") + "'" })
+        $types = @($Script:JournalChecks | Where-Object { $_.IsChecked } | ForEach-Object { "'" + ([string]$_.Tag -replace "(['\u2018\u2019\u201A\u201B])", '$1$1') + "'" })
         $Script:RevertCode.Replace('__TYPES__', ($types -join ','))
     }
     $b1 = New-Btn 'Annuler la sélection' $selSpec -Primary; $b1.Margin = '0,0,0,0'
@@ -1611,6 +1742,600 @@ function Build-Journal {
     [void]$rb.Children.Add((New-Btn 'Ouvrir la restauration du système' @{ Fn = { try { Start-Process rstrui.exe } catch {} } }))
     [void]$r.Body.Children.Add($rb)
     [void]$p.Children.Add($r.Card)
+}
+
+#endregion
+# ================================================================ RÉPARATION GUIDÉE PAR L'OBSERVATEUR D'ÉVÉNEMENTS
+#region Événements
+
+$Script:Evt = @{
+    Rows        = (New-Object 'System.Collections.Generic.List[object]')   # cases à cocher des constats réparables
+    Analyzed    = $false
+    LiveCount   = 0
+    AutoDone    = @{}                                                       # constats déjà réparés automatiquement dans cette session
+    AutoPending = (New-Object 'System.Collections.Generic.List[object]')
+}
+$Script:EvtWatch = $null
+# Réponses préparées aux deux questions des réparations lourdes : DISM répare, CHKDSK fait l'analyse en ligne.
+$Script:EvtAuto = @{ 'RestoreHealth' = 'yes'; '^\s*Choix' = '1' }
+
+function New-EventRow {
+    # Une ligne de constat : case à cocher (si réparable), titre, explication, réparation ou conseil.
+    param($F, [switch]$Live)
+    $bd = New-Object Windows.Controls.Border
+    $bd.BorderBrush = (Br '#1A1D22'); $bd.BorderThickness = '0,0,0,1'; $bd.Padding = '0,10'
+    $bd.Background = [Windows.Media.Brushes]::Transparent
+    if ($F.Sample) {
+        $tip = New-Text ("Message de Windows :`n" + [string]$F.Sample) 12 '#111111' 'Normal' -Wrap
+        $tip.MaxWidth = 620
+        $bd.ToolTip = $tip
+        [Windows.Controls.ToolTipService]::SetShowDuration($bd, 60000)
+    }
+    $g = New-Object Windows.Controls.Grid
+    $c0 = New-Object Windows.Controls.ColumnDefinition; $c0.Width = [Windows.GridLength]::new(30)
+    $c1 = New-Object Windows.Controls.ColumnDefinition; $c1.Width = [Windows.GridLength]::new(1, 'Star')
+    [void]$g.ColumnDefinitions.Add($c0); [void]$g.ColumnDefinitions.Add($c1)
+    $cb = $null
+    $fixable = ([string]$F.Kind -eq 'fix')
+    if ($fixable -and -not $Live) {
+        $cb = New-Object Windows.Controls.CheckBox
+        # Cochées d'office : les réparations rapides et sans risque. Les lourdes se cochent à la main.
+        $cb.IsChecked = ([string]$F.Status -ne 'fixed' -and [bool]$F.Safe); $cb.Tag = $F; $cb.VerticalAlignment = 'Top'; $cb.Margin = '0,3,0,0'
+        [void]$g.Children.Add($cb)
+    } else {
+        $dot = New-Object Windows.Shapes.Ellipse
+        $dot.Width = 8; $dot.Height = 8; $dot.VerticalAlignment = 'Top'; $dot.HorizontalAlignment = 'Left'; $dot.Margin = '4,7,0,0'
+        $dot.Fill = (Br $(switch ([string]$F.Kind) { 'fix' { '#5AD1FF' } 'advice' { if ([int]$F.Sev -ge 3) { '#FF7B7B' } else { '#F5B94A' } } 'noise' { '#4A505B' } default { '#9298A3' } }))
+        [void]$g.Children.Add($dot)
+    }
+    $sp = New-Object Windows.Controls.StackPanel
+    [Windows.Controls.Grid]::SetColumn($sp, 1)
+    $head = New-Object Windows.Controls.WrapPanel
+    $title = [string]$F.Title
+    if ($Live) { $title = ([datetime]$F.Last).ToString('HH:mm:ss') + '   ' + $title }
+    [void]$head.Children.Add((New-Text $title 14 $(if ([string]$F.Kind -eq 'noise') { '#9298A3' } else { '#ECEDEF' }) 'Medium' -Wrap))
+    if ([int]$F.Count -gt 1) { [void]$head.Children.Add((New-Tag ("{0} fois" -f $F.Count) 'n')) }
+    if ([int]$F.Sev -ge 3) { [void]$head.Children.Add((New-Tag 'Important' 'r')) }
+    if ($fixable -and -not $F.Safe -and -not $Live) { [void]$head.Children.Add((New-Tag 'Réparation lourde : à cocher vous-même' 'w')) }
+    if ([string]$F.Status -eq 'fixed') { [void]$head.Children.Add((New-Tag ("Réparé le {0} : plus d'erreur depuis" -f ([datetime]$F.FixedAt).ToString('dd/MM à HH:mm')) 'g')) }
+    elseif ([string]$F.Status -eq 'back') { [void]$head.Children.Add((New-Tag ("Revenu après la réparation du {0}" -f ([datetime]$F.FixedAt).ToString('dd/MM')) 'r')) }
+    [void]$sp.Children.Add($head)
+    if (-not $Live) {
+        [void]$sp.Children.Add((New-Text ("Dernière fois le {0}   ·   {1}, événement {2}" -f ([datetime]$F.Last).ToString('dd/MM à HH:mm'), $F.Provider, $F.EventId) 12 '#7A808B' 'Normal' -Wrap))
+    }
+    if ($F.Why) { [void]$sp.Children.Add((New-Text ([string]$F.Why) 13 '#9298A3' 'Normal' -Wrap)) }
+    if ($fixable) {
+        $a = New-Text ('Réparation : ' + [string]$F.FixLabel) 13 '#5AD1FF' 'Medium' -Wrap
+        $a.Margin = '0,3,0,0'
+        [void]$sp.Children.Add($a)
+        if ([string]$F.Status -eq 'back' -and $F.Advice) { [void]$sp.Children.Add((New-Text ('La réparation n''a pas suffi. ' + [string]$F.Advice) 13 '#F5B94A' 'Normal' -Wrap)) }
+        elseif ($F.Advice) { [void]$sp.Children.Add((New-Text ('Ensuite : ' + [string]$F.Advice) 12.5 '#7A808B' 'Normal' -Wrap)) }
+    } elseif ($F.Advice) {
+        $a = New-Text ('À faire : ' + [string]$F.Advice) 13 '#C5C9D0' 'Normal' -Wrap
+        $a.Margin = '0,3,0,0'
+        [void]$sp.Children.Add($a)
+    }
+    [void]$g.Children.Add($sp)
+    $bd.Child = $g
+    return @{ Row = $bd; Check = $cb; Stack = $sp }
+}
+
+function Show-EventFindings {
+    param($Res)
+    $e = $Script:Evt
+    if (-not $e.Panel -or -not $Res) { return }
+    $e.Analyzed = $true
+    $e.Panel.Children.Clear(); $e.Rows.Clear()
+    $list = @($Res.Findings | Where-Object { $_ })
+    if ($list.Count -eq 0) {
+        $e.Summary.Text = 'Aucune erreur dans le journal de Windows sur cette période : rien à réparer.'
+        $e.Summary.Foreground = (Br '#62D98B')
+        return
+    }
+    $sections = @(
+        @('fix', 'À réparer', '#5AD1FF'),
+        @('advice', 'À regarder : matériel ou logiciel, pas de réparation automatique', '#F5B94A'),
+        @('unknown', 'Erreurs que la Toolbox ne sait pas interpréter', '#9298A3'),
+        @('noise', 'Sans gravité : bruit connu de Windows, rien à faire', '#7A808B'))
+    foreach ($s in $sections) {
+        $sub = @($list | Where-Object { [string]$_.Kind -eq $s[0] })
+        if ($sub.Count -eq 0) { continue }
+        $h = New-Text ("{0}  ({1})" -f $s[1], $sub.Count) 13 $s[2] 'SemiBold' -Wrap
+        $h.Margin = '0,14,0,2'
+        [void]$e.Panel.Children.Add($h)
+        foreach ($f in $sub) {
+            $r = New-EventRow $f
+            [void]$e.Panel.Children.Add($r.Row)
+            if ($r.Check) { [void]$e.Rows.Add($r.Check) }
+        }
+    }
+    $nFix = @($list | Where-Object { $_.Kind -eq 'fix' -and $_.Status -ne 'fixed' }).Count
+    $nAdv = @($list | Where-Object { $_.Kind -eq 'advice' }).Count
+    $txt = if ($nFix -gt 0) { "{0} problème(s) avec une réparation prête : vérifiez les cases (les réparations lourdes ne sont pas cochées d'office), puis « Réparer ce qui est coché »." -f $nFix }
+           elseif ($nAdv -gt 0) { 'Rien à réparer automatiquement.' } else { 'Rien à réparer.' }
+    if ($nAdv -gt 0) { $txt += "  {0} point(s) demandent un coup d'œil du technicien (matériel ou logiciel)." -f $nAdv }
+    if ($Res.Truncated) { $txt += '  Journal très chargé : seuls les événements les plus récents ont été lus.' }
+    $e.Summary.Text = $txt
+    $e.Summary.Foreground = (Br $(if ($nFix -gt 0) { '#5AD1FF' } elseif ($nAdv -gt 0) { '#F5B94A' } else { '#62D98B' }))
+}
+
+function Get-EventAnalysisCode {
+    $t = 'd7'; try { $t = [string]$Script:Evt.Period.SelectedItem.Tag } catch {}
+    switch ($t) { 'h24' { 'Get-EventFindings -Hours 24' } 'd30' { 'Get-EventFindings -Days 30' } default { 'Get-EventFindings -Days 7' } }
+}
+
+function Start-EventAnalysis {
+    # Analyse silencieuse (à l'ouverture de l'onglet et après une réparation) : lecture seule, moins d'une seconde.
+    if ($Script:Run -or $Script:EngineError) { return }
+    Start-Run -Engine 'evt' -Code (Get-EventAnalysisCode) -Title '' -OnDone { param($r) Show-EventFindings $r }
+}
+
+function ConvertTo-EventItems {
+    # Constats -> littéral PowerShell attendu par Invoke-EventFix.
+    param($Findings)
+    $items = @($Findings | Where-Object { $_ -and $_.Fix } | ForEach-Object { '@{{K={0};F={1};S={2}}}' -f (ConvertTo-PsLiteral ([string]$_.Key)), (ConvertTo-PsLiteral ([string]$_.Fix)), (ConvertTo-PsLiteral ([string]$_.Sub)) })
+    if ($items.Count -eq 0) { return '' }
+    return '@(' + ($items -join ',') + ')'
+}
+
+# ---- Surveillance en direct
+function Update-EventWatchUi {
+    $e = $Script:Evt
+    if (-not $e.WatchBtn) { return }
+    if ($Script:EvtWatch) {
+        $e.WatchBtn.Content = 'Arrêter la surveillance'
+        $e.WatchBtn.Style = $Script:Window.FindResource('Btn')
+        $e.WatchText.Text = ("Surveillance en cours depuis {0}  ·  vérification toutes les 5 secondes  ·  {1} nouvelle(s) erreur(s)" -f ([datetime]$Script:EvtWatch.Since).ToString('HH:mm'), $e.LiveCount)
+        $e.WatchText.Foreground = (Br '#62D98B')
+    } else {
+        $e.WatchBtn.Content = 'Démarrer la surveillance'
+        $e.WatchBtn.Style = $Script:Window.FindResource('BtnPrimary')
+        $e.WatchText.Text = 'Surveillance arrêtée.'
+        $e.WatchText.Foreground = (Br '#9298A3')
+    }
+}
+
+function Start-EventWatch {
+    if ($Script:EvtWatch -or $Script:EngineError) { return }
+    $Script:Sync.EvtStop = $false
+    $rs = [runspacefactory]::CreateRunspace()
+    $rs.ApartmentState = 'MTA'
+    $rs.Open()
+    $rs.SessionStateProxy.SetVariable('Sync', $Script:Sync)
+    $ps = [powershell]::Create()
+    $ps.Runspace = $rs
+    # Le fil de surveillance n'a besoin que du moteur Événements ; il n'écrit rien à l'écran lui-même.
+    [void]$ps.AddScript($Script:EvtCore + "`r`nfunction Write-Host { }`r`n`$Script:LogFile = `$Sync.LogFile`r`nWatch-Events -Every 5")
+    $Script:EvtWatch = @{ PS = $ps; RS = $rs; Handle = $ps.BeginInvoke(); Since = (Get-Date) }
+    Add-Console 'Surveillance en direct de l''Observateur d''événements démarrée.' 'Cyan'
+    Update-EventWatchUi
+}
+
+function Stop-EventWatch {
+    $w = $Script:EvtWatch
+    if (-not $w) { return }
+    $Script:Sync.EvtStop = $true
+    $Script:EvtWatch = $null
+    try {
+        if (-not $w.Handle.AsyncWaitHandle.WaitOne(1500)) { [void]$w.PS.BeginStop($null, $null) }
+        else { $w.PS.Dispose(); $w.RS.Close(); $w.RS.Dispose() }
+    } catch {}
+    Update-EventWatchUi
+}
+
+function Add-LiveEvent {
+    param($F)
+    $e = $Script:Evt
+    if (-not $e.LivePanel -or -not $F) { return }
+    if ([string]$F.Kind -eq 'noise') { return }
+    $e.LiveCount++
+    $r = New-EventRow $F -Live
+    $auto = ($e.AutoCheck.IsChecked -and [string]$F.Kind -eq 'fix' -and $F.Safe)
+    if ($auto) {
+        $k = [string]$F.Key + '>' + [string]$F.Fix
+        if ($e.AutoDone.ContainsKey($k)) { [void]$r.Stack.Children.Add((New-Text 'Déjà réparé automatiquement dans cette session : pas de nouvelle tentative (voir le conseil).' 12.5 '#F5B94A' 'Normal' -Wrap)) }
+        else {
+            $e.AutoDone[$k] = (Get-Date)
+            [void]$e.AutoPending.Add($F)
+            [void]$r.Stack.Children.Add((New-Text 'Réparation automatique lancée.' 12.5 '#62D98B' 'Medium' -Wrap))
+        }
+    }
+    if ($e.LiveEmpty) { $e.LiveEmpty.Visibility = 'Collapsed' }
+    $e.LivePanel.Children.Insert(0, $r.Row)
+    while ($e.LivePanel.Children.Count -gt 60) { $e.LivePanel.Children.RemoveAt($e.LivePanel.Children.Count - 1) }
+    Add-Console (("  [!]   Nouvelle erreur Windows : {0}" -f $F.Title) + $(if ([string]$F.Kind -eq 'fix') { '  ->  ' + [string]$F.FixLabel } else { '' })) 'Yellow'
+    Update-EventWatchUi
+}
+
+function Start-EventAutoFix {
+    $e = $Script:Evt
+    if ($Script:Run -or $e.AutoPending.Count -eq 0) { return }
+    $lit = ConvertTo-EventItems @($e.AutoPending)
+    $e.AutoPending.Clear()
+    if (-not $lit) { return }
+    Add-Console ''
+    Add-Console '▶ Réparation automatique (surveillance en direct)' 'Cyan'
+    Start-Run -Engine 'evt' -Code ('Invoke-EventFix -Live -Items ' + $lit) -Title 'Réparation des erreurs de Windows (automatique)' -Auto $Script:EvtAuto -AutoDefault 'no'
+}
+
+function Build-Events {
+    $p = New-Page 'events' 'Réparation automatique' 'La Toolbox lit ce que Windows a noté dans l''Observateur d''événements, explique chaque erreur en clair, et lance la réparation adaptée quand il en existe une.'
+    if ($Script:EngineError) {
+        [void]$p.Children.Add((New-Text ("Moteur indisponible : " + $Script:EngineError) 13 '#FF7B7B' 'Normal' -Wrap))
+        return
+    }
+    $e = $Script:Evt
+
+    # ---- Analyse à la demande
+    $c = New-Card 'Erreurs relevées par Windows' 'Journaux Système et Application. La lecture ne modifie rien ; survolez une ligne pour lire le message d''origine.'
+    $e.Period = New-Combo @(@('24 dernières heures', 'h24'), @('7 derniers jours', 'd7'), @('30 derniers jours', 'd30')) 190
+    $e.Period.SelectedIndex = 1
+    $bar = New-Object Windows.Controls.WrapPanel
+    $bar.Margin = '0,14,0,0'
+    [void]$bar.Children.Add((New-OptionPair 'Période' $e.Period))
+    $an = New-Spec 'evt' '' 'Analyse des erreurs de Windows' @{} '' { param($r) Show-EventFindings $r }
+    $an.CodeFn = { Get-EventAnalysisCode }
+    $ab = New-Btn 'Analyser' $an -Primary; $ab.Margin = '0,4,0,4'
+    [void]$bar.Children.Add($ab)
+    $fx = New-Spec 'evt' '' 'Réparation des erreurs de Windows' $Script:EvtAuto '' { param($r) Start-EventAnalysis }
+    $fx.AutoDefault = 'no'
+    $fx.CodeFn = {
+        $lit = ConvertTo-EventItems @($Script:Evt.Rows | Where-Object { $_.IsChecked } | ForEach-Object { $_.Tag })
+        if (-not $lit) { return '' }
+        return ('Invoke-EventFix -Items ' + $lit)
+    }
+    $fx.ConfirmFn = {
+        $labels = @($Script:Evt.Rows | Where-Object { $_.IsChecked } | ForEach-Object { [string]$_.Tag.FixLabel } | Sort-Object -Unique)
+        "Lancer ces réparations ?`n`n  •  " + ($labels -join "`n  •  ") + "`n`nUn point de restauration est créé avant les réparations lourdes. La réparation des fichiers de Windows et l'analyse du disque peuvent durer plus de 20 minutes."
+    }
+    [void]$bar.Children.Add((New-Btn 'Réparer ce qui est coché' $fx -Primary))
+    [void]$bar.Children.Add((New-Btn 'Tout cocher' @{ Fn = { foreach ($x in $Script:Evt.Rows) { $x.IsChecked = $true } } }))
+    [void]$bar.Children.Add((New-Btn 'Tout décocher' @{ Fn = { foreach ($x in $Script:Evt.Rows) { $x.IsChecked = $false } } }))
+    [void]$bar.Children.Add((New-Btn 'Ouvrir l''Observateur d''événements' @{ Fn = { try { Start-Process eventvwr.msc } catch {} } }))
+    [void]$c.Body.Children.Add($bar)
+    $e.Summary = New-Text 'Analyse en cours…' 13 '#9298A3' 'Medium' -Wrap
+    $e.Summary.Margin = '0,12,0,0'
+    [void]$c.Body.Children.Add($e.Summary)
+    $e.Panel = New-Object Windows.Controls.StackPanel
+    [void]$c.Body.Children.Add((New-ScrollList $e.Panel 560))
+    [void]$p.Children.Add($c.Card)
+
+    # ---- Surveillance en direct
+    $l = New-Card 'Surveillance en direct' 'Tant que la Toolbox est ouverte, chaque nouvelle erreur de Windows apparaît ici en quelques secondes, avec son explication et sa réparation. Pratique pour reproduire une panne avec le client.' 'Temps réel' 'a'
+    $lbar = New-Object Windows.Controls.StackPanel
+    $lbar.Orientation = 'Horizontal'; $lbar.Margin = '0,14,0,0'
+    $e.WatchBtn = New-Object Windows.Controls.Button
+    $e.WatchBtn.Margin = '0,0,14,0'
+    $e.WatchBtn.Add_Click({ try { if ($Script:EvtWatch) { Stop-EventWatch } else { Start-EventWatch } } catch { Write-Crash $_.Exception.ToString(); Add-Console ('  [X]   ' + $_.Exception.Message) 'Red' } })
+    [void]$lbar.Children.Add($e.WatchBtn)
+    $e.WatchText = New-Text '' 13 '#9298A3' 'Medium' -Wrap
+    $e.WatchText.VerticalAlignment = 'Center'
+    [void]$lbar.Children.Add($e.WatchText)
+    [void]$l.Body.Children.Add($lbar)
+    $e.AutoCheck = New-Check 'Réparer tout de suite, sans demander, quand la réparation est sans risque' $false
+    $e.AutoCheck.Margin = '0,12,0,0'; $e.AutoCheck.FontSize = 14
+    [void]$l.Body.Children.Add($e.AutoCheck)
+    $hint = New-Text 'Sans risque : cache DNS, horloge, service arrêté, audio, compteurs de performance, caches graphiques. Les réparations lourdes (fichiers de Windows, disque, Windows Update, index de recherche) ne partent jamais seules : elles sont proposées, à vous de les lancer depuis la carte du dessus. Une même erreur n''est réparée automatiquement qu''une fois par session.' 12.5 '#9298A3' 'Normal' -Wrap
+    $hint.Margin = '0,6,0,0'
+    [void]$l.Body.Children.Add($hint)
+    $e.LiveEmpty = New-Text 'Aucune nouvelle erreur pour l''instant.' 13 '#7A808B'
+    $e.LiveEmpty.Margin = '0,12,0,0'
+    [void]$l.Body.Children.Add($e.LiveEmpty)
+    $e.LivePanel = New-Object Windows.Controls.StackPanel
+    [void]$l.Body.Children.Add((New-ScrollList $e.LivePanel 320))
+    [void]$p.Children.Add($l.Card)
+    Update-EventWatchUi
+
+    # ---- Ce que la page fait, et ne fait pas
+    $k = New-Card 'Ce que cette page répare, et ce qu''elle ne peut pas réparer'
+    foreach ($line in @(
+            'Réparé par la Toolbox : services arrêtés, DNS, horloge, échecs répétés de Windows Update, fichiers de Windows abîmés (écrans bleus, composants de Windows qui plantent), erreurs de disque (analyse), index de recherche, Microsoft Store, compteurs de performance, plantages du pilote graphique (caches).',
+            'Pas réparable par un logiciel : les pannes matérielles (erreurs WHEA, arrêts brutaux, disque qui répond mal, surchauffe) et les logiciels tiers qui plantent. La page dit alors précisément quoi vérifier.',
+            'Erreurs non reconnues : affichées telles quelles, jamais « corrigées » au hasard. Les messages connus comme sans conséquence (DCOM 10016, par exemple) sont rangés à part.',
+            'Windows ne retire pas les anciennes erreurs de son journal. Après une réparation, la page retient la date et indique à l''analyse suivante si l''erreur est revenue ou non.')) {
+        $t = New-Text ('•  ' + $line) 13 '#C5C9D0' 'Normal' -Wrap
+        $t.Margin = '0,8,0,0'
+        [void]$k.Body.Children.Add($t)
+    }
+    [void]$p.Children.Add($k.Card)
+}
+
+#endregion
+# ================================================================ SAUVEGARDE DES FICHIERS DU CLIENT
+#region Sauvegarde
+
+$Script:Bak = @{ Filled = $false; Profiles = @(); Folders = @() }   # contrôles et données de la page
+$Script:BakStatus = $null     # dernier état rendu par Get-BackupStatus
+$Script:BakPending = $false   # actualisation demandée pendant qu'une autre opération tournait
+$Script:BakDays = @(@('lundi', 'Monday'), @('mardi', 'Tuesday'), @('mercredi', 'Wednesday'), @('jeudi', 'Thursday'), @('vendredi', 'Friday'), @('samedi', 'Saturday'), @('dimanche', 'Sunday'))
+
+function ConvertTo-PsLiteral {
+    # Texte sûr à placer dans le code envoyé au moteur. PowerShell accepte aussi les apostrophes typographiques
+    # comme délimiteurs : on les double toutes.
+    param([string]$Text)
+    return "'" + ($Text -replace "(['\u2018\u2019\u201A\u201B])", '$1$1') + "'"
+}
+
+function Get-BakDestination {
+    # Un disque choisi dans la liste (« E:\   Nom   ·   … ») ou un chemin tapé à la main.
+    $t = ([string]$Script:Bak.Dest.Text).Trim()
+    if ($t -match '^([A-Za-z]:\\)\s{3}') { return $Matches[1] }
+    return $t.Trim('"')
+}
+
+function Select-ComboTag {
+    param($Combo, [string]$Tag)
+    foreach ($it in $Combo.Items) { if ([string]$it.Tag -eq $Tag) { $Combo.SelectedItem = $it; return $true } }
+    return $false
+}
+
+function Update-BackupFolderHints {
+    # Affiche, pour l'utilisateur choisi, l'emplacement réel de chaque dossier (info-bulle) et grise ceux qui n'existent pas.
+    $it = $Script:Bak.Profile.SelectedItem
+    if (-not $it) { return }
+    $prof = $Script:Bak.Profiles[[int]$it.Tag]
+    foreach ($cb in $Script:Bak.Folders) {
+        $f = @($prof.Folders | Where-Object { [string]$_.Id -eq [string]$cb.Tag }) | Select-Object -First 1
+        if (-not $f) { continue }
+        $cb.ToolTip = [string]$f.Path
+        $cb.Opacity = $(if ($f.Exists) { 1.0 } else { 0.5 })
+    }
+}
+
+function Update-BackupForm {
+    param($Res)
+    $b = $Script:Bak
+    $cfg = $Res.Config
+    $first = (-not $b.Filled)
+
+    # Utilisateurs
+    $keep = ''
+    if ($b.Profile.SelectedItem) { $keep = [string]$b.Profiles[[int]$b.Profile.SelectedItem.Tag].Path }
+    if ($first -and $cfg) { $keep = [string]$cfg.Profile }
+    $b.Profiles = @($Res.Profiles)
+    $b.Profile.Items.Clear()
+    $i = 0; $sel = 0
+    foreach ($pr in $b.Profiles) {
+        $ci = New-Object Windows.Controls.ComboBoxItem
+        $ci.Content = [string]$pr.Name + $(if ($pr.Current) { '   (session ouverte)' } else { '' })
+        $ci.Tag = $i
+        [void]$b.Profile.Items.Add($ci)
+        if ($keep -and ([string]$pr.Path -ieq $keep)) { $sel = $i }
+        $i++
+    }
+    if ($b.Profile.Items.Count -gt 0) { $b.Profile.SelectedIndex = $sel }
+
+    # Disques de destination
+    $typed = [string]$b.Dest.Text
+    if ($first -and $cfg) { $typed = [string]$cfg.DestRoot }
+    $b.Dest.Items.Clear()
+    $match = ''
+    foreach ($d in @($Res.Drives)) {
+        $line = ('{0}   {1}   ·   {2}   ·   {3:N0} Go libres' -f $d.Root, $(if ($d.Label) { $d.Label } else { 'sans nom' }), $d.Kind, ($d.Free / 1GB))
+        [void]$b.Dest.Items.Add($line)
+        if ($typed -and ($typed.TrimEnd('\') -ieq ([string]$d.Root).TrimEnd('\'))) { $match = $line }
+    }
+    $b.Dest.Text = $(if ($match) { $match } else { $typed })
+
+    # Première ouverture : on reprend la configuration enregistrée
+    if ($first -and $cfg) {
+        $ids = @(@($cfg.Sources) | ForEach-Object { [string]$_.Id })
+        foreach ($cb in $b.Folders) { $cb.IsChecked = ($ids -contains [string]$cb.Tag) }
+        $b.Browsers.IsChecked = [bool]$cfg.Browsers
+        [void](Select-ComboTag $b.Freq ([string]$cfg.Frequency))
+        [void](Select-ComboTag $b.Day ([string]$cfg.Day))
+        if (-not (Select-ComboTag $b.Time ([string]$cfg.Time))) {
+            $ci = New-Object Windows.Controls.ComboBoxItem
+            $ci.Content = [string]$cfg.Time; $ci.Tag = [string]$cfg.Time
+            [void]$b.Time.Items.Add($ci); $b.Time.SelectedItem = $ci
+        }
+        $b.Auto.IsChecked = [bool]$Res.Auto
+    }
+    $b.Filled = $true
+    Update-BackupFolderHints
+}
+
+function Show-BackupStatus {
+    param($Res)
+    if (-not $Res -or -not $Script:Bak.StatusPanel) { return }
+    $Script:BakStatus = $Res
+    $pn = $Script:Bak.StatusPanel
+    $pn.Children.Clear()
+    function Line { param([string]$Label, [string]$Value, [string]$Color = '#ECEDEF')
+        $g = New-Object Windows.Controls.Grid
+        $g.Margin = '0,6,0,0'
+        $c1 = New-Object Windows.Controls.ColumnDefinition; $c1.Width = [Windows.GridLength]::new(190)
+        $c2 = New-Object Windows.Controls.ColumnDefinition; $c2.Width = [Windows.GridLength]::new(1, 'Star')
+        [void]$g.ColumnDefinitions.Add($c1); [void]$g.ColumnDefinitions.Add($c2)
+        $l = New-Text $Label 13 '#9298A3'
+        $v = New-Text $Value 14 $Color 'Medium' -Wrap
+        [Windows.Controls.Grid]::SetColumn($v, 1)
+        [void]$g.Children.Add($l); [void]$g.Children.Add($v)
+        [void]$pn.Children.Add($g)
+    }
+    $cfg = $Res.Config; $st = $Res.State
+    # Tant que rien n'est configuré, un seul bouton d'action sur la page : celui de la carte « Configurer ».
+    if ($Script:Bak.StatusBar) { $Script:Bak.StatusBar.Visibility = $(if ($Res.Configured) { 'Visible' } else { 'Collapsed' }) }
+    if (-not $Res.Configured) {
+        [void]$pn.Children.Add((New-Text 'Aucune sauvegarde n''est configurée sur ce PC. Faites les trois choix ci-dessous, puis cliquez sur « Enregistrer et sauvegarder maintenant ».' 14 '#F5B94A' 'Normal' -Wrap))
+    } else {
+        $last = ''; $days = $null
+        if ($st -and $st.LastSuccess) { try { $d = [datetime]$st.LastSuccess; $last = $d.ToString('dd/MM/yyyy à HH:mm'); $days = [int][math]::Floor(((Get-Date) - $d).TotalDays) } catch {} }
+        if ($last) {
+            $age = if ($days -le 0) { 'aujourd''hui' } elseif ($days -eq 1) { 'hier' } else { "il y a $days jours" }
+            Line 'Dernière sauvegarde' ("{0}  ·  {1}" -f $last, $age) $(if ($days -le 7) { '#62D98B' } else { '#F5B94A' })
+        } else { Line 'Dernière sauvegarde' 'Aucune pour l''instant' '#F5B94A' }
+        if ($st -and [string]$st.Result -notin 'ok', '' -and $st.Message) { Line 'Dernier essai' ([string]$st.Message) $(if ([string]$st.Result -eq 'partiel') { '#F5B94A' } else { '#FF7B7B' }) }
+        $what = @(@($cfg.Sources) | ForEach-Object { [string]$_.Label })
+        if ($cfg.Browsers) { $what += 'favoris des navigateurs' }
+        Line 'Contenu' ("{0}  ·  {1}" -f [string]$cfg.User, ($what -join ', '))
+        if ($Res.DestPresent) { Line 'Destination' ([string]$Res.Folder) }
+        else { Line 'Destination' ("{0}  ·  disque absent : branchez-le" -f [string]$cfg.DestRoot) '#F5B94A' }
+        if ($Res.Auto) {
+            $dayFr = [string](@($Script:BakDays | Where-Object { $_[1] -eq [string]$cfg.Day }) | ForEach-Object { $_[0] } | Select-Object -First 1)
+            $when = if ([string]$cfg.Frequency -eq 'weekly') { "chaque $dayFr à $($cfg.Time)" } else { "chaque jour à $($cfg.Time)" }
+            $next = ''
+            if ($Res.NextRun) { try { $next = '  ·  prochaine : ' + ([datetime]$Res.NextRun).ToString('dd/MM à HH:mm') } catch {} }
+            Line 'Sauvegarde automatique' ("Activée  ·  {0}{1}" -f $when, $next) '#62D98B'
+        } else { Line 'Sauvegarde automatique' 'Désactivée' '#F5B94A' }
+    }
+    try { Update-BackupForm $Res } catch { Write-Crash ("Sauvegarde (formulaire) : " + $_.Exception.ToString()) }
+}
+
+function Refresh-BackupStatus {
+    if ($Script:EngineError) { return }
+    if ($Script:Run) { $Script:BakPending = $true; return }
+    $Script:BakPending = $false
+    Start-Run -Engine 'bak' -Code 'Get-BackupStatus' -Title '' -OnDone { param($res) Show-BackupStatus $res }
+}
+
+function Get-BakConfigCode {
+    # Code « Set-BackupConfig … » correspondant aux choix de la page, ou '' s'il manque quelque chose.
+    $b = $Script:Bak
+    $pi = $b.Profile.SelectedItem
+    if (-not $pi) { Add-Console 'Sauvegarde : choisissez un utilisateur (cliquez sur Actualiser si la liste est vide).' 'Yellow'; return '' }
+    $prof = $b.Profiles[[int]$pi.Tag]
+    $ids = @($b.Folders | Where-Object { $_.IsChecked } | ForEach-Object { "'" + ([string]$_.Tag -replace '[^A-Za-z]', '') + "'" })
+    $br = [bool]$b.Browsers.IsChecked
+    if ($ids.Count -eq 0 -and -not $br) { Add-Console 'Sauvegarde : cochez au moins un dossier.' 'Yellow'; return '' }
+    $dest = Get-BakDestination
+    if (-not $dest) { Add-Console 'Sauvegarde : choisissez le disque ou le dossier de destination.' 'Yellow'; return '' }
+    $freq = [string]$b.Freq.SelectedItem.Tag -replace '[^a-z]', ''
+    $day = [string]$b.Day.SelectedItem.Tag -replace '[^A-Za-z]', ''
+    $time = [string]$b.Time.SelectedItem.Tag -replace '[^0-9:]', ''
+    return ('Set-BackupConfig -ProfilePath {0} -Sid {1} -Folders @({2}) -Browsers ${3} -Destination {4} -Frequency {5} -Time {6} -Day {7}' -f
+        (ConvertTo-PsLiteral ([string]$prof.Path)), (ConvertTo-PsLiteral ([string]$prof.Sid)), ($ids -join ','), $br.ToString().ToLower(),
+        (ConvertTo-PsLiteral $dest), $freq, (ConvertTo-PsLiteral $time), $day)
+}
+
+function Build-Backup {
+    $p = New-Page 'files' 'Sauvegarde des fichiers' 'Une copie des dossiers personnels sur un autre disque, refaite automatiquement. Seuls les fichiers nouveaux ou modifiés sont copiés, et rien n''est jamais effacé dans la sauvegarde.'
+    if ($Script:EngineError) {
+        [void]$p.Children.Add((New-Text ("Moteur de sauvegarde indisponible : " + $Script:EngineError) 13 '#FF7B7B' 'Normal' -Wrap))
+        return
+    }
+    $b = $Script:Bak
+    $done = { param($r) Refresh-BackupStatus }
+
+    # ---- État
+    $s = New-Card 'Où en est la sauvegarde' '' '' 'n'
+    $b.StatusPanel = New-Object Windows.Controls.StackPanel
+    $b.StatusPanel.Margin = '0,8,0,0'
+    [void]$b.StatusPanel.Children.Add((New-Text 'Lecture de l''état…' 13 '#9298A3'))
+    [void]$s.Body.Children.Add($b.StatusPanel)
+    $sbar = New-Object Windows.Controls.WrapPanel
+    $sbar.Margin = '0,16,0,0'; $sbar.Visibility = 'Collapsed'
+    $b.StatusBar = $sbar
+    $now = New-Btn 'Sauvegarder maintenant' (New-Spec 'bak' 'Invoke-FileBackup' 'Sauvegarde des fichiers' @{} '' $done) -Primary
+    $now.Margin = '0,4,0,4'
+    [void]$sbar.Children.Add($now)
+    [void]$sbar.Children.Add((New-Btn 'Ouvrir la sauvegarde' @{ Fn = {
+                $f = ''; if ($Script:BakStatus) { $f = [string]$Script:BakStatus.Folder }
+                if ($f -and (Test-Path -LiteralPath $f)) { try { Start-Process explorer.exe ('"' + $f + '"') } catch {} }
+                else { Add-Console 'Aucune sauvegarde à ouvrir (pas encore faite, ou disque absent).' 'Yellow' }
+            } }))
+    [void]$sbar.Children.Add((New-Btn 'Récupérer les fichiers manquants' (New-Spec 'bak' 'Restore-FileBackup' 'Restauration des fichiers' @{} 'Recopier vers le PC les fichiers présents dans la sauvegarde mais absents du PC ? Aucun fichier existant ne sera remplacé.' $done)))
+    [void]$sbar.Children.Add((New-Btn 'Arrêter la sauvegarde automatique' (New-Spec 'bak' 'Unregister-BackupTask' 'Sauvegarde automatique (arrêt)' @{} 'Arrêter la sauvegarde automatique ? Les fichiers déjà sauvegardés sont conservés.' $done)))
+    [void]$sbar.Children.Add((New-Btn 'Actualiser' @{ Fn = { Refresh-BackupStatus } }))
+    [void]$s.Body.Children.Add($sbar)
+    [void]$p.Children.Add($s.Card)
+
+    # ---- Configuration : trois choix, un bouton
+    $c = New-Card 'Configurer la sauvegarde' 'Trois choix, puis un seul bouton. À refaire seulement pour changer quelque chose.'
+    function Step { param([string]$Text) $t = New-Text $Text 14 '#5AD1FF' 'SemiBold'; $t.Margin = '0,18,0,4'; return $t }
+    function Hint { param([string]$Text) $t = New-Text $Text 12.5 '#9298A3' 'Normal' -Wrap; $t.Margin = '0,6,0,0'; return $t }
+
+    [void]$c.Body.Children.Add((Step '1 · Quoi sauvegarder'))
+    $b.Profile = New-Object Windows.Controls.ComboBox
+    $b.Profile.MinWidth = 300; $b.Profile.Padding = '8,4'; $b.Profile.VerticalAlignment = 'Center'
+    $b.Profile.Add_SelectionChanged({ try { Update-BackupFolderHints } catch {} })
+    [void]$c.Body.Children.Add((New-OptionPair 'Fichiers de' $b.Profile))
+    $fw = New-Object Windows.Controls.WrapPanel
+    $fw.Margin = '0,4,0,0'
+    $defs = @()
+    try { $defs = Import-Catalog 'BJMPC-Sauvegarde-Win11.ps1' 'BakFolders' } catch { Write-Crash ("Sauvegarde (dossiers) : " + $_.Exception.Message) }
+    $b.Folders = @()
+    foreach ($d in $defs) {
+        $cb = New-Check ([string]$d.Label) ([bool]$d.Default)
+        $cb.Tag = [string]$d.Id; $cb.Margin = '0,6,24,0'; $cb.FontSize = 14
+        [void]$fw.Children.Add($cb)
+        $b.Folders += $cb
+    }
+    [void]$c.Body.Children.Add($fw)
+    $b.Browsers = New-Check 'Favoris des navigateurs (Chrome, Edge, Brave, Firefox…)' $true
+    $b.Browsers.FontSize = 14
+    [void]$c.Body.Children.Add($b.Browsers)
+    [void]$c.Body.Children.Add((Hint 'Survolez un dossier pour voir son emplacement réel (il peut être dans OneDrive). Les mots de passe des navigateurs ne sont pas copiés : Windows les chiffre et ils ne serviraient à rien ailleurs.'))
+
+    [void]$c.Body.Children.Add((Step '2 · Où'))
+    $b.Dest = New-Object Windows.Controls.ComboBox
+    $b.Dest.IsEditable = $true; $b.Dest.MinWidth = 520; $b.Dest.Padding = '8,4'; $b.Dest.Margin = '0,0,8,0'; $b.Dest.VerticalAlignment = 'Center'
+    $drow = New-Object Windows.Controls.StackPanel
+    $drow.Orientation = 'Horizontal'; $drow.Margin = '0,6,0,0'
+    [void]$drow.Children.Add($b.Dest)
+    $browse = New-Btn 'Parcourir…' @{ Fn = {
+            try {
+                Add-Type -AssemblyName System.Windows.Forms
+                $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
+                $dlg.Description = 'Dossier ou disque où ranger la sauvegarde'
+                if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $Script:Bak.Dest.Text = [string]$dlg.SelectedPath }
+            } catch { Add-Console ('  [!]   ' + $_.Exception.Message) 'Yellow' }
+        } }
+    $browse.Margin = '0,0,0,0'
+    [void]$drow.Children.Add($browse)
+    [void]$drow.Children.Add((New-Btn 'Actualiser la liste' @{ Fn = { Refresh-BackupStatus } }))
+    [void]$c.Body.Children.Add($drow)
+    [void]$c.Body.Children.Add((Hint 'Choisissez un disque externe ou un second disque dans la liste, ou tapez un dossier ou un partage réseau (\\serveur\partage). La sauvegarde est rangée dans un dossier « BJMPC-Sauvegarde » ; le disque est reconnu même si sa lettre change.'))
+
+    [void]$c.Body.Children.Add((Step '3 · Quand'))
+    $b.Auto = New-Check 'Refaire cette sauvegarde automatiquement' $true
+    $b.Auto.FontSize = 14
+    [void]$c.Body.Children.Add($b.Auto)
+    $b.Freq = New-Combo @(@('chaque jour', 'daily'), @('chaque semaine', 'weekly')) 170
+    $b.Day = New-Combo $Script:BakDays 130
+    $b.Day.IsEnabled = $false
+    $b.Time = New-Combo @(@('08:00', '08:00'), @('10:00', '10:00'), @('12:30', '12:30'), @('14:00', '14:00'), @('16:00', '16:00'), @('18:00', '18:00'), @('20:00', '20:00'), @('22:00', '22:00')) 100
+    $b.Time.SelectedIndex = 2
+    $b.Freq.Add_SelectionChanged({ try { $Script:Bak.Day.IsEnabled = ([string]$Script:Bak.Freq.SelectedItem.Tag -eq 'weekly') } catch {} })
+    $qrow = New-Object Windows.Controls.StackPanel
+    $qrow.Orientation = 'Horizontal'; $qrow.Margin = '0,8,0,0'
+    [void]$qrow.Children.Add($b.Freq)
+    [void]$qrow.Children.Add($b.Day)
+    $at = New-Text 'à' 13 '#C5C9D0'; $at.VerticalAlignment = 'Center'; $at.Margin = '0,0,12,0'
+    [void]$qrow.Children.Add($at)
+    [void]$qrow.Children.Add($b.Time)
+    [void]$c.Body.Children.Add($qrow)
+    [void]$c.Body.Children.Add((Hint 'Choisissez une heure où le PC est allumé. S''il est éteint à ce moment-là, la sauvegarde se lance au démarrage suivant. Si le disque n''est pas branché, elle est reportée et la page d''accueil le signale.'))
+
+    $run = New-Spec 'bak' '' 'Sauvegarde des fichiers' @{} '' $done
+    $run.CodeFn = {
+        $cfg = Get-BakConfigCode
+        if (-not $cfg) { return '' }
+        $auto = $(if ($Script:Bak.Auto.IsChecked) { 'Register-BackupTask' } else { 'Unregister-BackupTask' })
+        return ('if (' + $cfg + ') { ' + $auto + '; [void](Invoke-FileBackup) }')
+    }
+    $run.ConfirmFn = {
+        $who = ''; try { $who = [string]$Script:Bak.Profiles[[int]$Script:Bak.Profile.SelectedItem.Tag].Name } catch {}
+        $auto = $(if ($Script:Bak.Auto.IsChecked) { "`nElle sera ensuite refaite automatiquement." } else { "`nLa sauvegarde automatique ne sera pas activée." })
+        "Sauvegarder les fichiers de {0} vers {1} ?`nLa première copie peut être longue : elle continue en arrière-plan, vous pouvez utiliser les autres pages.{2}" -f $who, (Get-BakDestination), $auto
+    }
+    $rb = New-Btn 'Enregistrer et sauvegarder maintenant' $run -Primary
+    $rb.HorizontalAlignment = 'Left'; $rb.Margin = '0,20,0,0'
+    [void]$c.Body.Children.Add($rb)
+    [void]$p.Children.Add($c.Card)
+
+    # ---- À savoir
+    $k = New-Card 'Bon à savoir'
+    foreach ($line in @(
+            'Ce sont les fichiers personnels qui sont sauvegardés, pas Windows ni les logiciels : en cas de panne du disque, on réinstalle Windows puis on récupère les fichiers.',
+            'Un fichier ouvert au moment de la sauvegarde (une boîte Outlook, par exemple) peut être sauté ; il est repris à la sauvegarde suivante.',
+            'Un fichier supprimé du PC reste dans la sauvegarde. Pour récupérer un seul fichier : « Ouvrir la sauvegarde » et copiez-le.',
+            'La sauvegarde automatique ne dépend pas de la Toolbox : elle est installée dans C:\Program Files\BJMPC\Sauvegarde. Journaux : C:\BJMPC-Logs\Sauvegarde.')) {
+        $t = New-Text ('•  ' + $line) 13 '#C5C9D0' 'Normal' -Wrap
+        $t.Margin = '0,8,0,0'
+        [void]$k.Body.Children.Add($t)
+    }
+    [void]$p.Children.Add($k.Card)
 }
 
 #endregion
@@ -1685,7 +2410,7 @@ function New-TweakCard {
     }.GetNewClosure()
     $spec.ConfirmFn = {
         $n = @($checks | Where-Object { $_.IsChecked }).Count
-        return ("Appliquer {0} réglage(s) ? Chaque valeur d'origine est enregistrée : tout s'annule depuis la page Journal." -f $n)
+        return ("Appliquer {0} réglage(s) ? Chaque valeur d'origine est enregistrée : tout s'annule depuis l'onglet Restauration." -f $n)
     }.GetNewClosure()
     $bar = New-Object Windows.Controls.StackPanel
     $bar.Orientation = 'Horizontal'; $bar.Margin = '0,16,0,0'
@@ -1876,7 +2601,7 @@ function Build-Apps {
     $ss.CodeFn = {
         $t = $q.Text.Trim()
         if ($t -notmatch '^[\w .+\-]{2,60}$') { Add-Console 'Saisissez 2 à 60 caractères : lettres, chiffres, espaces, points, plus ou tirets.' 'Yellow'; return '' }
-        return ("Search-WingetApp -Query '" + ($t -replace "'", "''") + "'")
+        return ("Search-WingetApp -Query '" + ($t -replace "(['\u2018\u2019\u201A\u201B])", '$1$1') + "'")
     }.GetNewClosure()
     $is = New-Spec 'tools' '' 'Installation par identifiant'
     $is.CodeFn = {
@@ -2214,7 +2939,7 @@ function Show-GhostList {
     $list = @($Res)
     if ($list.Count -eq 0) { [void]$Script:GhostPanel.Children.Add((New-Text 'Aucun appareil absent à nettoyer.' 13 '#7CE3A1' 'Normal' -Wrap)); return }
     foreach ($g in $list) {
-        $cb = New-Check '' ([bool]$g.Eligible)
+        $cb = New-Check '' $false   # jamais coché d'office : supprimer un appareil absent se décide ligne par ligne
         $cb.Tag = [string]$g.Id; $cb.ToolTip = [string]$g.Id
         if (-not $g.Eligible) { $cb.IsEnabled = $false }
         $seen = $(if ($g.LastSeen) { [string]$g.LastSeen } else { 'date inconnue' })
@@ -2391,10 +3116,10 @@ function Build-Drivers {
     $Script:DlBox.MinWidth = 520; $Script:DlBox.Padding = '8,4'; $Script:DlBox.Margin = '0,0,8,0'
     $Script:CmbOpen = New-Combo @(@('Strict : signature WHQL Microsoft obligatoire (recommandé)', 'strict'), @('Ouvert : signature valide d''un autre éditeur acceptée', 'open')) 430
     $fa = New-Spec 'tools' '' 'Ajout de pilote (dossier)'
-    $fa.CodeFn = { $f = Get-SelectedDownload; if (-not $f) { return '' }; return ("Add-DriverFromFolder -Path '" + ($f -replace "'", "''") + "' -Install" + $(if (Test-OpenLevel) { ' -Level 3' } else { '' })) }
+    $fa.CodeFn = { $f = Get-SelectedDownload; if (-not $f) { return '' }; return ("Add-DriverFromFolder -Path '" + ($f -replace "(['\u2018\u2019\u201A\u201B])", '$1$1') + "' -Install" + $(if (Test-OpenLevel) { ' -Level 3' } else { '' })) }
     $fa.ConfirmFn = { if (Test-OpenLevel) { "NIVEAU OUVERT : contrôler le pilote « {0} » puis l'installer, même si sa signature n'est pas celle de Microsoft ? La signature doit rester valide (un pilote non signé ou altéré est refusé). Ce pilote n'est pas certifié WHQL : à réserver aux appareils introuvables en mode strict. Un point de restauration est créé avant." -f (Get-SelectedDownload -Name) } else { "Contrôler le pilote « {0} » puis l'installer ? Seul un pilote signé WHQL par Microsoft est accepté ; sinon rien n'est modifié. Un point de restauration est créé avant." -f (Get-SelectedDownload -Name) } }
     $fs = New-Spec 'tools' '' 'Ajout de pilote (dossier)'
-    $fs.CodeFn = { $f = Get-SelectedDownload; if (-not $f) { return '' }; return ("Add-DriverFromFolder -Path '" + ($f -replace "'", "''") + "'" + $(if (Test-OpenLevel) { ' -Level 3' } else { '' })) }
+    $fs.CodeFn = { $f = Get-SelectedDownload; if (-not $f) { return '' }; return ("Add-DriverFromFolder -Path '" + ($f -replace "(['\u2018\u2019\u201A\u201B])", '$1$1') + "'" + $(if (Test-OpenLevel) { ' -Level 3' } else { '' })) }
     $fs.ConfirmFn = { "Contrôler le pilote « {0} » puis l'ajouter au magasin de pilotes (sans l'installer sur un appareil) ?" -f (Get-SelectedDownload -Name) }
     $kb = New-Object Windows.Controls.WrapPanel
     $kb.Margin = '0,14,0,0'
@@ -2415,7 +3140,7 @@ function Build-Drivers {
     [void]$Script:DrvTabs['add'].Panel.Children.Add($k.Card)
 
     # =============== Appareils absents
-    $gc = New-Card 'Appareils absents (fantômes)' 'Windows garde la trace des appareils qui ne sont plus branchés (anciennes clés USB, écrans, imprimantes, cartes réseau virtuelles…). Seuls ceux absents depuis 15 jours ou plus sont proposés, dans des catégories sans risque ; un appareil dont la date est inconnue n''est jamais proposé. Si l''appareil est rebranché, Windows le réinstalle tout seul. La liste est enregistrée avant suppression.' 'Réversible' 'g'
+    $gc = New-Card 'Appareils absents (fantômes)' 'Windows garde la trace des appareils qui ne sont plus branchés (anciennes clés USB, disques externes, écrans, claviers, souris, webcams…). Seuls ceux absents depuis 15 jours ou plus sont proposés ; un appareil dont la date est inconnue ne l''est jamais. Rebranché, l''appareil est réinstallé tout seul par Windows. Les cartes réseau, appareils Bluetooth, ports série et imprimantes ne sont jamais proposés : les supprimer ferait perdre une adresse IP fixe, un appairage, un numéro de port ou des réglages d''impression. Rien n''est coché d''office ; la liste est enregistrée avant suppression.' 'Réversible' 'g'
     $gs = New-Spec 'tools' 'Get-GhostDevices' 'Recherche des appareils absents' @{} '' { param($r) Show-GhostList $r }
     $gr = New-Spec 'tools' '' 'Suppression des appareils absents'
     $gr.CodeFn = {
@@ -2554,13 +3279,38 @@ $Script:PlainMap = @(
     @{ K = '^Clear-PrintQueue|¦File d.impression'; C = 'repar'; T = 'Nous avons débloqué la file d''impression.' }
     @{ K = '^Sync-Clock|¦Horloge'; C = 'repar'; T = 'Nous avons remis votre ordinateur à l''heure.' }
     @{ K = '^Clear-DnsCache|¦Cache DNS'; C = 'repar'; T = 'Nous avons vidé la mémoire temporaire de la connexion Internet, ce qui règle certains sites qui ne s''ouvraient pas.' }
-    @{ K = '^Invoke-FullProfile|¦Profil complet recommandé'; C = 'vitesse'; T = 'Nous avons appliqué l''ensemble des réglages recommandés pour accélérer votre ordinateur et le rendre plus agréable à utiliser.' }
+    @{ K = '^Get-BackupStatus'; C = 'skip'; T = '' }
+    @{ K = '^Get-EventFindings|¦Analyse des erreurs de Windows'; C = 'verif'; T = 'Nous avons relu le journal dans lequel Windows note ses erreurs, pour repérer ce qui n''allait pas.' }
+    @{ K = '^Invoke-EventFix|¦Réparation des erreurs de Windows'; C = 'repar'; T = {
+            param($e)
+            $n = @($e.Ok).Count
+            if ($n -eq 0) { return @() }
+            $s = if ($n -eq 1) { 'Nous avons corrigé un problème que Windows avait signalé dans son journal d''erreurs.' } else { "Nous avons corrigé $n problèmes que Windows avait signalés dans son journal d'erreurs." }
+            return @($s, 'Nous vérifierons à la prochaine visite qu''ils ne sont pas revenus.')
+        } }
+    @{ K = 'Invoke-FileBackup|Register-BackupTask|¦Sauvegarde des fichiers'; C = 'filet'; T = {
+            # Le moteur rend dans Ok les dossiers copiés, et 'auto' si la sauvegarde automatique a été programmée.
+            param($e)
+            $what = @(@($e.Ok) | Where-Object { $_ -and $_ -ne 'auto' })
+            $r = @()
+            if ($what.Count -gt 0) {
+                $r += 'Nous avons fait une copie de sécurité de vos fichiers sur un autre disque : ' + (Join-French $what) + '.'
+                $r += 'Si un fichier est effacé par erreur, il pourra être récupéré.'
+            }
+            if (@($e.Ok) -contains 'auto') {
+                $r += 'Cette sauvegarde se refera désormais toute seule, à heure fixe. Pensez seulement à laisser le disque de sauvegarde branché.'
+            }
+            return $r
+        } }
+    @{ K = '^Unregister-BackupTask|¦Sauvegarde automatique'; C = 'skip'; T = '' }
+    @{ K = '^Restore-FileBackup|¦Restauration des fichiers'; C = 'repar'; T = 'Nous avons remis à leur place des fichiers qui manquaient, à partir de votre copie de sécurité.' }
+    @{ K = '^Invoke-FullProfile|¦Réglages recommandés|¦Profil complet recommandé'; C = 'vitesse'; T = 'Nous avons appliqué les réglages recommandés pour que votre ordinateur soit plus agréable à utiliser, sans rien changer à vos habitudes.' }
     @{ K = '^Optimize-Gaming|¦Profil Gaming'; C = 'vitesse'; T = 'Nous avons réglé votre ordinateur pour qu''il soit plus fluide dans les jeux.' }
-    @{ K = '^Optimize-Advanced|¦Réglages avancés'; C = 'vitesse'; T = 'Nous avons ajusté quelques réglages fins pour que votre ordinateur réagisse plus vite.' }
-    @{ K = '^Optimize-Storage|¦SSD NVMe'; C = 'vitesse'; T = 'Nous avons optimisé la façon dont Windows utilise votre disque rapide.' }
-    @{ K = '^Optimize-ServicesSafe|^Optimize-ServicesAdvanced|¦Services niveau'; C = 'vitesse'; T = 'Nous avons arrêté des petits programmes de fond dont vous n''avez pas besoin, pour alléger votre ordinateur.' }
+    @{ K = '^Optimize-Storage|¦SSD'; C = 'vitesse'; T = 'Nous avons vérifié que Windows utilise bien votre disque rapide.' }
     @{ K = '^Optimize-Explorer'; C = 'vitesse'; T = 'Nous avons rendu l''explorateur de fichiers plus pratique à utiliser.' }
     @{ K = '^Optimize-Power|¦Plan d.alimentation'; C = 'vitesse'; T = 'Nous avons choisi un mode d''alimentation qui privilégie la rapidité de votre ordinateur.' }
+    @{ K = '^Set-Hags -Mode on'; C = 'vitesse'; T = 'Nous avons activé un réglage de votre carte graphique qui aide les jeux à être plus fluides. Il prendra effet au prochain redémarrage.' }
+    @{ K = '^Set-Hags'; C = 'vitesse'; T = 'Nous avons remis un réglage de votre carte graphique à sa valeur d''origine.' }
     @{ K = '^Set-BuiltinPowerPlan -Mode balanced'; C = 'vitesse'; T = 'Nous avons choisi un mode d''alimentation équilibré entre rapidité et économie d''énergie.' }
     @{ K = '^Set-BuiltinPowerPlan'; C = 'vitesse'; T = 'Nous avons choisi un mode d''alimentation qui privilégie la rapidité de votre ordinateur.' }
     @{ K = '^Set-OledCare|¦Protection OLED'; C = 'vitesse'; T = 'Nous avons ajouté des protections pour que votre écran dure plus longtemps.' }
@@ -2582,7 +3332,7 @@ $Script:PlainMap = @(
     @{ K = '¦Mullvad base|¦AdGuard'; C = 'net'; T = 'Nous avons rendu votre navigation sur Internet plus privée : les adresses des sites que vous visitez sont maintenant protégées. Cela bloque aussi une partie des publicités et des sites dangereux.' }
     @{ K = '¦DNS d.origine'; C = 'net'; T = 'Nous avons remis le réglage d''origine de votre connexion Internet.' }
     @{ K = '^Set-MullvadDns|^Set-DnsPreset|¦DNS '; C = 'net'; T = 'Nous avons rendu votre navigation sur Internet plus privée : les adresses des sites que vous visitez sont maintenant protégées.' }
-    @{ K = '^Optimize-Network|¦Réseau$'; C = 'net'; T = 'Nous avons optimisé votre connexion Internet et Wi-Fi pour qu''elle soit plus stable et plus réactive.' }
+    @{ K = '^Optimize-Network|¦Réseau$'; C = 'net'; T = 'Nous avons réglé votre carte Wi-Fi et réseau pour que la connexion soit plus stable.' }
     @{ K = '^Invoke-DiskCleanup -WindowsOld'; C = 'menage'; T = 'Nous avons nettoyé les fichiers inutiles qui prenaient de la place, y compris l''ancienne version de Windows.' }
     @{ K = '^Invoke-DiskCleanup|^Invoke-Cleanup|¦Nettoyage'; C = 'menage'; T = 'Nous avons nettoyé les fichiers inutiles qui prenaient de la place.' }
     @{ K = '^Clear-BrowserCaches|¦Caches des navigateurs'; C = 'menage'; T = 'Nous avons vidé la mémoire temporaire de vos navigateurs web pour libérer de la place. Vos favoris et vos mots de passe sont conservés.' }
@@ -3520,32 +4270,19 @@ function Test-SummarySelf {
 #region Démarrage
 
 try {
-    Add-NavGroup 'Diagnostic'
-    Add-NavItem 'dash' 'Tableau de bord' ([string][char]0xE80F)
-    Add-NavItem 'tools' 'Outils et diagnostics' ([string][char]0xE946)
-    Add-NavGroup 'Réparation'
-    Add-NavItem 'maint' 'Maintenance' ([string][char]0xE90F)
-    Add-NavItem 'drivers' 'Pilotes' ([string][char]0xE772)
-    Add-NavGroup 'Optimisation'
-    Add-NavItem 'gaming' 'Gaming et GPU' ([string][char]0xE7FC)
-    Add-NavItem 'net' 'Réseau et DNS' ([string][char]0xE701)
-    Add-NavItem 'sys' 'Système et NVMe' ([string][char]0xEDA2)
-    Add-NavItem 'display' 'Affichage et OLED' ([string][char]0xE7F4)
-    Add-NavGroup 'Réglages Windows'
-    Add-NavItem 'priv' 'Confidentialité' ([string][char]0xE72E)
-    Add-NavItem 'ui' 'Interface et Explorateur' ([string][char]0xE713)
-    Add-NavItem 'winset' 'Mises à jour et sécurité' ([string][char]0xE777)
-    Add-NavGroup 'Logiciels'
-    Add-NavItem 'apps' 'Applications' ([string][char]0xE71D)
-    Add-NavGroup 'Client'
-    Add-NavItem 'summary' 'Résumé pour le client' ([string][char]0xE77B)
-    Add-NavGroup 'Sécurité'
-    Add-NavItem 'journal' 'Journal et annulation' ([string][char]0xE81C)
+    # Six sections ; chaque onglet est une page (clé de page, libellé).
+    Add-Section 'home' 'Accueil' ([string][char]0xE80F) @(@('dash', 'Vue d''ensemble'), @('summary', 'Résumé pour le client'))
+    Add-Section 'repair' 'Réparer' ([string][char]0xE90F) @(@('events', 'Réparation automatique'), @('maint', 'Réparer Windows'), @('care', 'Nettoyage et dépannage'), @('tools', 'Diagnostics'))
+    Add-Section 'optim' 'Optimiser' ([string][char]0xE945) @(@('gaming', 'Jeux et alimentation'), @('net', 'Réseau et DNS'), @('sys', 'Disque et démarrage'), @('display', 'Affichage et OLED'))
+    Add-Section 'settings' 'Confidentialité et réglages' ([string][char]0xE72E) @(@('priv', 'Confidentialité'), @('ui', 'Interface et Explorateur'), @('winset', 'Mises à jour et sécurité'))
+    Add-Section 'soft' 'Logiciels et pilotes' ([string][char]0xE71D) @(@('apps', 'Applications'), @('drivers', 'Pilotes'))
+    Add-Section 'backup' 'Sauvegarde et restauration' ([string][char]0xE81C) @(@('files', 'Sauvegarde des fichiers'), @('journal', 'Restauration'))
 
     Build-Dashboard
-    Build-Tools
+    Build-Summary
+    Build-Events
     Build-Maintenance
-    Build-Drivers
+    Build-Tools
     Build-Gaming
     Build-Network
     Build-System
@@ -3554,7 +4291,8 @@ try {
     Build-Interface
     Build-WinSettings
     Build-Apps
-    Build-Summary
+    Build-Drivers
+    Build-Backup
     Build-Journal
 } catch {
     Show-Fatal "Construction de l'interface impossible : $($_.Exception.Message)`n$($_.ScriptStackTrace)"
@@ -3595,6 +4333,7 @@ $Script:Window.Add_Closing({
         $r = [Windows.MessageBox]::Show($Script:Window, "Une opération est en cours. La fermer maintenant peut laisser une réparation inachevée.`nFermer quand même ?", 'BJMPC Toolbox', 'YesNo', 'Warning')
         if ($r -ne 'Yes') { $e.Cancel = $true } else { $Script:Sync.Cancel = $true; [void]$Script:Sync.PromptEvent.Set() }
     }
+    if (-not $e.Cancel) { try { Stop-EventWatch } catch {} }
 })
 
 $Script:Window.Dispatcher.Add_UnhandledException({
@@ -3612,12 +4351,12 @@ $Script:Timer.Start()
 Add-Console ("BJMPC Toolbox {0} · {1} · journal : {2}" -f $Script:AppVersion, $env:COMPUTERNAME, $Script:LogFile) 'Cyan'
 if ($Script:EngineError) {
     Add-Console ("  [X]   " + $Script:EngineError) 'Red'
-    Add-Console "  Placez tous les fichiers BJMPC-*-Win11.ps1 (Maintenance, Optimisation, Réglages, Outils) dans le même dossier que BJMPC-Toolbox.ps1." 'Yellow'
+    Add-Console "  Placez tous les fichiers BJMPC-*-Win11.ps1 (Maintenance, Optimisation, Réglages, Outils, Sauvegarde) dans le même dossier que BJMPC-Toolbox.ps1." 'Yellow'
 }
 
 $startKey = 'dash'
 if ($env:BJMPC_SELFTEST -eq 'PREVIEW' -and $env:BJMPC_PAGE -and $Script:NavItems.ContainsKey($env:BJMPC_PAGE)) { $startKey = $env:BJMPC_PAGE }
-$Script:NavItems[$startKey].IsChecked = $true
+Open-Page $startKey
 if ($env:BJMPC_SELFTEST -eq 'PREVIEW' -and $env:BJMPC_DEMO) {
     $Script:DemoTimer = New-Object Windows.Threading.DispatcherTimer
     $Script:DemoTimer.Interval = [TimeSpan]::FromSeconds(2)
@@ -3643,12 +4382,48 @@ if ($env:BJMPC_SELFTEST -and $env:BJMPC_SELFTEST -ne 'PREVIEW') {
         }
         return (-not $Script:Run)
     }
+    if ($env:BJMPC_SHOTS) {
+        # Captures de chaque page dans le dossier BJMPC_SHOTS, sans afficher la fenêtre : pour relire l'interface
+        # après une modification. Lecture seule, puis on quitte sans lancer le reste de l'auto-test.
+        try {
+            New-Item -ItemType Directory -Path $env:BJMPC_SHOTS -Force | Out-Null
+            $w = 1320; $h = 1500
+            $root = $Script:Window.Content
+            foreach ($k in @($Script:NavItems.Keys | Sort-Object)) {
+                Open-Page $k
+                if ($k -eq 'dash') { Refresh-Dashboard }
+                [void](Wait-Run 120)
+                $root.Measure([Windows.Size]::new($w, $h)); $root.Arrange([Windows.Rect]::new(0, 0, $w, $h)); $root.UpdateLayout()
+                $Script:Window.Dispatcher.Invoke([Action] {}, [Windows.Threading.DispatcherPriority]::ContextIdle)
+                $dv = New-Object Windows.Media.DrawingVisual
+                $dc = $dv.RenderOpen(); $dc.DrawRectangle((Br '#050506'), $null, [Windows.Rect]::new(0, 0, $w, $h)); $dc.Close()
+                $bmp = New-Object Windows.Media.Imaging.RenderTargetBitmap($w, $h, 96, 96, [Windows.Media.PixelFormats]::Pbgra32)
+                $bmp.Render($dv); $bmp.Render($root)
+                $enc = New-Object Windows.Media.Imaging.PngBitmapEncoder
+                [void]$enc.Frames.Add([Windows.Media.Imaging.BitmapFrame]::Create($bmp))
+                $fs = [IO.File]::Create((Join-Path $env:BJMPC_SHOTS ("{0}_{1}.png" -f [string]$Script:PageSection[$k], $k)))
+                try { $enc.Save($fs) } finally { $fs.Dispose() }
+            }
+        } catch { Write-Crash ("Captures : " + $_.Exception.ToString()); [IO.File]::WriteAllText($env:BJMPC_SELFTEST, ("ECHEC  Captures  " + $_.Exception.ToString())) ; exit 1 }
+        [IO.File]::WriteAllText($env:BJMPC_SELFTEST, 'OK     Captures')
+        exit 0
+    }
     try {
         T 'PowerShell' $true ($PSVersionTable.PSVersion.ToString())
         T 'Moteurs chargés' (-not $Script:EngineError) ([string]$Script:EngineError)
         T 'Catalogues' (-not $Script:CatalogError -and $Script:TweakCatalog.Count -gt 50 -and $Script:AppCatalog.Count -gt 300) ("réglages={0} apps={1} {2}" -f $Script:TweakCatalog.Count, $Script:AppCatalog.Count, $Script:CatalogError)
-        T 'Pages' ($Script:Pages.Count -ge 12) ("pages={0} nav={1}" -f $Script:Pages.Count, $Script:NavItems.Count)
-        foreach ($k in @($Script:Pages.Keys | Sort-Object)) { if (-not $Script:NavItems.ContainsKey($k)) { T "Navigation $k" $false 'page sans entrée de menu' } }
+        T 'Pages' ($Script:Pages.Count -ge 15 -and $Script:Sections.Count -eq 6) ("pages={0} onglets={1} sections={2}" -f $Script:Pages.Count, $Script:NavItems.Count, $Script:Sections.Count)
+        foreach ($k in @($Script:Pages.Keys | Sort-Object)) { if (-not $Script:NavItems.ContainsKey($k)) { T "Navigation $k" $false 'page sans onglet' } }
+        foreach ($k in @($Script:NavItems.Keys | Sort-Object)) { if (-not $Script:Pages.ContainsKey($k)) { T "Navigation $k" $false 'onglet sans page' } }
+        # Chaque onglet s'ouvre et affiche bien sa page
+        $navBad = @()
+        foreach ($k in @($Script:NavItems.Keys | Sort-Object)) {
+            Open-Page $k
+            if ($Script:CurrentPage -ne $k -or [string]$Script:Pages[$k].Visibility -ne 'Visible' -or $Script:CurrentSection -ne [string]$Script:PageSection[$k]) { $navBad += $k }
+            [void](Wait-Run 60)
+        }
+        Open-Page 'dash'; [void](Wait-Run 60)
+        T 'Ouverture de chaque onglet' ($navBad.Count -eq 0) ($navBad -join ', ')
         # Chaque bouton : spécification valide, code analysable, fonctions existantes dans le moteur
         $bad = 0; $n = 0
         foreach ($b in $Script:ActionButtons) {
@@ -3688,8 +4463,39 @@ if ($env:BJMPC_SELFTEST -and $env:BJMPC_SELFTEST -ne 'PREVIEW') {
         T 'Appareils fantômes (analyse + liste)' (Wait-Run 120) ("fantômes={0}" -f $Script:GhostChecks.Count)
         Start-Run -Engine 'tools' -Code 'Find-DownloadedDrivers' -Title '' -OnDone { param($r) Show-DownloadedDrivers $r }
         T 'Pilotes téléchargés (recherche + liste)' (Wait-Run 120) (("trouvés={0}" -f $Script:DlBox.Items.Count))
-        Start-Run -Engine 'none' -Code $Script:DashCode -Title '' -OnDone { param($r) }
-        T 'Diagnostic du tableau de bord' (Wait-Run 120) ''
+        $Script:DashChecks = 0
+        Start-Run -Engine 'none' -Code $Script:DashCode -Title '' -OnDone { param($r) $Script:DashChecks = @($r.Checks).Count }
+        T 'Diagnostic du tableau de bord' ((Wait-Run 120) -and $Script:DashChecks -ge 9) ("points vérifiés={0}" -f $Script:DashChecks)
+        # Observateur d'événements : analyse réelle (lecture seule), liste affichée, code de réparation analysable
+        $Script:Evt.Analyzed = $false
+        Start-Run -Engine 'evt' -Code 'Get-EventFindings -Days 7' -Title '' -OnDone { param($r) $Script:EvtRes = $r; Show-EventFindings $r }
+        $evOk = Wait-Run 120
+        $evN = 0; if ($Script:EvtRes) { $evN = @($Script:EvtRes.Findings).Count }
+        T 'Observateur d''événements : analyse et liste' ($evOk -and $Script:Evt.Analyzed -and $null -ne $Script:EvtRes) ("constats={0}, réparables cochés={1}, lignes={2}" -f $evN, $Script:Evt.Rows.Count, @($Script:Evt.Panel.Children).Count)
+        $evLit = ConvertTo-EventItems @([pscustomobject]@{ Key = "r:svc|Service d’essai 'x'"; Fix = 'svc_start'; Sub = "Service d’essai 'x'" })
+        $ee = $null; [void][Management.Automation.Language.Parser]::ParseInput(('Invoke-EventFix -Items ' + $evLit), [ref]$null, [ref]$ee)
+        T 'Observateur d''événements : code de réparation' ($evLit -and -not ($ee -and $ee.Count)) $evLit
+        # Les réparations lourdes doivent trouver leurs fonctions dans le moteur réuni (Maintenance + Outils + Événements)
+        $missing = @('Clear-DnsCache', 'Sync-Clock', 'Restart-AudioServices', 'Clear-ShaderCache', 'Clear-PrintQueue', 'Reset-Search', 'Reset-Store', 'Reset-WindowsUpdate', 'Invoke-Chkdsk', 'Invoke-DISM', 'Invoke-SFC', 'New-RestorePoint', 'Invoke-EventFix', 'Watch-Events' |
+            Where-Object { $Script:EngineCode['evt'] -notmatch ("(?m)^function " + [regex]::Escape($_) + "\b") })
+        T 'Observateur d''événements : fonctions de réparation présentes' ($missing.Count -eq 0) ($missing -join ', ')
+        # Surveillance en direct : le fil démarre, bat, puis s'arrête proprement
+        Start-EventWatch
+        $beat = $false; $end = (Get-Date).AddSeconds(15)
+        while ((Get-Date) -lt $end -and -not $beat) { Start-Sleep -Milliseconds 300; $beat = [bool]$Script:Sync.EvtBeat }
+        $alive = [bool]($Script:EvtWatch -and -not $Script:EvtWatch.Handle.IsCompleted)
+        Stop-EventWatch
+        T 'Observateur d''événements : surveillance en direct' ($beat -and $alive -and -not $Script:EvtWatch) ("battement={0}, fil vivant={1}" -f $beat, $alive)
+        $Script:BakStatus = $null
+        Start-Run -Engine 'bak' -Code 'Get-BackupStatus' -Title '' -OnDone { param($r) Show-BackupStatus $r }
+        $bakOk = Wait-Run 120
+        T 'Sauvegarde : état, utilisateurs et disques' ($bakOk -and $Script:BakStatus -and $Script:Bak.Profile.Items.Count -ge 1) ("utilisateurs={0}, disques={1}, configurée={2}" -f $Script:Bak.Profile.Items.Count, $Script:Bak.Dest.Items.Count, $(if ($Script:BakStatus) { [bool]$Script:BakStatus.Configured } else { '?' }))
+        $bakCode = ''
+        if ($Script:Bak.Dest.Items.Count -gt 0) { $Script:Bak.Dest.Text = [string]$Script:Bak.Dest.Items[0] } else { $Script:Bak.Dest.Text = 'X:\Essai' }
+        try { $bakCode = Get-BakConfigCode } catch { $bakCode = 'ERREUR ' + $_.Exception.Message }
+        $be = $null; [void][Management.Automation.Language.Parser]::ParseInput($bakCode, [ref]$null, [ref]$be)
+        T 'Sauvegarde : code de configuration' ($bakCode -match '^Set-BackupConfig -ProfilePath ''' -and -not ($be -and $be.Count)) $bakCode
+        $Script:Bak.Dest.Text = ''
         # Journal de session : une exécution titrée doit apparaître, puis on nettoie
         $before = $Script:SessionLog.Count
         Start-Run -Engine 'tools' -Code 'Get-LicenseInfo' -Title 'Licence Windows'

@@ -1,17 +1,154 @@
-﻿BJMPC Toolbox 1.8 - interface graphique (Windows 11)
+﻿BJMPC Toolbox 2.1 - interface graphique (Windows 11)
 =====================================================
+
+NOUVEAUTES 2.1
+  1. REPARATION AUTOMATIQUE D'APRES L'OBSERVATEUR D'EVENEMENTS (Reparer > Reparation automatique)
+     Nouveau fichier BJMPC-Evenements-Win11.ps1. L'onglet lit les journaux Systeme et Application (lecture seule,
+     moins d'une seconde), regroupe les erreurs et range chaque constat dans une famille :
+       A REPARER       une reparation existe : services arretes, DNS, horloge, echecs repetes de Windows Update,
+                       fichiers de Windows abimes (ecran bleu, composant de Windows qui plante), erreurs de disque
+                       (analyse CHKDSK), index de recherche, Microsoft Store, compteurs de performance, plantage
+                       du pilote graphique (caches).
+       A REGARDER      panne materielle (WHEA, arrets brutaux, disque lent, surchauffe, memoire pleine) ou logiciel
+                       tiers qui plante : aucun logiciel ne peut le reparer, la page dit quoi verifier.
+       NON RECONNUES   affichees telles quelles, jamais "corrigees" au hasard.
+       SANS GRAVITE    bruit connu de Windows (DCOM 10016, Schannel...) : ne pas y toucher.
+     - Les reparations rapides et sans risque sont cochees d'office ; les lourdes (DISM/SFC, CHKDSK, Windows
+       Update, index, Store, file d'impression) se cochent a la main. Point de restauration avant les lourdes.
+     - Suivi : la date de chaque reparation est memorisee (C:\BJMPC-Logs\Evenements_reparations.json). A l'analyse
+       suivante, le constat est marque "Repare le ... : plus d'erreur depuis" ou "Revenu apres la reparation".
+       Windows ne retire pas les anciennes erreurs de son journal : c'est ce suivi qui dit si c'est regle.
+     - SURVEILLANCE EN DIRECT : tant que la Toolbox est ouverte, chaque nouvelle erreur apparait en quelques
+       secondes (verification toutes les 5 s). Option "reparer tout de suite, sans demander" : seulement les
+       reparations sans risque, une seule fois par erreur et par session. Les lourdes ne partent jamais seules.
+     - Pour ajouter une regle : une entree dans $Script:EvtRules (source, numeros, famille, reparation).
+     A SAVOIR : "corriger chaque erreur de l'Observateur" n'est pas possible honnetement. 33 regles couvrent les
+     cas courants ; le reste est montre sans reparation inventee.
+  2. ONGLET "RESTAURATION" : l'ancien "Journal et annulation" s'appelle Restauration, dans la section renommee
+     "Sauvegarde et restauration" (Sauvegarde des fichiers | Restauration).
+  3. HAGS : carte dediee dans Optimiser > Jeux et alimentation (etat actuel, Activer, Desactiver, ouvrir le
+     reglage de Windows). Dans "Reglages de jeu", HAGS devient une case a cocher.
+  4. PILOTES : relecture approfondie de la recherche et de la mise a jour. Corrige :
+     - Un pilote PLUS ANCIEN pouvait etre propose, et le bon jamais : seul le numero de version etait compare,
+       or une meme puce a souvent deux familles de pilotes aux numeros sans rapport (ex. Realtek 1168.x de 2024
+       et 10.x de 2025). Desormais, entre familles differentes, c'est la DATE qui departage, comme le fait
+       Windows ; le pilote generique Microsoft (date 2006) ne masque plus celui du fabricant.
+     - Appareil sans pilote : un simple complement (INF "Extension" / "SoftwareComponent") n'est plus pris pour
+       le pilote de l'appareil.
+     - Analyse elargie : un identifiant de classe (PCI\CC_..., USB\Class_...) ne suffit plus a valider un paquet.
+     - Version, date et taille affichees sont celles du paquet reellement retenu.
+     - Un delai depasse isole ne met plus tous les appareils suivants en "Erreur" (3 essais) ; une erreur pendant
+       l'analyse elargie n'est plus affichee comme "introuvable" ; un .cab incomplet n'est plus pris pour
+       "ce paquet ne concerne pas l'appareil".
+     - Installation : sans point de restauration reellement cree, la Toolbox demande avant de continuer ; si
+       Windows garde le pilote actuel (code 259), le paquet ajoute pour rien est retire du magasin.
+     - Appareils absents : plus rien n'est coche d'office.
+     - Un nom de fichier contenant une apostrophe typographique ne casse plus la commande generee.
+     Les six autres points de la relecture, traites ensuite :
+     - PAGES DU CATALOG : quand aucun des paquets de la premiere page (25 resultats) n'est adapte, la Toolbox
+       lit les deux pages suivantes avant de conclure "aucun paquet adapte" (verifie en direct : 25 puis 70
+       paquets pour une puce Realtek courante).
+     - EMPREINTE : chaque .cab telecharge est compare a l'empreinte SHA-256 annoncee par le Catalog ; un
+       fichier incomplet ou altere est refuse.
+     - AJOUTER UN PILOTE (installation) : seuls les pilotes du dossier qui declarent un appareil reellement
+       branche sont installes (un zip de constructeur en contient souvent des dizaines). L'ancien pilote de
+       chaque appareil concerne est copie avant, comme pour le Catalog. "Ajouter au magasin seulement" garde
+       l'ancien comportement.
+     - RETOUR ARRIERE : chaque mise a jour note dans son dossier Avant_MAJ_... quel paquet elle a installe
+       (fichier maj.json, avec l'empreinte de l'INF). "Restaurer" retire d'abord ce paquet (pnputil
+       /delete-driver /uninstall), puis remet l'ancien. Avant, Windows gardait le plus recent des deux et la
+       restauration ne changeait rien. Un numero oemNN reattribue entre-temps a un autre pilote est epargne.
+       Chaque pilote d'une sauvegarde est recontrole (signature valide) avant d'etre remis.
+     - C:\BJMPC-Logs : au premier lancement en administrateur, l'ecriture y est reservee aux administrateurs
+       (lecture pour tous). Avant, tout utilisateur pouvait y modifier un pilote sauvegarde que la Toolbox
+       reinstallait ensuite en administrateur. Le dossier de travail des pilotes quitte le dossier temporaire
+       de l'utilisateur pour C:\BJMPC-Logs\Travail. Seul C:\BJMPC-Logs\Sauvegarde reste inscriptible (journaux
+       de la sauvegarde automatique vers un partage reseau).
+     - APPAREILS ABSENTS : les cartes reseau, appareils Bluetooth, ports serie et imprimantes ne sont plus
+       proposes (les supprimer faisait perdre IP fixe, appairage, numero de port, reglages d'impression).
+       L'anciennete de 15 jours est reverifiee au moment de supprimer.
+     NON TESTE : aucune installation, restauration ni suppression reelle de pilote n'a ete faite (pas de droits
+     administrateur pendant le developpement). Sont testes : les regles de choix sur des cas fictifs, la
+     restauration avec un pnputil simule, les droits sur un dossier d'essai, la pagination en direct.
+     A VERIFIER UNE FOIS SUR UN VRAI PC : une mise a jour de pilote puis sa restauration, et le comportement
+     de pnputil quand Windows garde le pilote en place (code 259, tire de la documentation Microsoft).
 
 LANCER
   Double-clic sur BJMPC-Toolbox.bat (la demande d'administrateur s'affiche).
 
 CONTENU DU DOSSIER (ne pas separer les fichiers)
   BJMPC-Toolbox.ps1               l'application (fenetre)
-  BJMPC-Optimisation-Win11.ps1    moteur gaming / reseau / systeme / ecran (utilisable seul en console)
-  BJMPC-Reglages-Win11.ps1        catalogue de 73 reglages Windows (confidentialite, interface, mises a jour...)
+  BJMPC-Sauvegarde-Win11.ps1      sauvegarde des fichiers du client, a la demande et automatique
+  BJMPC-Evenements-Win11.ps1      reparation guidee par l'Observateur d'evenements, surveillance en direct
+  BJMPC-Optimisation-Win11.ps1    moteur jeux / reseau / disque / ecran (utilisable seul en console)
+  BJMPC-Reglages-Win11.ps1        catalogue de reglages Windows (confidentialite, interface, mises a jour...)
   BJMPC-Maintenance-Win11.ps1     moteur maintenance et reparation (utilisable seul en console)
   BJMPC-Outils-Win11.ps1          diagnostics, depannage, catalogue de logiciels winget, nettoyage
   BJMPC-Toolbox.bat               lanceur
   Verif.bat / Apercu.bat          autotest en lecture seule / apercu du resume (facultatifs)
+  _Archive\v1.8                   la version precedente complete, au cas ou
+
+NOUVEAUTES 2.0
+  1. UNE INTERFACE PLUS SIMPLE : 6 sections au lieu de 14 pages
+     Le menu de gauche ne montre plus que six entrees ; chacune a ses onglets en haut de la page.
+       Accueil                       Vue d'ensemble | Resume pour le client
+       Reparer                       Reparation automatique (2.1) | Reparer Windows | Nettoyage et depannage | Diagnostics
+       Optimiser                     Jeux et alimentation | Reseau et DNS | Disque et demarrage | Affichage et OLED
+       Confidentialite et reglages   Confidentialite | Interface et Explorateur | Mises a jour et securite
+       Logiciels et pilotes          Applications | Pilotes
+       Sauvegarde et restauration    Sauvegarde des fichiers | Restauration (ex-Journal et annulation)
+     Rien d'utile n'a disparu : les anciennes pages sont devenues des onglets.
+     L'accueil ne compte plus des "optimisations" : il dit ce qui est en ordre sur ce PC et ou agir pour le reste
+     (sauvegarde recente, sauvegarde automatique, point de restauration, place libre, sante des disques,
+     redemarrage en attente, TRIM, capture de jeu, telemetrie).
+
+  2. SAUVEGARDE AUTOMATIQUE DES FICHIERS DU CLIENT (section Sauvegarde et restauration)
+     - Trois choix puis un bouton : QUOI (utilisateur ; Bureau, Documents, Images, Videos, Musique,
+       Telechargements ; favoris des navigateurs), OU (disque externe, second disque, dossier ou partage reseau),
+       QUAND (chaque jour ou chaque semaine, a l'heure choisie).
+     - Copie incrementale (robocopy) dans <destination>\BJMPC-Sauvegarde\<PC>\<utilisateur>\ : seuls les fichiers
+       nouveaux ou modifies sont copies. RIEN N'EST JAMAIS SUPPRIME dans la sauvegarde : un fichier efface par
+       erreur sur le PC y reste.
+     - Automatique : tache planifiee "BJMPC Sauvegarde automatique" (dossier \BJMPC\ du Planificateur). Le script
+       et sa configuration sont copies dans C:\Program Files\BJMPC\Sauvegarde : la Toolbox peut rester sur une
+       cle USB. PC eteint a l'heure prevue : la sauvegarde part au demarrage suivant. Disque absent : elle est
+       reportee et l'accueil le signale. Le disque est retrouve par son identifiant, meme si sa lettre change.
+     - "Recuperer les fichiers manquants" recopie vers le PC ce qui existe dans la sauvegarde et plus sur le PC,
+       sans jamais remplacer un fichier existant. "Ouvrir la sauvegarde" pour reprendre un fichier a la main.
+     - Le resume pour le client raconte la sauvegarde en langage simple.
+     Limites a connaitre :
+       * ce sont les fichiers personnels, pas Windows ni les logiciels (ce n'est pas une image du disque) ;
+       * une seule version de chaque fichier est gardee (la derniere) : ce n'est pas un historique ;
+       * un fichier ouvert pendant la copie (boite Outlook...) peut etre saute, il est repris la fois suivante ;
+       * les mots de passe des navigateurs ne sont pas copies (chiffres par Windows, inutilisables ailleurs) ;
+       * un dossier range dans OneDrive "a la demande" peut etre telecharge en entier pour etre copie ;
+       * vers un partage reseau, la tache tourne dans la session de l'utilisateur (il doit etre connecte).
+     Journaux et dernier resultat : C:\BJMPC-Logs\Sauvegarde.
+
+  3. OPTIMISATIONS DEPASSEES RETIREES
+     Elles n'apportent rien de mesurable sur Windows 11 aujourd'hui, ou font perdre quelque chose :
+       - MMCSS : NetworkThrottlingIndex, SystemResponsiveness, priorites de la tache "Games" (craquements audio possibles)
+       - Nagle : TcpAckFrequency / TCPNoDelay (ne concerne que le TCP ; les jeux actuels utilisent l'UDP)
+       - RSC, Flow Control, Throughput Booster, Packet Coalescing, options netsh de la pile TCP, reservation QoS
+       - SysMain desactive (Windows l'adapte deja aux SSD ; le couper ralentit le lancement des applications)
+       - disablelastaccess (gere par Windows depuis Windows 10 1803)
+       - "Reglages avances" : Win32PrioritySeparation, PowerThrottlingOff, compression memoire, et la
+         desactivation de l'integrite de la memoire (HVCI), qui retirait une protection
+       - Services "niveau sur" et "niveau avance" : desactiver des services ne rend pas le PC plus rapide et
+         casse une fonction le jour ou on en a besoin (impression, Bluetooth, partage)
+       - Catalogue : "Cartes hors connexion" (application retiree par Microsoft) et "Internet Explorer"
+     Le bouton "Profil complet" devient "Reglages recommandes" : reglages de jeu de Windows, controle du TRIM,
+     telemetrie minimale. Il ne change plus le plan d'alimentation, le reseau ni l'affichage (mode sombre OLED) :
+     cela depend du PC et se choisit dans Optimiser. "Equilibre" est indique comme mode d'alimentation recommande.
+     PC DEJA TRAITES AVEC UNE VERSION 1.x : rien n'est casse. Le Journal annule toujours ces anciens reglages, et
+     l'accueil affiche "Aucun ancien reglage depasse" en orange s'il en reste. Pour les remettre par defaut :
+     Sauvegarde et restauration > Restauration > "Comparer avec Windows 11".
+
+  Verifications faites sur cette version : syntaxe des 6 scripts, autotest complet (Verif.bat), ouverture de
+  chaque onglet, sauvegarde / 2e sauvegarde / restauration / disque absent sur des dossiers d'essai.
+  NON TESTE faute de droits administrateur pendant le developpement : la creation reelle de la tache planifiee
+  et une sauvegarde lancee par elle. A verifier une fois sur un vrai PC (Sauvegarde et restauration > Sauvegarde des fichiers, puis
+  Planificateur de taches > BJMPC > clic droit > Executer).
 
 NOUVEAUTES 1.8
   Reorganisation : chaque page ne contient plus que ce qui correspond a son theme, et plus aucun doublon.
@@ -153,13 +290,13 @@ CE QUI N'A PAS ETE REPRIS, ET POURQUOI
 
 SECURITE / ANNULATION
   Chaque valeur modifiee est enregistree AVANT modification dans
-  C:\BJMPC-Logs\Backup\EtatOrigine_<PC>.json. Page "Journal et annulation" : annuler par categorie
-  ou tout annuler. Un point de restauration peut etre cree depuis le tableau de bord.
+  C:\BJMPC-Logs\Backup\EtatOrigine_<PC>.json. Sauvegarde et restauration > "Restauration" : annuler par categorie
+  ou tout annuler, et creer un point de restauration.
 
 JOURNAUX
   C:\BJMPC-Logs\Toolbox_<PC>_<date>.log        journal de la session
   C:\BJMPC-Logs\Toolbox_erreurs.log            erreurs internes de l'interface (a me transmettre en cas de souci)
 
 SI RIEN NE S'AFFICHE
-  Ouvrir C:\BJMPC-Logs\Toolbox_erreurs.log. Verifier que les 5 fichiers .ps1 sont dans le meme dossier.
+  Ouvrir C:\BJMPC-Logs\Toolbox_erreurs.log. Verifier que les 7 fichiers BJMPC-*.ps1 sont dans le meme dossier.
   Si le zip a ete telecharge : clic droit sur chaque .ps1 > Proprietes > Debloquer (le .bat contourne deja la restriction).

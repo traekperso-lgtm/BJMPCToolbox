@@ -450,11 +450,94 @@ function Restore-DriverBackup {
     $dir = Join-Path $root $Name
     if (-not (Test-Path -LiteralPath $dir)) { Write-Log "Sauvegarde introuvable : $dir" 'ERROR'; return }
     Write-Log "=== Restauration des pilotes depuis $Name ==="
-    $out = Invoke-NativeLines 'pnputil.exe' ('/add-driver "' + $dir + '\*.inf" /subdirs /install')
-    $code = $LASTEXITCODE
-    foreach ($l in @($out | Select-Object -Last 6)) { Write-Host ("   " + $l) -ForegroundColor DarkGray }
-    if ($code -eq 0 -or $code -eq 3010) { Write-Log 'Pilotes réinstallés.' 'OK'; if ($code -eq 3010) { $Script:RebootNeeded = $true } }
-    else { Write-Log ("pnputil a signalé un problème (code {0})." -f $code) 'WARN' }
+    $done = @(); $failed = @()
+    # 1. Sauvegarde faite avant une mise à jour : on retire d'abord le pilote installé à ce moment-là. Sans cela,
+    #    Windows garderait le plus récent des deux et « restaurer » ne changerait rien.
+    $rec = Join-Path $dir 'maj.json'
+    if (Test-Path -LiteralPath $rec) {
+        $list = $null
+        try { $list = Get-Content -LiteralPath $rec -Raw -Encoding UTF8 | ConvertFrom-Json } catch {}
+        foreach ($r in @($list)) {
+            $n = ([string]$r.NewInf).ToLower()
+            if ($n -notmatch '^oem\d+\.inf$') { continue }
+            $p = Join-Path $env:windir ("INF\" + $n)
+            if (-not (Test-Path -LiteralPath $p)) { Write-Log ("Le pilote installé à l'époque ({0}) n'est déjà plus dans le magasin." -f $n); continue }
+            # Windows réattribue les numéros oemNN : on ne retire le paquet que si c'est bien le même fichier.
+            $h = ''; try { $h = [string](Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash } catch {}
+            if (-not $r.Hash -or $h -ne [string]$r.Hash) { Write-Log ("{0} n'est plus le pilote installé à l'époque (numéro réattribué par Windows) : laissé en place." -f $n) 'WARN'; continue }
+            [void](Invoke-NativeLines 'pnputil.exe' ('/delete-driver ' + $n + ' /uninstall'))
+            $c = $LASTEXITCODE
+            if ($c -eq 0 -or $c -eq 3010) { Write-Log ("Pilote récent retiré : {0} ({1})" -f $n, [string]$r.Device) 'OK'; $done += $n; if ($c -eq 3010) { $Script:RebootNeeded = $true } }
+            else { Write-Log ("Retrait de {0} refusé par Windows (code {1})." -f $n, $c) 'WARN'; $failed += $n }
+        }
+    }
+    # 2. Chaque pilote de la sauvegarde est recontrôlé (signature valide, architecture) avant d'être remis.
+    $infs = @(Get-ChildItem -LiteralPath $dir -Filter *.inf -Recurse -ErrorAction SilentlyContinue)
+    foreach ($f in $infs) {
+        $t = Test-DriverPackage -Dir $f.DirectoryName -HwIds @() -InstalledVersion '' -ClassGuid '' -OnlyInf $f.FullName -Level 3
+        if (-not $t.Ok) { Write-Log ("Écarté, non conforme : {0} ({1})" -f $f.Name, [string](@($t.Reasons) | Select-Object -First 1)) 'WARN'; $failed += $f.Name; continue }
+        [void](Invoke-NativeLines 'pnputil.exe' ('/add-driver "' + $f.FullName + '" /install'))
+        $c = $LASTEXITCODE
+        if ($c -eq 0 -or $c -eq 3010) { $done += $f.Name; if ($c -eq 3010) { $Script:RebootNeeded = $true } }
+        elseif ($c -eq 259) { Write-Log ("{0} : remis dans le magasin ; Windows garde le pilote en place, qu'il juge au moins aussi bon." -f $f.Name) }
+        else { Write-Log ("{0} : refusé par Windows (code {1})." -f $f.Name, $c) 'WARN'; $failed += $f.Name }
+    }
+    if ($infs.Count -eq 0 -and (Test-Path -LiteralPath $rec)) { Write-Log 'Aucun ancien pilote à remettre : Windows reprend le pilote précédent ou son pilote générique.' }
+    Write-Log ("Restauration terminée : {0} opération(s) réussie(s), {1} en échec ou écartée(s)." -f $done.Count, $failed.Count) $(if ($failed.Count -eq 0) { 'OK' } else { 'WARN' })
+    Set-SyncResult @{ Ok = @($done); Bad = @($failed); Reboot = [bool]$Script:RebootNeeded }
+}
+
+function Save-DriverUpdateRecord {
+    # Note, dans le dossier de sauvegarde d'une mise à jour, quel paquet vient d'être installé (avec l'empreinte de son
+    # INF) : c'est ce qui permet à la restauration de le retirer.
+    param([string]$Folder, [string]$Device, [string]$OldInf, [string[]]$NewInfs)
+    try {
+        New-Item -ItemType Directory -Path $Folder -Force -ErrorAction Stop | Out-Null
+        $file = Join-Path $Folder 'maj.json'
+        $old = $null
+        if (Test-Path -LiteralPath $file) { try { $old = Get-Content -LiteralPath $file -Raw -Encoding UTF8 | ConvertFrom-Json } catch {} }
+        $list = @($old | Where-Object { $_ })
+        foreach ($n in @($NewInfs)) {
+            if ([string]$n -notmatch '^oem\d+\.inf$') { continue }
+            $h = ''; try { $h = [string](Get-FileHash -LiteralPath (Join-Path $env:windir ("INF\" + $n)) -Algorithm SHA256).Hash } catch {}
+            $list += [pscustomobject]@{ Device = $Device; OldInf = $OldInf; NewInf = [string]$n; Hash = $h; Date = (Get-Date -Format 's') }
+        }
+        if ($list.Count -gt 0) { Set-Content -LiteralPath $file -Value (ConvertTo-Json -InputObject @($list) -Depth 3) -Encoding UTF8 -ErrorAction Stop }
+    } catch { Write-Log ("Note de mise à jour non enregistrée : " + $_.Exception.Message) 'WARN' }
+}
+
+function Get-PresentHardwareIndex {
+    # Identifiant matériel (en majuscules) -> appareils branchés qui le portent.
+    $idx = @{}
+    try {
+        foreach ($e in @(Get-CimInstance Win32_PnPEntity -ErrorAction Stop)) {
+            if ($e.Present -eq $false) { continue }
+            foreach ($h in @($e.HardwareID)) {
+                if (-not $h) { continue }
+                $k = ([string]$h).ToUpper()
+                if (-not $idx.ContainsKey($k)) { $idx[$k] = New-Object System.Collections.ArrayList }
+                [void]$idx[$k].Add([string]$e.PNPDeviceID)
+            }
+        }
+    } catch { Write-Log ("Liste des appareils branchés : " + $_.Exception.Message) 'WARN' }
+    return $idx
+}
+
+function Get-InfDeviceMatches {
+    # Appareils branchés que cet INF déclare (identifiants matériels exacts lus dans le fichier).
+    param([string]$InfPath, $Index)
+    $txt = ''
+    try { $txt = [IO.File]::ReadAllText($InfPath) } catch { return @() }
+    $hit = @{}
+    foreach ($line in ($txt -split "`n")) {
+        $i = $line.IndexOf('=')
+        if ($i -lt 0) { continue }
+        foreach ($tok in ($line.Substring($i + 1) -split '[,;]')) {
+            $k = $tok.Trim().Trim('"').ToUpper()
+            if ($k.Length -ge 4 -and $Index.ContainsKey($k)) { foreach ($d in $Index[$k]) { $hit[[string]$d] = 1 } }
+        }
+    }
+    return @($hit.Keys)
 }
 
 # ---------------------------------------------------------------- Pilotes proposés par Windows Update
@@ -525,13 +608,24 @@ function Install-DriverUpdates {
 # Principe : on ne fait confiance ni au site, ni au transport (HTTP) : seule compte la signature Microsoft
 # (« Microsoft Windows Hardware Compatibility Publisher ») du fichier .cat, vérifiée ici AVANT toute installation,
 # puis revérifiée par Windows lui-même à l'installation (pnputil, sans /force).
-$Script:DrvTmp = Join-Path $env:TEMP 'bjmpc_drivers'
+# Dossier de travail des pilotes : sous C:\BJMPC-Logs, que la Toolbox réserve en écriture aux administrateurs
+# (un dossier temporaire d'utilisateur pourrait être modifié entre le contrôle d'un pilote et son installation).
+$Script:DrvTmp = Join-Path (Join-Path $env:SystemDrive 'BJMPC-Logs') 'Travail\pilotes'
 $Script:CatalogBase = 'https://www.catalog.update.microsoft.com'
 $Script:DrvClasses = @('Display', 'Net', 'MEDIA', 'Bluetooth', 'System', 'HDC', 'SCSIAdapter', 'Image', 'Camera', 'Biometric', 'USB', 'Sensor', 'Firmwares', 'SmartCardReader', 'AudioEndpoint', 'Processor', 'Printer', 'Ports')
 
 function New-DriverRestorePoint {
-    try { Checkpoint-Computer -Description ("BJMPC Pilotes " + (Get-Date -Format 'yyyy-MM-dd HH:mm')) -RestorePointType MODIFY_SETTINGS -ErrorAction Stop; Write-Log 'Point de restauration créé.' 'OK'; return $true }
-    catch { Write-Log ("Point de restauration non créé (un point récent existe peut-être, ou la protection système est désactivée) : " + $_.Exception.Message) 'WARN'; return $false }
+    # Rend $true seulement si un point de restauration de moins de 10 minutes existe réellement après l'appel :
+    # Windows peut refuser sans erreur (un seul point par 24 h par défaut, protection du système désactivée).
+    try {
+        Enable-ComputerRestore -Drive "$env:SystemDrive\" -ErrorAction SilentlyContinue
+        Set-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore' -Name SystemRestorePointCreationFrequency -Value 0 -Type DWord -ErrorAction SilentlyContinue
+        Checkpoint-Computer -Description ("BJMPC Pilotes " + (Get-Date -Format 'yyyy-MM-dd HH:mm')) -RestorePointType MODIFY_SETTINGS -ErrorAction Stop -WarningAction SilentlyContinue
+        $last = Get-ComputerRestorePoint -ErrorAction Stop | Sort-Object CreationTime -Descending | Select-Object -First 1
+        if ($last -and ((Get-Date) - [Management.ManagementDateTimeConverter]::ToDateTime($last.CreationTime)).TotalMinutes -le 10) { Write-Log 'Point de restauration créé.' 'OK'; return $true }
+        Write-Log 'Windows n''a pas créé de point de restauration (aucun point récent trouvé après la demande).' 'WARN'
+        return $false
+    } catch { Write-Log ("Point de restauration non créé (protection du système désactivée ?) : " + $_.Exception.Message) 'WARN'; return $false }
 }
 
 function ConvertTo-SafeVersion {
@@ -588,10 +682,14 @@ function Get-DeviceInfo {
     param([string]$InstanceId, $SignedMap)
     $d = $null; if ($SignedMap) { $d = $SignedMap[$InstanceId] }
     if (-not $d) { try { $d = Get-CimInstance Win32_PnPSignedDriver -ErrorAction Stop | Where-Object { [string]$_.DeviceID -eq $InstanceId } | Select-Object -First 1 } catch {} }
-    if ($d) { return [pscustomobject]@{ Name = [string]$d.DeviceName; Class = [string]$d.DeviceClass; Version = [string]$d.DriverVersion; ClassGuid = [string]$d.ClassGuid; Inf = [string]$d.InfName } }
+    if ($d) {
+        # Date du pilote installé : Windows classe les pilotes par date avant de regarder le numéro de version.
+        $dt = $null; try { if ($d.DriverDate) { $dt = [datetime]$d.DriverDate } } catch {}
+        return [pscustomobject]@{ Name = [string]$d.DeviceName; Class = [string]$d.DeviceClass; Version = [string]$d.DriverVersion; ClassGuid = [string]$d.ClassGuid; Inf = [string]$d.InfName; Date = $dt }
+    }
     $e = $null
     try { $e = Get-CimInstance Win32_PnPEntity -ErrorAction Stop | Where-Object { [string]$_.DeviceID -eq $InstanceId } | Select-Object -First 1 } catch {}
-    if ($e) { return [pscustomobject]@{ Name = $(if ($e.Name) { [string]$e.Name } else { $InstanceId }); Class = [string]$e.PNPClass; Version = ''; ClassGuid = ''; Inf = '' } }
+    if ($e) { return [pscustomobject]@{ Name = $(if ($e.Name) { [string]$e.Name } else { $InstanceId }); Class = [string]$e.PNPClass; Version = ''; ClassGuid = ''; Inf = ''; Date = $null } }
     return $null
 }
 
@@ -652,18 +750,25 @@ function ConvertFrom-CatalogHtml {
 
 function Get-CatalogCandidates {
     # Résultats du Catalog pour un identifiant matériel, filtrés (pilotes Windows 10/11, bonne architecture, version lisible).
-    param([string]$HwId, [string]$Arch, $Cache)
-    if ($Cache.ContainsKey($HwId)) { return @($Cache[$HwId]) }
+    # -Pages : nombre de pages de résultats à lire (1 par défaut ; davantage quand rien d'adapté n'a été trouvé sur la première).
+    param([string]$HwId, [string]$Arch, $Cache, [int]$Pages = 1)
+    $ckey = $(if ($Pages -gt 1) { "$HwId|p$Pages" } else { $HwId })
+    if ($Cache.ContainsKey($ckey)) { return @($Cache[$ckey]) }
+    $url = $Script:CatalogBase + '/Search.aspx?q=' + [Uri]::EscapeDataString($HwId)
     # Une page de résultats valide contient des lignes OU le message « aucun résultat ». Toute autre réponse (limite de
     # requêtes, page d'erreur) n'est PAS « aucun pilote » : on réessaie, puis on signale l'erreur.
     $rowsAll = @()
     $ok = $false
+    $html = ''; $netErr = $null
     foreach ($wait in @(0, 3, 8)) {
         if ($wait -gt 0) { Start-Sleep -Seconds $wait }
-        $html = Invoke-CatalogWeb ($Script:CatalogBase + '/Search.aspx?q=' + [Uri]::EscapeDataString($HwId))
+        # Un délai dépassé ou une erreur 5xx isolée ne doit pas condamner toute la recherche : on réessaie aussi.
+        try { $html = [string](Invoke-CatalogWeb $url); $netErr = $null }
+        catch { $netErr = $_; $html = ''; continue }
         $rowsAll = @(ConvertFrom-CatalogHtml $html)
         if ($rowsAll.Count -gt 0 -or $html -match '(?i)did not find any results|aucun r[ée]sultat|no results') { $ok = $true; break }
     }
+    if (-not $ok -and $netErr) { throw ('Catalog injoignable après 3 essais : ' + $netErr.Exception.Message) }
     if (-not $ok) {
         # Garde la réponse brute pour diagnostic (C:\BJMPC-Logs\Pilotes\catalog_reponse.html) et un extrait dans le journal.
         try {
@@ -673,6 +778,21 @@ function Get-CatalogCandidates {
             Write-Log ('Réponse du Catalog (extrait) : ' + $txt.Substring(0, [Math]::Min(220, $txt.Length))) 'WARN'
         } catch {}
         throw 'Réponse inattendue du Catalog (trop de requêtes ?)'
+    }
+    # Pages suivantes, à la demande : 25 lignes par page, adresse « &p=<numéro de page à partir de 0> » (vérifié sur
+    # le Catalog en 11/2026). Un échec ici n'annule pas la première page.
+    $page = $html
+    for ($p = 2; $p -le $Pages; $p++) {
+        try {
+            if ($page -match '(?i)\(page\s+(\d+)\s+of\s+(\d+)\)' -and [int]$Matches[1] -ge [int]$Matches[2]) { break }
+            Start-Sleep -Milliseconds 700
+            $page = [string](Invoke-CatalogWeb ($url + '&p=' + ($p - 1)))
+            $more = @(ConvertFrom-CatalogHtml $page)
+            $known = @{}; foreach ($r in $rowsAll) { $known[[string]$r.Guid] = 1 }
+            $fresh = @($more | Where-Object { -not $known.ContainsKey([string]$_.Guid) })
+            if ($fresh.Count -eq 0) { break }
+            $rowsAll += $fresh
+        } catch { Write-Log ("Catalog, page {0} : {1}" -f $p, $_.Exception.Message) 'WARN'; break }
     }
     $out = New-Object System.Collections.ArrayList
     foreach ($r in $rowsAll) {
@@ -685,17 +805,32 @@ function Get-CatalogCandidates {
         if (-not $v) { continue }
         [void]$out.Add(@{ V = $v; R = $r; H = $HwId })
     }
-    $Cache[$HwId] = @($out)
+    $Cache[$ckey] = @($out)
     Start-Sleep -Milliseconds 700
     return @($out)
 }
 
+function Test-CandidateNewer {
+    # Un paquet du Catalog est-il plus récent que le pilote installé ?
+    # Même famille (même numéro majeur) : on compare les versions. Familles différentes (une même puce a souvent deux
+    # pilotes aux numérotations sans rapport, par exemple 1168.x et 10.x, ou le pilote générique Microsoft 10.0.x face
+    # au pilote du fabricant 6.0.x) : un numéro plus grand ne veut rien dire, on compare les dates, comme Windows.
+    param($C, $InstalledVersion, $InstalledDate)
+    if (-not $InstalledVersion) { return $true }
+    if ($InstalledDate -and $C.V.Major -ne $InstalledVersion.Major) {
+        $cd = $null; try { $cd = [datetime]$C.R.Date } catch {}
+        if ($cd -and $cd -gt [datetime]'1990-01-01') { return ($cd.Date -gt ([datetime]$InstalledDate).Date) }
+    }
+    return ($C.V -gt $InstalledVersion)
+}
+
 function Select-BestCandidate {
-    param($Cands, $InstalledVersion)
+    # Le plus récent d'abord (date, puis version). Le contrôle de l'INF (Test-DriverPackage) reste seul juge.
+    param($Cands, $InstalledVersion, $InstalledDate = $null)
     $best = $null
     foreach ($c in @($Cands)) {
-        if ($InstalledVersion -and $c.V -le $InstalledVersion) { continue }
-        if ($best -eq $null -or $c.V -gt $best.V -or ($c.V -eq $best.V -and $c.R.Date -gt $best.R.Date)) { $best = $c }
+        if (-not (Test-CandidateNewer $c $InstalledVersion $InstalledDate)) { continue }
+        if ($best -eq $null -or $c.R.Date -gt $best.R.Date -or ($c.R.Date -eq $best.R.Date -and $c.V -gt $best.V)) { $best = $c }
     }
     return $best
 }
@@ -703,10 +838,10 @@ function Select-BestCandidate {
 function Get-CandidateGuids {
     # Les résultats du Catalog sont approximatifs : plusieurs paquets différents (même titre, tailles différentes) partagent
     # le même mot-clé. On garde les meilleurs paquets distincts (plus récents que l'installé) pour les essayer l'un après l'autre.
-    param($Cands, $InstalledVersion, [int]$Max = 6)
+    param($Cands, $InstalledVersion, [int]$Max = 6, $InstalledDate = $null)
     $seenKey = @{}; $g = New-Object System.Collections.ArrayList
-    foreach ($c in @($Cands | Sort-Object @{ Expression = { $_.V }; Descending = $true }, @{ Expression = { $_.R.Date }; Descending = $true })) {
-        if ($InstalledVersion -and $c.V -le $InstalledVersion) { continue }
+    foreach ($c in @($Cands | Sort-Object @{ Expression = { $_.R.Date }; Descending = $true }, @{ Expression = { $_.V }; Descending = $true })) {
+        if (-not (Test-CandidateNewer $c $InstalledVersion $InstalledDate)) { continue }
         $k = ([string]$c.R.Title + '|' + [string]$c.R.SizeMB + '|' + [string]$c.V)
         if ($seenKey.ContainsKey($k)) { continue }
         $seenKey[$k] = 1
@@ -747,12 +882,15 @@ function Find-DriverCatalog {
         $d = Get-DeviceInfo $inst $sd
         $name = if ($d) { [string]$d.Name } else { $inst }
         $instV = if ($d) { ConvertTo-SafeVersion ([string]$d.Version) } else { $null }
+        $instD = if ($d) { $d.Date } else { $null }
         Write-Host ("  [{0}/{1}] {2}" -f $k, $total, $name) -ForegroundColor DarkGray
         $row = [pscustomobject]@{ Id = $inst; Name = $name; Class = $(if ($d) { [string]$d.Class } else { '' }); Installed = $(if ($d) { [string]$d.Version } else { '' }); Status = 'none'; State = 'none'; Alts = ''; Verified = $false; Note = ''; Guid = ''; Title = ''; Version = ''; Date = ''; SizeMB = 0.0; HwId = ''; Doubt = $false; Level = 1 }
         if (-not $net) { $row.Status = 'error'; $row.State = 'error'; $row.Note = 'Recherche interrompue (Catalog injoignable ou trop sollicité)'; [void]$rows.Add($row); continue }
         $hw = @(Get-DeviceHardwareIds $inst | Select-Object -First 8)
         if ($hw.Count -eq 0) { $row.Note = 'Aucun identifiant matériel lisible'; [void]$rows.Add($row); continue }
-        $base = @($hw | ForEach-Object { ([string]$_) -replace '&(SUBSYS|REV)_[0-9A-Fa-f]+', '' } | Select-Object -Unique | Select-Object -First 3)
+        # Les variantes de classe (&CC_xxxx) ne désignent aucun pilote précis : elles ne sont pas interrogées.
+        $base = @($hw | Where-Object { ([string]$_) -notmatch '(?i)&CC_' } | ForEach-Object { ([string]$_) -replace '&(SUBSYS|REV)_[0-9A-Fa-f]+', '' } | Select-Object -Unique | Select-Object -First 3)
+        if ($base.Count -eq 0) { $base = @($hw | ForEach-Object { ([string]$_) -replace '&(SUBSYS|REV|CC)_[0-9A-Fa-f]+', '' } | Select-Object -Unique | Select-Object -First 1) }
         $spec = @($hw | Where-Object { ([string]$_) -match 'SUBSYS_' } | Select-Object -First 2)
         $row.HwId = [string]$base[0]
         $best = $null; $nres = 0; $doubt = $false; $refined = $false; $why = ''; $pool = @()
@@ -761,7 +899,7 @@ function Find-DriverCatalog {
             foreach ($h in $base) {
                 $cands = @(Get-CatalogCandidates $h $arch $cache)
                 $nres += $cands.Count
-                $best = Select-BestCandidate $cands $instV
+                $best = Select-BestCandidate $cands $instV $instD
                 if ($best) { $seen = $cands; $pool = $cands; break }
             }
             if ($best) {
@@ -773,7 +911,7 @@ function Find-DriverCatalog {
                 foreach ($h in $spec) {
                     $cands2 = @(Get-CatalogCandidates $h $arch $cache)
                     $nres += $cands2.Count
-                    $b2 = Select-BestCandidate $cands2 $instV
+                    $b2 = Select-BestCandidate $cands2 $instV $instD
                     if ($b2) { $best = $b2; $pool = $cands2; $refined = $true; $doubt = $false; break }
                 }
             }
@@ -798,32 +936,59 @@ function Find-DriverCatalog {
             try {
                 foreach ($h in @($q | Select-Object -Unique)) {
                     $cands3 = @(Get-CatalogCandidates $h $arch $cache)
-                    $b3 = Select-BestCandidate $cands3 $instV
+                    $b3 = Select-BestCandidate $cands3 $instV $instD
                     if ($b3) { $best = $b3; $pool = $cands3; $row.Level = 2; $refined = $false; $row.Note = 'ÉLARGI : trouvé par « ' + $h + ' » (le contrôle de l''INF décidera à l''installation)'; break }
                 }
-            } catch { Write-Log ("Catalog injoignable : " + $_.Exception.Message) 'WARN'; $net = $false }
+            } catch {
+                # Une erreur ici n'est pas « aucun pilote » : la ligne est marquée en erreur, pas « introuvable ».
+                Write-Log ("Catalog injoignable : " + $_.Exception.Message) 'WARN'; $net = $false
+                if (-not $best) { $row.Status = 'error'; $row.State = 'error'; $row.Note = 'Catalog injoignable pendant l''analyse élargie'; [void]$rows.Add($row); continue }
+            }
         }
         if ($best) {
             $badRun = 0
             $row.Status = 'found'; $row.State = 'update'; $row.Guid = $best.R.Guid; $row.Title = $best.R.Title; $row.Version = $best.R.VersionText
-            $row.Alts = (@(Get-CandidateGuids $pool $instV) -join '~'); if (-not $row.Alts) { $row.Alts = [string]$best.R.Guid }
+            $row.Alts = (@(Get-CandidateGuids $pool $instV 6 $instD) -join '~'); if (-not $row.Alts) { $row.Alts = [string]$best.R.Guid }
+            $shown = $best
             # Le Catalog trouve par mots-clés (résultats approximatifs) : un paquet « proposé » peut ne pas contenir cet appareil.
             # Les paquets légers sont donc téléchargés et contrôlés dès la recherche ; les gros (pilotes graphiques) le sont à l'installation.
             if ($d -and [double]$best.R.SizeMB -le 60) {
                 Write-Host '      contrôle du paquet…' -ForegroundColor DarkGray
-                $chk = $null
-                try { $chk = Resolve-CatalogPackage -Ids @($row.Alts -split '~') -Device $d -HwIds $hw -CompatIds @(Get-DeviceCompatibleIds $inst) -Level $row.Level } catch { Write-Log ("Contrôle impossible : " + $_.Exception.Message) 'WARN' }
+                $chk = $null; $tried = @(); $nIds = 0
+                foreach ($pass in 1, 2) {
+                    $ids = @($row.Alts -split '~' | Where-Object { $_ })
+                    if ($pass -eq 2) {
+                        # Rien d'adapté parmi les 25 résultats les plus récents : le Catalog en a souvent d'autres pages
+                        # (chaque version y est répétée pour chaque édition de Windows).
+                        $pool2 = @()
+                        try { $pool2 = @(Get-CatalogCandidates ([string]$best.H) $arch $cache 3) } catch { Write-Log ("Catalog (pages suivantes) : " + $_.Exception.Message) 'WARN'; break }
+                        $ids = @(Get-CandidateGuids @($pool2 | Where-Object { $tried -notcontains [string]$_.R.Guid }) $instV 6 $instD)
+                        if ($ids.Count -eq 0) { break }
+                        Write-Host '      autres pages de résultats du Catalog…' -ForegroundColor DarkGray
+                        $pool = $pool2
+                    }
+                    $tried += $ids; $nIds = $ids.Count
+                    $chk = $null
+                    try { $chk = Resolve-CatalogPackage -Ids $ids -Device $d -HwIds $hw -CompatIds @(Get-DeviceCompatibleIds $inst) -Level $row.Level } catch { Write-Log ("Contrôle impossible : " + $_.Exception.Message) 'WARN' }
+                    # On ne lit les pages suivantes que si les paquets ont bien été téléchargés et tous refusés.
+                    if (-not $chk -or $chk.Ok -or $chk.Errors -ge $nIds) { break }
+                }
                 if ($chk -and $chk.Ok) {
                     $row.Alts = $chk.Guid; $row.Verified = $true
+                    # On affiche le paquet réellement retenu (le premier essayé a pu être refusé), avec la version lue dans son INF.
+                    $row.Guid = [string]$chk.Guid
+                    if ($chk.Test.Version) { $row.Version = [string]$chk.Test.Version }
+                    $kept = @($pool | Where-Object { [string]$_.R.Guid -eq [string]$chk.Guid }) | Select-Object -First 1
+                    if ($kept) { $shown = $kept; $row.Title = [string]$kept.R.Title }
                     try { Remove-Item -LiteralPath $chk.Work -Recurse -Force -ErrorAction SilentlyContinue } catch {}
-                } elseif ($chk -and $chk.Errors -lt @($row.Alts -split '~').Count) {
+                } elseif ($chk -and $chk.Errors -lt $nIds) {
                     $row.Status = 'none'; $row.State = 'nomatch'; $row.Alts = ''
                     $row.Note = 'Le Catalog propose des paquets pour cette puce, mais aucun ne déclare cet appareil'
                     Write-Log ("{0} : paquets du Catalog sans rapport avec cet appareil (écartés)." -f $name) 'WARN'
                     [void]$rows.Add($row); continue
                 }
             }
-            $row.Date = $(if ($best.R.Date -gt [datetime]'1990-01-01') { $best.R.Date.ToString('yyyy-MM-dd') } else { '' }); $row.SizeMB = $best.R.SizeMB; $row.HwId = $best.H; $row.Doubt = $doubt
+            $row.Date = $(if ($shown.R.Date -gt [datetime]'1990-01-01') { $shown.R.Date.ToString('yyyy-MM-dd') } else { '' }); $row.SizeMB = $shown.R.SizeMB; $row.HwId = $best.H; $row.Doubt = $doubt
             if ($row.Level -ge 2) { }
             elseif ($refined) { $row.Note = 'affiné avec le SUBSYS (' + $why + ')' }
             elseif ($doubt) { $row.Note = 'plusieurs éditeurs pour cette puce : le contrôle strict décidera' }
@@ -844,9 +1009,13 @@ function Test-DriverPackage {
     # Contrôle strict d'un dossier de pilote. Retourne @{ Ok; Reasons; Report; Inf; Version; Date }.
     # Refus si : signature .cat absente/invalide/non Microsoft WHQL ; architecture ; identifiant matériel absent de l'INF ;
     # classe différente ; version non plus récente que celle installée.
-    param([string]$Dir, [string[]]$HwIds, [string]$InstalledVersion, [string]$ClassGuid, [string]$OnlyInf, [string[]]$CompatIds = @(), [int]$Level = 1)
+    param([string]$Dir, [string[]]$HwIds, [string]$InstalledVersion, [string]$ClassGuid, [string]$OnlyInf, [string[]]$CompatIds = @(), [int]$Level = 1, $InstalledDate = $null)
     $rep = New-Object System.Collections.ArrayList
     $bad = New-Object System.Collections.ArrayList
+    # Les identifiants de CLASSE (PCI\CC_0C0330, USB\Class_03…) sont communs à des milliers d'appareils : ils ne
+    # prouvent jamais qu'un INF concerne celui-ci, même au niveau élargi.
+    $CompatIds = @($CompatIds | Where-Object { $_ -and ([string]$_) -notmatch '(?i)[&\\]CC_|Class_|^[A-Za-z]+\\VEN_[0-9A-F]{4}$' })
+    $instD = $null; if ($InstalledDate) { try { $instD = ([datetime]$InstalledDate).Date } catch {} }
     $result = @{ Ok = $false; Reasons = @(); Report = @(); Inf = ''; Version = ''; Date = '' }
     $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'ntarm64' } else { 'ntamd64' }
     $infs = @(Get-ChildItem -LiteralPath $Dir -Filter *.inf -Recurse -ErrorAction SilentlyContinue)
@@ -886,9 +1055,19 @@ function Test-DriverPackage {
         $f = $c[0]; $txt = $c[1]; $mine = New-Object System.Collections.ArrayList
         if ($txt -notmatch ('(?i)' + $arch)) { [void]$mine.Add(("{0} : architecture {1} non déclarée" -f $f.Name, $arch)) }
         if ($ClassGuid -and $txt -notmatch ('(?i)ClassGuid\s*=\s*' + [regex]::Escape($ClassGuid))) { [void]$mine.Add(("{0} : classe d'appareil différente" -f $f.Name)) }
+        # Appareil sans pilote (classe inconnue) : un INF « Extension » ou « SoftwareComponent » ne fait que compléter
+        # un pilote de base. L'accepter donnerait une « mise à jour » qui n'installe rien.
+        if (-not $ClassGuid -and @($HwIds | Where-Object { $_ }).Count -gt 0 -and $txt -match '(?im)^\s*Class\s*=\s*"?(Extension|SoftwareComponent)\b') { [void]$mine.Add(("{0} : complément de pilote (classe {1}), pas le pilote de l'appareil" -f $f.Name, $Matches[1])) }
         $dv = $null; $dd = ''
         if ($txt -match '(?im)^\s*DriverVer\s*=\s*([\d/]+)\s*,\s*([\d\.]+)') { $dd = $Matches[1]; $dv = ConvertTo-SafeVersion $Matches[2] } else { [void]$mine.Add(("{0} : DriverVer illisible" -f $f.Name)) }
-        if ($dv -and $instV -and $dv -le $instV) { [void]$mine.Add(("{0} : version {1} pas plus récente que {2}" -f $f.Name, $dv, $instV)) }
+        $infD = $null
+        if ($dd) { try { $infD = [datetime]::ParseExact($dd, [string[]]@('M/d/yyyy', 'MM/dd/yyyy'), [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None) } catch {} }
+        if ($dv -and $instV) {
+            if ($infD -and $instD -and $dv.Major -ne $instV.Major) {
+                # Autre famille de pilote (numérotation sans rapport) : c'est la date qui départage, comme le fait Windows.
+                if ($infD -le $instD) { [void]$mine.Add(("{0} : pilote du {1:dd/MM/yyyy} (v{2}), pas plus récent que l'installé du {3:dd/MM/yyyy} (v{4})" -f $f.Name, $infD, $dv, $instD, $instV)) }
+            } elseif ($dv -le $instV) { [void]$mine.Add(("{0} : version {1} pas plus récente que {2}" -f $f.Name, $dv, $instV)) }
+        }
         $catName = ''
         if ($txt -match '(?im)^\s*CatalogFile(\.NT\w+)?\s*=\s*([^\s;]+)') { $catName = $Matches[2] }
         if (-not $catName) { [void]$mine.Add(("{0} : aucun fichier catalogue (non signé)" -f $f.Name)) }
@@ -925,18 +1104,35 @@ function Get-CatalogPackage {
     param([string]$UpdateId, [string]$Work)
     $body = 'updateIDs=' + [Uri]::EscapeDataString('[{"size":0,"languages":"","uidInfo":"' + $UpdateId + '","updateID":"' + $UpdateId + '"}]')
     $html = Invoke-CatalogWeb ($Script:CatalogBase + '/DownloadDialog.aspx') $body
-    $urls = @([regex]::Matches($html, "(?i)downloadInformation\[\d+\]\.files\[\d+\]\.url\s*=\s*'([^']+)'") | ForEach-Object { $_.Groups[1].Value })
-    $urls = @($urls | Where-Object { $_ -match '^https?://[A-Za-z0-9\.\-]+\.(microsoft\.com|windowsupdate\.com)/[^\s]+\.cab$' })
+    # Chaque fichier est annoncé avec son adresse et son empreinte SHA-256 (en base64).
+    $files = [ordered]@{}
+    foreach ($m in [regex]::Matches($html, "(?i)downloadInformation\[(\d+)\]\.files\[(\d+)\]\.(url|sha256)\s*=\s*'([^']*)'")) {
+        $k = $m.Groups[1].Value + '.' + $m.Groups[2].Value
+        if (-not $files.Contains($k)) { $files[$k] = @{} }
+        $files[$k][$m.Groups[3].Value.ToLower()] = $m.Groups[4].Value
+    }
     $dirs = @()
-    foreach ($u in $urls) {
+    foreach ($f in @($files.Values)) {
+        $u = [string]$f.url
+        if ($u -notmatch '^https?://[A-Za-z0-9\.\-]+\.(microsoft\.com|windowsupdate\.com)/[^\s]+\.cab$') { continue }
         $cab = Join-Path $Work ([IO.Path]::GetFileName(([Uri]$u).AbsolutePath))
         Write-Log ("Téléchargement : {0}" -f ([Uri]$u).Host)
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         $wc = New-Object Net.WebClient
         $wc.DownloadFile($u, $cab)
+        # Contrôle d'intégrité : l'empreinte du fichier reçu doit être celle annoncée par le Catalog.
+        if ($f.sha256) {
+            $want = ''; try { $want = ([BitConverter]::ToString([Convert]::FromBase64String([string]$f.sha256)) -replace '-', '') } catch {}
+            if ($want) {
+                $got = [string](Get-FileHash -LiteralPath $cab -Algorithm SHA256).Hash
+                if ($got -ne $want) { throw 'le fichier téléchargé ne correspond pas à l''empreinte annoncée par le Catalog (téléchargement incomplet ou altéré)' }
+            }
+        }
         $ex = Join-Path $Work ([IO.Path]::GetFileNameWithoutExtension($cab))
         New-Item -ItemType Directory -Path $ex -Force | Out-Null
         [void](Invoke-NativeLines 'expand.exe' ('-F:* "' + $cab + '" "' + $ex + '"'))
+        # Un .cab tronqué ou illisible ne doit pas passer pour « ce paquet ne concerne pas l'appareil ».
+        if ($LASTEXITCODE -ne 0) { throw ("extraction du paquet impossible (expand code {0}) : téléchargement incomplet ?" -f $LASTEXITCODE) }
         $dirs += $ex
     }
     return @($dirs)
@@ -958,7 +1154,7 @@ function Resolve-CatalogPackage {
             $dirs = @(Get-CatalogPackage $uid $work)
             if ($dirs.Count -eq 0) { Write-Log 'Aucun lien de téléchargement Microsoft pour ce paquet.' 'WARN'; $res.Errors++ }
             foreach ($ex in $dirs) {
-                $t = Test-DriverPackage -Dir $ex -HwIds $HwIds -InstalledVersion ([string]$Device.Version) -ClassGuid ([string]$Device.ClassGuid) -CompatIds $CompatIds -Level $Level
+                $t = Test-DriverPackage -Dir $ex -HwIds $HwIds -InstalledVersion ([string]$Device.Version) -ClassGuid ([string]$Device.ClassGuid) -CompatIds $CompatIds -Level $Level -InstalledDate $Device.Date
                 if ($t.Ok) { $res.Ok = $true; $res.Test = $t; $res.Work = $work; $res.Guid = $uid; break }
                 foreach ($r in @($t.Reasons | Select-Object -First 2)) { Write-Log ("Paquet {0} refusé : {1}" -f $n, $r) 'WARN' }
             }
@@ -991,8 +1187,9 @@ function Install-CatalogDriver {
         foreach ($l in @($good.Report)) { Write-Log $l 'OK' }
         # Sauvegarde du pilote actuel (si c'est un pilote tiers oemNN.inf)
         $inf = ([string]$d.Inf).ToLower()
+        $top = Join-Path $Script:LogDir ("Pilotes\Avant_MAJ_{0}_{1}" -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd_HHmmss'))
         if ($inf -match '^oem\d+\.inf$') {
-            $bk = Join-Path $Script:LogDir ("Pilotes\Avant_MAJ_{0}_{1}\{2}" -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd_HHmmss'), ($inf -replace '\.inf$', ''))
+            $bk = Join-Path $top ($inf -replace '\.inf$', '')
             New-Item -ItemType Directory -Path $bk -Force | Out-Null
             [void](Invoke-NativeLines 'pnputil.exe' ('/export-driver ' + $inf + ' "' + $bk + '"'))
             if (Get-ChildItem -LiteralPath $bk -Filter *.inf -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1) { Write-Log ("Ancien pilote sauvegardé : " + $bk) 'OK' }
@@ -1002,22 +1199,36 @@ function Install-CatalogDriver {
         $out = Invoke-NativeLines 'pnputil.exe' ('/add-driver "' + $good.Inf + '" /install')
         $code = $LASTEXITCODE
         foreach ($l in @($out | Select-Object -Last 3)) { Write-Host ("   " + $l) -ForegroundColor DarkGray }
-        if ($code -eq 0 -or $code -eq 3010) {
-            if ($code -eq 3010) { $Script:RebootNeeded = $true; $Script:DrvCatReboot = $true }
-            # Vérification : Windows a-t-il réellement appliqué le pilote à cet appareil ?
+        # Vérification : Windows a-t-il réellement appliqué le pilote à cet appareil ?
+        # Code 0 ou 3010 (redémarrage) = ajouté ; 259 = ajouté au magasin mais Windows garde le pilote actuel, jugé au moins aussi bon.
+        $applied = $false
+        if ($code -eq 3010) { $applied = $true; $Script:RebootNeeded = $true; $Script:DrvCatReboot = $true }
+        elseif ($code -eq 0) {
             $after = Get-DeviceInfo $InstanceId $null
-            $applied = $true
-            if ($code -ne 3010 -and $after -and ([string]$after.Inf -eq [string]$d.Inf) -and ([string]$after.Version -eq [string]$d.Version)) { $applied = $false }
-            if ($applied) { Write-Log ("Installé : {0} → v{1}" -f $name, $good.Version) 'OK'; $Script:DrvCatOk += $name }
-            else {
-                Write-Log ("{0} : le pilote est valide mais Windows ne l'a pas appliqué à cet appareil (il ne correspond pas exactement, ou le pilote actuel est jugé meilleur)." -f $name) 'WARN'
-                $oemNew = @(Get-ChildItem -LiteralPath (Join-Path $env:windir 'INF') -Filter 'oem*.inf' -ErrorAction SilentlyContinue | ForEach-Object { $_.Name.ToLower() } | Where-Object { $oemBefore -notcontains $_ })
-                foreach ($o in $oemNew) {
-                    if ($o -match '^oem\d+\.inf$') { $dl = Invoke-NativeLines 'pnputil.exe' ('/delete-driver ' + $o); Write-Log ("Paquet inutilisé retiré du magasin : " + $o) 'OK' }
-                }
-                $Script:DrvCatBad += $name
+            $applied = -not ($after -and ([string]$after.Inf -eq [string]$d.Inf) -and ([string]$after.Version -eq [string]$d.Version))
+        }
+        if ($applied) {
+            Write-Log ("Installé : {0} → v{1}" -f $name, $good.Version) 'OK'; $Script:DrvCatOk += $name
+            # Pour le retour arrière : on note quel paquet vient d'entrer dans le magasin.
+            $oemAdded = @(Get-ChildItem -LiteralPath (Join-Path $env:windir 'INF') -Filter 'oem*.inf' -ErrorAction SilentlyContinue | ForEach-Object { $_.Name.ToLower() } | Where-Object { $oemBefore -notcontains $_ })
+            if ($oemAdded.Count -gt 0) {
+                Save-DriverUpdateRecord -Folder $top -Device $name -OldInf $inf -NewInfs $oemAdded
+                Write-Log ("Retour arrière possible : Pilotes > Sauvegardes > {0}" -f (Split-Path $top -Leaf))
             }
-        } else { Write-Log ("Windows a refusé l'installation (code {0})." -f $code) 'WARN'; $Script:DrvCatBad += $name }
+        }
+        else {
+            if ($code -eq 0 -or $code -eq 259) { Write-Log ("{0} : le pilote est valide mais Windows ne l'a pas appliqué à cet appareil (il ne correspond pas exactement, ou le pilote actuel est jugé au moins aussi bon)." -f $name) 'WARN' }
+            else { Write-Log ("Windows a refusé l'installation (code {0})." -f $code) 'WARN' }
+            # Dans tous les cas d'échec, le paquet ajouté pour rien est retiré du magasin de pilotes.
+            $oemNew = @(Get-ChildItem -LiteralPath (Join-Path $env:windir 'INF') -Filter 'oem*.inf' -ErrorAction SilentlyContinue | ForEach-Object { $_.Name.ToLower() } | Where-Object { $oemBefore -notcontains $_ })
+            foreach ($o in $oemNew) {
+                if ($o -notmatch '^oem\d+\.inf$') { continue }
+                [void](Invoke-NativeLines 'pnputil.exe' ('/delete-driver ' + $o))
+                if ($LASTEXITCODE -eq 0) { Write-Log ("Paquet inutilisé retiré du magasin : " + $o) 'OK' }
+                else { Write-Log ("Paquet {0} laissé dans le magasin (Windows l'utilise pour un autre appareil, code {1})." -f $o, $LASTEXITCODE) }
+            }
+            $Script:DrvCatBad += $name
+        }
     } catch { Write-Log ("Échec pour {0} : {1}" -f $name, $_.Exception.Message) 'WARN'; $Script:DrvCatBad += $name }
     finally { if ($goodWork) { try { Remove-Item -LiteralPath $goodWork -Recurse -Force -ErrorAction SilentlyContinue } catch {} } }
 }
@@ -1027,7 +1238,14 @@ function Install-CatalogDrivers {
     param([string[]]$Items)
     $Script:DrvCatOk = @(); $Script:DrvCatBad = @(); $Script:DrvCatReboot = $false
     Write-Log ("=== Installation de {0} pilote(s) du Catalog (contrôle WHQL strict) ===" -f @($Items).Count)
-    [void](New-DriverRestorePoint)
+    if (-not (New-DriverRestorePoint)) {
+        # Sans point de restauration, on ne continue que sur accord explicite (l'ancien pilote reste copié avant chaque installation).
+        if (-not (Confirm-Action "Le point de restauration n'a pas pu être créé. Installer quand même les pilotes ? L'ancien pilote de chaque appareil sera tout de même copié dans C:\BJMPC-Logs\Pilotes.")) {
+            Write-Log 'Installation annulée : pas de point de restauration. Activez la protection du système (Sauvegarde et restauration > Restauration), puis relancez.' 'WARN'
+            Set-SyncResult @{ Ok = @(); Bad = @(); Reboot = $false }
+            return
+        }
+    }
     foreach ($it in @($Items)) {
         $p = ([string]$it) -split '\|'
         if ($p.Count -lt 2) { continue }
@@ -1115,22 +1333,92 @@ function Add-DriverFromFolder {
         else { $ko += $f.Name; foreach ($r in @($t.Reasons | Select-Object -First 2)) { Write-Log ("Refusé : " + $r) 'WARN' } }
     }
     if ($ok.Count -eq 0) { if ($tmpZip) { try { Remove-Item -LiteralPath $tmpZip -Recurse -Force -ErrorAction SilentlyContinue } catch {} }; Write-Log 'Aucun INF conforme : rien n''est ajouté.' 'WARN'; Set-SyncResult @{ Ok = @(); Bad = @($ko); Reboot = $false }; return }
-    [void](New-DriverRestorePoint)
+    # Installation : un dossier de constructeur contient souvent des dizaines de pilotes (un par modèle). On ne garde
+    # que ceux qui déclarent un appareil réellement branché sur ce PC.
+    $targets = @{}
+    if ($Install) {
+        $index = Get-PresentHardwareIndex
+        $keep = @()
+        foreach ($inf in $ok) {
+            $dev = @(Get-InfDeviceMatches $inf $index)
+            if ($dev.Count -eq 0) { Write-Log ("Non installé : {0} ne concerne aucun appareil branché sur ce PC." -f (Split-Path $inf -Leaf)); continue }
+            $targets[$inf] = $dev; $keep += $inf
+        }
+        if ($keep.Count -eq 0) {
+            if ($tmpZip) { try { Remove-Item -LiteralPath $tmpZip -Recurse -Force -ErrorAction SilentlyContinue } catch {} }
+            Write-Log 'Aucun pilote de ce dossier ne correspond à un appareil branché : rien n''est installé. Pour le garder en réserve, utilisez « ajouter au magasin seulement ».' 'WARN'
+            Set-SyncResult @{ Ok = @(); Bad = @($ko); Reboot = $false }; return
+        }
+        Write-Log ("{0} pilote(s) sur {1} concernent un appareil branché." -f $keep.Count, $ok.Count)
+        $ok = $keep
+    }
+    if (-not (New-DriverRestorePoint) -and $Install) {
+        if (-not (Confirm-Action "Le point de restauration n'a pas pu être créé. Installer quand même ? L'ancien pilote de chaque appareil sera tout de même copié dans C:\BJMPC-Logs\Pilotes.")) {
+            if ($tmpZip) { try { Remove-Item -LiteralPath $tmpZip -Recurse -Force -ErrorAction SilentlyContinue } catch {} }
+            Write-Log 'Installation annulée : pas de point de restauration.' 'WARN'
+            Set-SyncResult @{ Ok = @(); Bad = @(); Reboot = $false }; return
+        }
+    }
     $added = @(); $rb = $false
+    $top = Join-Path $Script:LogDir ("Pilotes\Avant_MAJ_{0}_{1}" -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd_HHmmss'))
+    $current = @{}; $saved = @{}
+    if ($Install) { try { foreach ($sd in @(Get-CimInstance Win32_PnPSignedDriver -ErrorAction Stop)) { $current[[string]$sd.DeviceID] = ([string]$sd.InfName).ToLower() } } catch {} }
     foreach ($inf in $ok) {
+        $leaf = Split-Path $inf -Leaf
+        $olds = @()
+        if ($Install) {
+            # Copie du pilote actuel de chaque appareil concerné, comme pour une mise à jour depuis le Catalog.
+            $olds = @(@($targets[$inf]) | ForEach-Object { [string]$current[[string]$_] } | Where-Object { $_ -match '^oem\d+\.inf$' } | Sort-Object -Unique)
+            $bkOk = $true
+            foreach ($o in $olds) {
+                if ($saved.ContainsKey($o)) { continue }
+                $bk = Join-Path $top ($o -replace '\.inf$', '')
+                New-Item -ItemType Directory -Path $bk -Force | Out-Null
+                [void](Invoke-NativeLines 'pnputil.exe' ('/export-driver ' + $o + ' "' + $bk + '"'))
+                if (Get-ChildItem -LiteralPath $bk -Filter *.inf -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1) { $saved[$o] = 1; Write-Log ("Ancien pilote sauvegardé : " + $bk) 'OK' }
+                else { $bkOk = $false }
+            }
+            if (-not $bkOk) { $ko += $leaf; Write-Log ("{0} : sauvegarde de l'ancien pilote impossible, installation annulée pour ce pilote." -f $leaf) 'WARN'; continue }
+        }
+        $oemBefore = @(Get-ChildItem -LiteralPath (Join-Path $env:windir 'INF') -Filter 'oem*.inf' -ErrorAction SilentlyContinue | ForEach-Object { $_.Name.ToLower() })
         $args2 = '/add-driver "' + $inf + '"'; if ($Install) { $args2 += ' /install' }
         [void](Invoke-NativeLines 'pnputil.exe' $args2)
         $code = $LASTEXITCODE
-        if ($code -eq 0 -or $code -eq 3010) { $added += (Split-Path $inf -Leaf); if ($code -eq 3010) { $rb = $true; $Script:RebootNeeded = $true } }
-        else { $ko += (Split-Path $inf -Leaf); Write-Log ("Refusé par Windows : {0} (code {1})" -f (Split-Path $inf -Leaf), $code) 'WARN' }
+        if ($code -eq 0 -or $code -eq 3010) {
+            $added += $leaf; if ($code -eq 3010) { $rb = $true; $Script:RebootNeeded = $true }
+            if ($Install) {
+                $oemAdded = @(Get-ChildItem -LiteralPath (Join-Path $env:windir 'INF') -Filter 'oem*.inf' -ErrorAction SilentlyContinue | ForEach-Object { $_.Name.ToLower() } | Where-Object { $oemBefore -notcontains $_ })
+                if ($oemAdded.Count -gt 0) { Save-DriverUpdateRecord -Folder $top -Device $leaf -OldInf ($olds -join ',') -NewInfs $oemAdded }
+            }
+        }
+        elseif ($code -eq 259 -and $Install) { Write-Log ("{0} : ajouté au magasin, mais Windows garde le pilote en place, qu'il juge au moins aussi bon." -f $leaf) }
+        else { $ko += $leaf; Write-Log ("Refusé par Windows : {0} (code {1})" -f $leaf, $code) 'WARN' }
     }
+    if ($Install -and (Test-Path -LiteralPath (Join-Path $top 'maj.json'))) { Write-Log ("Retour arrière possible : Pilotes > Sauvegardes > {0}" -f (Split-Path $top -Leaf)) }
     Write-Log ("{0} pilote(s) ajouté(s){1}." -f $added.Count, $(if ($Install) { ' et installé(s)' } else { ' au magasin' })) $(if ($added.Count -gt 0) { 'OK' } else { 'WARN' })
     if ($tmpZip) { try { Remove-Item -LiteralPath $tmpZip -Recurse -Force -ErrorAction SilentlyContinue } catch {} }
     Set-SyncResult @{ Ok = @($added); Bad = @($ko); Reboot = $rb }
 }
 
 # ---------------------------------------------------------------- Appareils fantômes (non branchés depuis 15 jours ou plus)
-$Script:GhostClasses = @('USB', 'USBDevice', 'WPD', 'DiskDrive', 'CDROM', 'Monitor', 'HIDClass', 'Keyboard', 'Mouse', 'Image', 'Camera', 'MEDIA', 'Net', 'Bluetooth', 'Ports', 'Printer', 'SmartCardReader')
+# Classes où supprimer la trace d'un appareil absent ne fait rien perdre : rebranché, il est réinstallé à l'identique.
+# Volontairement absentes : Net (adresse IP fixe et réglages de la carte), Bluetooth (appairage), Ports (numéro COM),
+# Printer (file et réglages d'impression) : là, « Windows le réinstalle tout seul » serait faux.
+$Script:GhostClasses = @('USB', 'USBDevice', 'WPD', 'DiskDrive', 'CDROM', 'Monitor', 'HIDClass', 'Keyboard', 'Mouse', 'Image', 'Camera', 'MEDIA', 'SmartCardReader')
+$Script:GhostMinDays = 15
+
+function Get-GhostLastSeen {
+    # Dernière présence connue d'un appareil (dates d'arrivée et de retrait enregistrées par Windows), ou $null.
+    param([string]$InstanceId)
+    $last = $null
+    foreach ($k in @('{83da6326-97a6-4088-9453-a1923f573b29} 102', '{83da6326-97a6-4088-9453-a1923f573b29} 103')) {
+        try {
+            $p = Get-PnpDeviceProperty -InstanceId $InstanceId -KeyName $k -ErrorAction Stop
+            if ($p.Data -is [datetime] -and ($last -eq $null -or $p.Data -gt $last)) { $last = $p.Data }
+        } catch {}
+    }
+    return $last
+}
 
 function Get-GhostDevices {
     # Lecture seule : appareils absents, avec la date de leur dernière présence (arrivée/retrait enregistrés par Windows).
@@ -1142,13 +1430,7 @@ function Get-GhostDevices {
         foreach ($d in @(Get-PnpDevice -ErrorAction Stop | Where-Object { $_.Status -eq 'Unknown' -and $Script:GhostClasses -contains [string]$_.Class })) {
             $id = [string]$d.InstanceId
             if ($id -match '^(ROOT|HTREE|ACPI|SWD)\\') { continue }
-            $last = $null
-            foreach ($k in @('{83da6326-97a6-4088-9453-a1923f573b29} 102', '{83da6326-97a6-4088-9453-a1923f573b29} 103')) {
-                try {
-                    $p = Get-PnpDeviceProperty -InstanceId $id -KeyName $k -ErrorAction Stop
-                    if ($p.Data -is [datetime] -and ($last -eq $null -or $p.Data -gt $last)) { $last = $p.Data }
-                } catch {}
-            }
+            $last = Get-GhostLastSeen $id
             $age = -1; if ($last) { $age = [int]((Get-Date) - $last).TotalDays }
             [void]$rows.Add([pscustomobject]@{
                 Id = $id; Name = $(if ($d.FriendlyName) { [string]$d.FriendlyName } else { [string]$d.Class }); Class = [string]$d.Class
@@ -1176,6 +1458,9 @@ function Remove-GhostDevices {
         $d = $all[$id]
         if (-not $d) { $ko += $id; continue }
         if ($present.ContainsKey($id) -or $id -match '^(ROOT|HTREE|ACPI|SWD)\\' -or $Script:GhostClasses -notcontains [string]$d.Class) { Write-Log "Ignoré (présent ou classe protégée) : $id" 'WARN'; $ko += $id; continue }
+        # L'ancienneté est revérifiée ici, au moment de supprimer : la liste affichée peut dater, ou la demande venir d'ailleurs.
+        $seen = Get-GhostLastSeen $id
+        if (-not $seen -or ((Get-Date) - $seen).TotalDays -lt $Script:GhostMinDays) { Write-Log ("Ignoré (absent depuis moins de {0} jours, ou date inconnue) : {1}" -f $Script:GhostMinDays, $id) 'WARN'; $ko += $id; continue }
         [void](Invoke-NativeLines 'pnputil.exe' ('/remove-device "' + $id + '"'))
         $code = $LASTEXITCODE
         if ($code -eq 0 -or $code -eq 3010) { Write-Log ("Supprimé : {0} ({1})" -f $(if ($d.FriendlyName) { $d.FriendlyName } else { $id }), $d.Class) 'OK'; $ok += $id }

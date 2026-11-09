@@ -1,0 +1,9 @@
+# Ancienne version gardée en local seulement
+_Archive/
+
+# Sorties de Verif.bat et d'Apercu.bat
+Verif_*.txt
+Apercu_sortie.txt
+
+# Script personnel, hors de la Toolbox publiée
+Diagnostic-Windows.ps1
