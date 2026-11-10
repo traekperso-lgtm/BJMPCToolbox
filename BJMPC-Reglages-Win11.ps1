@@ -1058,6 +1058,17 @@ $Script:TweakCatalog = @(
             @('feature', 'WindowsMediaPlayer'),
             @('cap', 'Media.WindowsMediaPlayer*')
         )
+    },
+    @{
+        Id = 'imp_defaut'; Group = 'Impression'; Risk = 'safe'; Default = $false; Reboot = $false
+        Label = 'Ne plus laisser Windows choisir l''imprimante par défaut'
+        Desc = 'Windows prend sinon pour défaut la dernière imprimante utilisée, parfois une imprimante réseau éteinte : Word, Excel et l''impression attendent alors sa réponse. Ce réglage concerne le compte Windows qui lance la Toolbox ; l''imprimante par défaut reste celle choisie à la main.'
+        Fn = ''
+        Needs = @()
+        Reg = @(,@('HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Windows', 'LegacyDefaultPrinterMode', 1, 'DWord'))
+        Svc = @()
+        Task = @()
+        Feat = @()
     }
 )
 

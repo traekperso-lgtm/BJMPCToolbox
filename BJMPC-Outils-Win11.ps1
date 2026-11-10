@@ -10,7 +10,7 @@
 #>
 
 $ErrorActionPreference = 'Continue'
-$Script:ToolsVersion = '1.5'
+$Script:ToolsVersion = '1.6'
 $Script:LogDir       = Join-Path $env:SystemDrive 'BJMPC-Logs'
 $Script:ReportDir    = Join-Path $Script:LogDir 'Rapports'
 $Script:LogFile      = Join-Path $Script:LogDir ("Outils_{0}_{1}.log" -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd_HHmmss'))
@@ -1546,6 +1546,245 @@ function Clear-PrintQueue {
     }
 }
 
+# ---------------------------------------------------------------- Imprimantes : blocages à l'ouverture de Word/Excel et à l'impression
+# Cause fréquente : une imprimante réseau (TCP/IP, WSD, IPP) éteinte ou déplacée reste déclarée ; le spouleur attend sa réponse.
+# La lecture ne modifie rien. Le nettoyage sauvegarde d'abord toutes les imprimantes (PrintBrm) et ne retire que les files
+# réseau qui ne répondent plus, jamais les imprimantes USB, virtuelles (PDF, XPS, OneNote) ou partagées.
+$Script:PrnDir = Join-Path $Script:LogDir 'Imprimantes'
+
+function Test-PrinterReach {
+    # Vrai si l'adresse répond sur l'un des ports ou au ping ; faux sinon ; $null si pas d'adresse à tester.
+    param([string]$HostName, [int[]]$Ports, [int]$TimeoutMs = 1500)
+    if (-not $HostName) { return $null }
+    $ip = $null
+    try {
+        if (-not [System.Net.IPAddress]::TryParse($HostName, [ref]$ip)) {
+            $ar = [System.Net.Dns]::BeginGetHostAddresses($HostName, $null, $null)
+            if (-not $ar.AsyncWaitHandle.WaitOne($TimeoutMs)) { return $false }
+            $ip = @([System.Net.Dns]::EndGetHostAddresses($ar) | Where-Object { $_.AddressFamily -eq 'InterNetwork' -or $_.AddressFamily -eq 'InterNetworkV6' }) | Select-Object -First 1
+            if (-not $ip) { return $false }
+        }
+    } catch { return $false }
+    foreach ($p in @($Ports)) {
+        if ([int]$p -le 0) { continue }
+        $c = $null
+        try {
+            $c = New-Object System.Net.Sockets.TcpClient($ip.AddressFamily)
+            $ar = $c.BeginConnect($ip, [int]$p, $null, $null)
+            if ($ar.AsyncWaitHandle.WaitOne($TimeoutMs)) { $c.EndConnect($ar); if ($c.Connected) { return $true } }
+        } catch {} finally { if ($c) { try { $c.Close() } catch {} } }
+    }
+    # Une imprimante en veille profonde répond souvent au ping sans ouvrir son port : on ne la déclare pas absente.
+    try {
+        $pg = New-Object System.Net.NetworkInformation.Ping
+        try { if ($pg.Send($ip, $TimeoutMs).Status -eq 'Success') { return $true } } finally { $pg.Dispose() }
+    } catch {}
+    return $false
+}
+
+function Get-PrinterKind {
+    param([string]$Name, [string]$PortName, [string]$Driver, $Port)
+    if ($Driver -match 'Print To PDF|XPS Document Writer|OneNote|Microsoft Shared Fax|Software Printer' -or $PortName -match '^(PORTPROMPT:|nul:?|FILE:|XPSPort:|SHRFAX:)') { return 'Virtuelle' }
+    if ($Name.StartsWith('\\')) { return 'Partagée' }
+    if ($PortName -match '^(USB|DOT4|BTH|LPT|COM|TS\d)') { return 'USB / locale' }
+    if ($PortName -match '^WSD-') { return 'WSD' }
+    if ($PortName -match '^(https?|ipps?)://') { return 'IPP' }
+    if ($Port -and [string]$Port.PrinterHostAddress) { return 'TCP/IP' }
+    return 'Autre'
+}
+
+function Get-PrinterRows {
+    # Imprimantes et ports d'impression, avec la joignabilité des adresses réseau. Renvoie $null si la lecture échoue.
+    $rows = New-Object System.Collections.ArrayList
+    $ports = @{}
+    try { foreach ($p in @(Get-PrinterPort -ErrorAction Stop)) { $ports[[string]$p.Name] = $p } }
+    catch { Write-Log ("Lecture des ports d'impression impossible : " + $_.Exception.Message) 'WARN' }
+    $printers = @()
+    try { $printers = @(Get-CimInstance -ClassName Win32_Printer -ErrorAction Stop) }
+    catch { Write-Log ("Lecture des imprimantes impossible : " + $_.Exception.Message) 'ERROR'; return $null }
+    $used = @{}; $cache = @{}
+    foreach ($pr in $printers) {
+        $name = [string]$pr.Name; $portName = [string]$pr.PortName
+        $port = $ports[$portName]
+        if ($portName) { $used[$portName] = $true }
+        $kind = Get-PrinterKind $name $portName ([string]$pr.DriverName) $port
+        $hostName = ''; $tests = @()
+        switch ($kind) {
+            'TCP/IP' { $hostName = [string]$port.PrinterHostAddress; $pn = 0; try { $pn = [int]$port.PortNumber } catch {}; if ($pn -le 0) { $pn = 9100 }; $tests = @($pn) }
+            'IPP' {
+                try {
+                    $u = [uri]$portName; $hostName = [string]$u.Host
+                    if ($portName -match '^[A-Za-z]+://[^/]+:(\d+)') { $tests = @([int]$Matches[1]) } else { $tests = @(631, [int]$u.Port) }
+                } catch {}
+            }
+            'WSD' { if ($port -and [string]$port.PrinterHostAddress) { $hostName = [string]$port.PrinterHostAddress; $tests = @(80, 443, 9100) } }
+        }
+        $reach = $null
+        if ($hostName) {
+            $ck = $hostName + '|' + ($tests -join ',')
+            if (-not $cache.ContainsKey($ck)) { $cache[$ck] = Test-PrinterReach $hostName $tests }
+            $reach = $cache[$ck]
+        }
+        $offline = $false; try { $offline = [bool]$pr.WorkOffline } catch {}
+        $dead = $false; $state = ''; $why = ''
+        switch ($kind) {
+            'Virtuelle' { $state = 'Virtuelle (jamais touchée)' }
+            'Partagée'  { $state = 'Partagée (non testée)' }
+            'USB / locale' { $state = 'Locale (jamais touchée)' }
+            'Autre'     { $state = 'Non vérifiable' }
+            default {
+                if ($reach -eq $true) { $state = 'Répond' }
+                elseif ($reach -eq $false) { $state = 'Ne répond pas'; $dead = $true; $why = "L'adresse $hostName ne répond ni au ping ni sur le port d'impression." }
+                elseif ($offline) { $state = 'Hors ligne (selon Windows)'; $dead = $true; $why = "Windows la marque hors ligne et son adresse n'est pas connue." }
+                else { $state = 'Non vérifiable' }
+            }
+        }
+        $isDef = $false; try { $isDef = [bool]$pr.Default } catch {}
+        [void]$rows.Add([pscustomobject]@{
+            Id = $name; IsPort = $false; Name = $name; Kind = $kind; Port = $portName; Target = $(if ($hostName) { $hostName } else { $portName })
+            State = $state; Reach = $reach; Dead = $dead; Default = $isDef; Why = $why
+        })
+    }
+    # Ports réseau qui n'appartiennent plus à aucune imprimante (restes d'imprimantes supprimées)
+    foreach ($k in @($ports.Keys | Sort-Object)) {
+        if ($used.ContainsKey($k)) { continue }
+        $p = $ports[$k]
+        $isNet = ($k -match '^(WSD-|https?://|ipps?://)') -or [bool]([string]$p.PrinterHostAddress)
+        if (-not $isNet) { continue }
+        $h = [string]$p.PrinterHostAddress
+        [void]$rows.Add([pscustomobject]@{
+            Id = $k; IsPort = $true; Name = $k; Kind = 'Port orphelin'; Port = $k; Target = $(if ($h) { $h } else { $k })
+            State = 'Aucune imprimante ne l''utilise'; Reach = $null; Dead = $true; Default = $false; Why = 'Port réseau resté après la suppression de son imprimante.'
+        })
+    }
+    return @($rows)
+}
+
+function Get-PrinterDiagnostic {
+    Write-Log '=== Imprimantes et ports d''impression (lecture seule) ==='
+    $svc = Get-Service -Name Spooler -ErrorAction SilentlyContinue
+    if ($svc) { Write-Row 'Spouleur d''impression' ("{0} · démarrage {1}" -f $svc.Status, $svc.StartType) $(if ($svc.Status -eq 'Running') { 'ok' } else { 'bad' }) }
+    $jobs = 0; try { $jobs = @(Get-CimInstance -ClassName Win32_PrintJob -ErrorAction Stop).Count } catch {}
+    Write-Row 'Travaux en attente' ([string]$jobs) $(if ($jobs -gt 0) { 'warn' } else { 'ok' })
+    $rows = Get-PrinterRows
+    if ($null -eq $rows) { return }
+    $rows = @($rows)
+    foreach ($r in $rows) {
+        $lvl = $(if ($r.Dead) { 'bad' } elseif ($r.State -eq 'Répond') { 'ok' } else { '' })
+        Write-Row ("{0}{1}  [{2}]" -f $r.Name, $(if ($r.Default) { ' (par défaut)' } else { '' }), $r.Kind) ("{0} · {1}" -f $r.Target, $r.State) $lvl
+    }
+    $def = @($rows | Where-Object { $_.Default }) | Select-Object -First 1
+    $defDead = [bool]($def -and $def.Dead)
+    if ($defDead) { Write-Log ("L'imprimante par défaut « {0} » ne répond pas : c'est la cause la plus probable du blocage de Word et d'Excel au démarrage." -f $def.Name) 'WARN' }
+    try {
+        $mon = @(Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Control\Print\Monitors' -ErrorAction Stop | ForEach-Object { $_.PSChildName })
+        if ($mon.Count -gt 0) { Write-Log ("Moniteurs de ports installés : " + ($mon -join ', ')) }
+    } catch {}
+    foreach ($n in 'FDResPub', 'fdPHost', 'SSDPSRV') {
+        $s = Get-Service -Name $n -ErrorAction SilentlyContinue
+        if ($s) { Write-Log ("Service de découverte {0} ({1}) : {2}" -f $s.DisplayName, $n, $s.Status) }
+    }
+    $nDead = @($rows | Where-Object { $_.Dead }).Count
+    if ($nDead -gt 0) { Write-Log ("{0} imprimante(s) ou port(s) réseau qui ne répondent plus : cochez-les pour les retirer (une sauvegarde est faite avant)." -f $nDead) 'WARN' }
+    else { Write-Log 'Aucune imprimante ou port réseau mort détecté.' 'OK' }
+    Set-SyncResult @{ Rows = @($rows); DefaultName = $(if ($def) { [string]$def.Name } else { '' }); DefaultDead = $defDead; Spooler = $(if ($svc) { [string]$svc.Status } else { '' }); Jobs = $jobs }
+}
+
+function Export-PrintersBackup {
+    # Sauvegarde toutes les imprimantes : liste lisible (JSON) + export complet PrintBrm (files, pilotes, ports) pour restaurer.
+    # Renvoie @{ Base; Json; Export; ExportOk } ou $null si même la liste n'a pas pu être écrite.
+    New-Item -ItemType Directory -Path $Script:PrnDir -Force -ErrorAction SilentlyContinue | Out-Null
+    $base = "Imprimantes_{0}_{1}" -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd_HHmmss')
+    $json = Join-Path $Script:PrnDir ($base + '.json'); $exp = Join-Path $Script:PrnDir ($base + '.printerExport')
+    try {
+        $pr = @(Get-CimInstance -ClassName Win32_Printer -ErrorAction Stop | ForEach-Object { [pscustomobject]@{ Name = [string]$_.Name; Driver = [string]$_.DriverName; Port = [string]$_.PortName; Default = [bool]$_.Default; Shared = [bool]$_.Shared; ShareName = [string]$_.ShareName; Location = [string]$_.Location; Comment = [string]$_.Comment } })
+        $po = @(); try { $po = @(Get-PrinterPort -ErrorAction Stop | ForEach-Object { [pscustomobject]@{ Name = [string]$_.Name; Host = [string]$_.PrinterHostAddress; PortNumber = [string]$_.PortNumber; Description = [string]$_.Description } }) } catch {}
+        Set-Content -LiteralPath $json -Value (ConvertTo-Json -InputObject ([ordered]@{ Date = (Get-Date).ToString('s'); Pc = $env:COMPUTERNAME; Printers = $pr; Ports = $po }) -Depth 4) -Encoding UTF8 -ErrorAction Stop
+    } catch { Write-Log ("Sauvegarde de la liste impossible : " + $_.Exception.Message) 'ERROR'; return $null }
+    $exe = Join-Path $env:windir 'System32\spool\tools\PrintBrm.exe'
+    $ok = $false
+    if (Test-Path -LiteralPath $exe) {
+        try {
+            $proc = Start-Process -FilePath $exe -ArgumentList @('-B', '-F', ('"' + $exp + '"')) -PassThru -WindowStyle Hidden -ErrorAction Stop
+            if (-not $proc.WaitForExit(240000)) { try { $proc.Kill() } catch {}; Write-Log 'Export PrintBrm trop long : abandonné.' 'WARN' }
+            elseif ($proc.ExitCode -eq 0 -and (Test-Path -LiteralPath $exp)) { $ok = $true }
+            else { Write-Log ("Export PrintBrm refusé (code {0})." -f $proc.ExitCode) 'WARN' }
+        } catch { Write-Log ("Export PrintBrm impossible : " + $_.Exception.Message) 'WARN' }
+    } else { Write-Log 'PrintBrm absent sur ce PC : seule la liste lisible est sauvegardée.' 'WARN' }
+    return @{ Base = $base; Json = $json; Export = $exp; ExportOk = $ok; ExportAvailable = (Test-Path -LiteralPath $exe) }
+}
+
+function Remove-DeadPrinters {
+    # Retire les imprimantes réseau et ports orphelins demandés, SI ils sont toujours morts maintenant (revérifié ici).
+    # Sauvegarde obligatoire avant : sans export PrintBrm réussi (quand l'outil existe), rien n'est supprimé.
+    param([string[]]$Names = @(), [string[]]$Ports = @())
+    $ok = @(); $ko = @()
+    $svc = Get-Service -Name Spooler -ErrorAction SilentlyContinue
+    if ($svc -and $svc.Status -ne 'Running') { try { Start-Service -Name Spooler -ErrorAction Stop } catch { Write-Log 'Spouleur arrêté et impossible à démarrer.' 'ERROR'; Set-SyncResult @{ Ok = @(); Bad = @($Names + $Ports); Backup = '' }; return } }
+    $rows = Get-PrinterRows
+    if ($null -eq $rows) { Set-SyncResult @{ Ok = @(); Bad = @($Names + $Ports); Backup = '' }; return }
+    $dead = @{}; foreach ($r in @($rows)) { if ($r.Dead) { $dead[[string]$r.Kind + '|' + [string]$r.Id] = $r } }
+    $todoP = @(); $todoPo = @()
+    foreach ($n in @($Names)) {
+        $r = @($rows | Where-Object { -not $_.IsPort -and [string]$_.Name -eq $n }) | Select-Object -First 1
+        if (-not $r) { Write-Log "Imprimante introuvable (déjà retirée ?) : $n" 'WARN'; $ko += $n; continue }
+        if (-not $r.Dead) { Write-Log ("Conservée ({0}, {1}) : {2}" -f $r.Kind, $r.State, $n) 'WARN'; $ko += $n; continue }
+        $todoP += $r
+    }
+    foreach ($n in @($Ports)) {
+        $r = @($rows | Where-Object { $_.IsPort -and [string]$_.Name -eq $n }) | Select-Object -First 1
+        if (-not $r) { Write-Log "Port introuvable ou utilisé par une imprimante : $n" 'WARN'; $ko += $n; continue }
+        $todoPo += $r
+    }
+    if (($todoP.Count + $todoPo.Count) -eq 0) { Write-Log 'Rien à retirer.' 'WARN'; Set-SyncResult @{ Ok = @(); Bad = @($ko); Backup = '' }; return }
+    $bk = Export-PrintersBackup
+    if (-not $bk -or ($bk.ExportAvailable -and -not $bk.ExportOk)) {
+        Write-Log 'Sauvegarde des imprimantes incomplète : rien n''a été supprimé.' 'ERROR'
+        Set-SyncResult @{ Ok = @(); Bad = @($Names + $Ports); Backup = $(if ($bk) { $bk.Json } else { '' }) }; return
+    }
+    Write-Log ("Sauvegarde faite : {0}" -f $bk.Base) 'OK'
+    $portsAfter = @()
+    foreach ($r in $todoP) {
+        try {
+            Remove-Printer -Name ([string]$r.Name) -ErrorAction Stop
+            Write-Log ("Imprimante retirée : {0} ({1})" -f $r.Name, $r.Kind) 'OK'; $ok += [string]$r.Name
+            if ($r.Port) { $portsAfter += [string]$r.Port }
+        } catch { Write-Log ("Refusé : {0} ({1})" -f $r.Name, $_.Exception.Message) 'WARN'; $ko += [string]$r.Name }
+    }
+    # Ports : ceux demandés (orphelins) et ceux des imprimantes retirées, seulement s'ils ne servent plus à personne
+    $inUse = @{}
+    try { foreach ($p in @(Get-CimInstance -ClassName Win32_Printer -ErrorAction Stop)) { $inUse[[string]$p.PortName] = $true } } catch {}
+    $netPorts = @{}
+    foreach ($r in @($rows)) { if ($r.Kind -match '^(TCP/IP|IPP|WSD|Port orphelin)$') { $netPorts[[string]$r.Port] = $true } }
+    foreach ($pn in @(@($todoPo | ForEach-Object { [string]$_.Name }) + $portsAfter | Sort-Object -Unique)) {
+        if (-not $netPorts.ContainsKey($pn) -or $inUse.ContainsKey($pn)) { continue }
+        try { Remove-PrinterPort -Name $pn -ErrorAction Stop; Write-Log ("Port retiré : $pn") 'OK'; if ($Ports -contains $pn) { $ok += $pn } }
+        catch { Write-Log ("Port conservé ($pn) : " + $_.Exception.Message) 'WARN'; if ($Ports -contains $pn) { $ko += $pn } }
+    }
+    Write-Log ("{0} élément(s) retiré(s), {1} conservé(s). Pour revenir en arrière : Restaurer une sauvegarde d'imprimantes ({2})." -f $ok.Count, $ko.Count, $bk.Base) $(if ($ko.Count -eq 0) { 'OK' } else { 'WARN' })
+    Set-SyncResult @{ Ok = @($ok); Bad = @($ko); Backup = $bk.Base }
+}
+
+function Restore-PrintersBackup {
+    # Réimporte une sauvegarde faite avant un nettoyage (imprimantes, pilotes et ports). Les files du même nom sont remplacées.
+    param([string]$Name)
+    if ($Name -notmatch '^[A-Za-z0-9][A-Za-z0-9_.\-]*$') { Write-Log 'Nom de sauvegarde invalide.' 'ERROR'; Set-SyncResult @{ Ok = @(); Bad = @('nom'); Backup = '' }; return }
+    $exp = Join-Path $Script:PrnDir ($Name + '.printerExport')
+    $exe = Join-Path $env:windir 'System32\spool\tools\PrintBrm.exe'
+    if (-not (Test-Path -LiteralPath $exp)) { Write-Log "Export introuvable : $exp (seule la liste lisible existe)" 'ERROR'; Set-SyncResult @{ Ok = @(); Bad = @($Name); Backup = '' }; return }
+    if (-not (Test-Path -LiteralPath $exe)) { Write-Log 'PrintBrm absent : restauration impossible sur ce PC.' 'ERROR'; Set-SyncResult @{ Ok = @(); Bad = @($Name); Backup = '' }; return }
+    Write-Log "Restauration des imprimantes : $Name"
+    $good = $false
+    try {
+        $proc = Start-Process -FilePath $exe -ArgumentList @('-R', '-F', ('"' + $exp + '"'), '-O', 'FORCE') -PassThru -WindowStyle Hidden -ErrorAction Stop
+        if (-not $proc.WaitForExit(300000)) { try { $proc.Kill() } catch {}; Write-Log 'Restauration trop longue : abandonnée.' 'ERROR' }
+        elseif ($proc.ExitCode -eq 0) { $good = $true } else { Write-Log ("PrintBrm a refusé (code {0})." -f $proc.ExitCode) 'ERROR' }
+    } catch { Write-Log ("Restauration impossible : " + $_.Exception.Message) 'ERROR' }
+    try { Restart-Service -Name Spooler -Force -ErrorAction SilentlyContinue } catch {}
+    if ($good) { Write-Log 'Imprimantes restaurées.' 'OK'; Set-SyncResult @{ Ok = @($Name); Bad = @(); Backup = $Name } }
+    else { Set-SyncResult @{ Ok = @(); Bad = @($Name); Backup = $Name } }
+}
+
 function Sync-Clock {
     Write-Log "Synchronisation de l'horloge"
     try {
@@ -2278,6 +2517,7 @@ $Script:Win11DefRegistry = @(
     @('priv', 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System', 'UploadUserActivities', $null, 'DWord', 0),
     @('priv', 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System', 'EnableActivityFeed', $null, 'DWord', 0),
     @('pref', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced', 'Start_TrackProgs', 1, 'DWord', 0),
+    @('pref', 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Windows', 'LegacyDefaultPrinterMode', $null, 'DWord', 1),
     @('priv', 'HKCU:\Software\Policies\Microsoft\Windows\EdgeUI', 'DisableMFUTracking', $null, 'DWord', 1),
     @('priv', 'HKCU:\SOFTWARE\Microsoft\Siuf\Rules', 'NumberOfSIUFInPeriod', $null, 'DWord', 0),
     @('priv', 'HKLM:\SOFTWARE\Policies\Microsoft\InputPersonalization', 'RestrictImplicitInkCollection', $null, 'DWord', 1),

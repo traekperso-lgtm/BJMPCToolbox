@@ -71,7 +71,7 @@ Prérequis : Windows 11, droits administrateur, Windows PowerShell 5.1 (inclus d
   - *Non reconnues* : affichées telles quelles, jamais « corrigées » au hasard.
   - *Sans gravité* : le bruit connu de Windows (DCOM 10016…).
   - Après une réparation, l'analyse suivante dit si l'erreur est revenue. La *surveillance en direct* affiche chaque nouvelle erreur en quelques secondes.
-- **Réparer Windows / Nettoyage et dépannage / Diagnostics** : DISM, SFC, CHKDSK, réinitialisations, dépannage rapide, nettoyage, et des mesures en lecture seule (disques SMART, erreurs matérielles, Wi-Fi, audit de sécurité, licence…).
+- **Réparer Windows / Nettoyage et dépannage / Diagnostics** : DISM, SFC, CHKDSK, réinitialisations, dépannage rapide, nettoyage, et des mesures en lecture seule (disques SMART, erreurs matérielles, Wi-Fi, audit de sécurité, licence…). « Nettoyage et dépannage » inclut aussi le diagnostic des imprimantes réseau mortes (TCP/IP, WSD, IPP) qui bloquent Word, Excel et l'impression, avec sauvegarde avant retrait.
 - **Optimiser** : réglages de jeu de Windows, **HAGS** (carte dédiée : état, activer, désactiver), mode d'alimentation, cartes réseau, DNS chiffré, SSD et démarrage, échelle d'affichage, protection OLED.
 - **Confidentialité et réglages** : catalogue de réglages Windows à cocher.
 - **Applications** : catalogue de logiciels (winget), mises à jour, inventaire, retrait des applications préinstallées.

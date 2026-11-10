@@ -1240,6 +1240,55 @@ function Build-Maintenance {
     Add-Row $dp.Body 'Vider le cache DNS' 'Utile après un changement de DNS ou un site inaccessible.' '' 'n' @((New-Btn 'Vider' (New-Spec 'tools' 'Clear-DnsCache' 'Cache DNS')))
     [void]$p.Children.Add($dp.Card)
 
+    # Blocages à l'ouverture de Word/Excel et à l'impression : imprimantes réseau (TCP/IP, WSD, IPP) mortes
+    $pc = New-Card 'Imprimantes et blocages d''impression' 'Word, Excel ou l''impression qui restent figés jusqu''à un clic sur « Annuler » viennent presque toujours d''une imprimante réseau éteinte ou déplacée, que Windows attend. L''analyse teste chaque adresse (lecture seule). Les imprimantes USB, virtuelles (PDF, XPS, OneNote) et partagées ne sont jamais touchées ; une sauvegarde complète est faite avant tout retrait.' 'Modifie le système' 'w'
+    $ps = New-Spec 'tools' 'Get-PrinterDiagnostic' 'Analyse des imprimantes' @{} '' { param($r) Show-PrinterList $r }
+    $pr = New-Spec 'tools' '' 'Nettoyage des imprimantes'
+    $pr.CodeFn = {
+        $q = { param($v) "'" + (([string]$v) -replace "(['\u2018\u2019\u201A\u201B])", '$1$1' -replace '[\x00-\x1F]', '') + "'" }
+        $n = @($Script:PrnChecks | Where-Object { $_.IsChecked -and $_.Tag -and -not $_.Tag.IsPort } | ForEach-Object { & $q $_.Tag.Id })
+        $o = @($Script:PrnChecks | Where-Object { $_.IsChecked -and $_.Tag -and $_.Tag.IsPort } | ForEach-Object { & $q $_.Tag.Id })
+        if (($n.Count + $o.Count) -eq 0) { return '' }
+        return ('Remove-DeadPrinters -Names @(' + ($n -join ',') + ') -Ports @(' + ($o -join ',') + ')')
+    }
+    $pr.ConfirmFn = { "Retirer {0} imprimante(s) ou port(s) qui ne répondent plus ? Une sauvegarde complète des imprimantes est faite d'abord (restaurable depuis cette carte) ; ce qui répond de nouveau à ce moment-là est conservé." -f @($Script:PrnChecks | Where-Object { $_.IsChecked }).Count }
+    $pr.OnDone = { param($r) $Script:PrnPanel.Children.Clear(); $Script:PrnChecks.Clear(); [void]$Script:PrnPanel.Children.Add((New-Text 'Terminé. Relancez l''analyse pour actualiser.' 13 '#9298A3')); try { Refresh-PrinterBackups } catch {} }
+    $pb = New-Object Windows.Controls.WrapPanel
+    $pb.Margin = '0,14,0,8'
+    $p1 = New-Btn 'Analyser les imprimantes' $ps -Primary; $p1.Margin = '0,4,0,4'
+    [void]$pb.Children.Add($p1)
+    [void]$pb.Children.Add((New-Btn 'Retirer la sélection' $pr -Primary))
+    [void]$pb.Children.Add((New-ToggleButton 'Tout cocher' 'prn' $true))
+    [void]$pb.Children.Add((New-ToggleButton 'Tout décocher' 'prn' $false))
+    [void]$pc.Body.Children.Add($pb)
+    $Script:PrnNote = New-Text '' 13 '#C9A227' 'Normal' -Wrap
+    $Script:PrnNote.Margin = '0,0,0,8'
+    [void]$pc.Body.Children.Add($Script:PrnNote)
+    $ph = New-TableRow $Script:PrnCols @('Imprimante', 'Type', 'Adresse', 'État') -Header
+    $ph.Margin = '0,0,18,0'
+    [void]$pc.Body.Children.Add($ph)
+    $Script:PrnPanel = New-Object Windows.Controls.StackPanel
+    [void]$pc.Body.Children.Add((New-ScrollList $Script:PrnPanel 260))
+    $Script:PrnBackupBox = New-Object Windows.Controls.ComboBox
+    $Script:PrnBackupBox.MinWidth = 340; $Script:PrnBackupBox.Padding = '8,4'; $Script:PrnBackupBox.Margin = '0,0,8,0'
+    $prs = New-Spec 'tools' '' 'Restauration des imprimantes'
+    $prs.CodeFn = {
+        $i = $Script:PrnBackupBox.SelectedItem
+        if (-not $i -or -not $i.Tag) { Add-Console 'Aucune sauvegarde sélectionnée.' 'Yellow'; return '' }
+        $n = [string]$i.Tag
+        if ($n -notmatch '^[A-Za-z0-9][A-Za-z0-9_.\-]*$') { return '' }
+        return ("Restore-PrintersBackup -Name '" + $n + "'")
+    }
+    $prs.ConfirmFn = { "Remettre les imprimantes comme dans la sauvegarde « {0} » ? Les files du même nom sont remplacées." -f $(try { [string]$Script:PrnBackupBox.SelectedItem.Tag } catch { '' }) }
+    $prow = New-Object Windows.Controls.StackPanel
+    $prow.Orientation = 'Horizontal'; $prow.Margin = '0,12,0,0'
+    [void]$prow.Children.Add($Script:PrnBackupBox)
+    [void]$prow.Children.Add((New-Btn 'Restaurer cette sauvegarde' $prs))
+    [void]$pc.Body.Children.Add($prow)
+    Refresh-PrinterBackups
+    [void]$p.Children.Add($pc.Card)
+    [void](New-TweakCard $p 'Impression' 'Option contre les blocages liés à l''imprimante par défaut choisie automatiquement par Windows.')
+
     $ent = New-Card 'Entretien'
     Add-Row $ent.Body 'Nettoyage' 'Fichiers temporaires, corbeille, magasin de composants.' '' 'n' @((New-Btn 'Nettoyer' (New-Spec 'maint' 'Invoke-Cleanup' 'Nettoyage')))
     $wo = New-Check 'Supprimer aussi l''ancienne installation de Windows (Windows.old) : retour à la version précédente impossible ensuite' $false
@@ -2661,6 +2710,8 @@ $Script:DrvTabs = @{}
 $Script:UpCols = @(3.2, 1.1, 1.5, 1.7, 1.0, 0.8, 1.0)
 $Script:StoreCols = @(1.2, 1.8, 1.1, 2.4, 1.5, 1.0, 0.8, 1.5)
 $Script:GhostCols = @(3.2, 1.2, 1.6, 1.2)
+$Script:PrnChecks = New-Object 'System.Collections.Generic.List[object]'
+$Script:PrnCols = @(3.0, 1.1, 2.6, 1.8)
 
 function New-Combo {
     # Liste déroulante à choix fixes (aucune saisie) : $Items = @(@('libellé', 'valeur'), …)
@@ -2970,6 +3021,45 @@ function Refresh-DriverBackups {
     if ($cb.Items.Count -gt 0) { $cb.SelectedIndex = 0 }
 }
 
+function Show-PrinterList {
+    param($Res)
+    $Script:PrnPanel.Children.Clear(); $Script:PrnChecks.Clear()
+    $rows = @(); $note = ''
+    if ($Res -and $Res.Rows) { $rows = @($Res.Rows) }
+    if ($Res -and $Res.DefaultDead) { $note = 'L''imprimante par défaut « ' + [string]$Res.DefaultName + ' » ne répond pas : c''est la cause la plus probable du blocage de Word et d''Excel.' }
+    elseif ($Res -and [string]$Res.Spooler -and [string]$Res.Spooler -ne 'Running') { $note = 'Le spouleur d''impression n''est pas démarré.' }
+    $Script:PrnNote.Text = $note
+    if ($rows.Count -eq 0) { [void]$Script:PrnPanel.Children.Add((New-Text 'Aucune imprimante installée.' 13 '#7CE3A1' 'Normal' -Wrap)); return }
+    foreach ($g in $rows) {
+        $cb = New-Check '' $false   # jamais coché d'office : retirer une imprimante se décide ligne par ligne
+        $cb.Tag = $g; $cb.ToolTip = [string]$g.Why
+        if (-not $g.Dead) { $cb.IsEnabled = $false }
+        $clr = $(if ($g.Dead) { '#FF8A80' } elseif ($g.State -eq 'Répond') { '#7CE3A1' } else { '#9298A3' })
+        $nm = [string]$g.Name; if ($g.Default) { $nm += ' (par défaut)' }
+        $row = New-TableRow $Script:PrnCols @($nm, [string]$g.Kind, [string]$g.Target, @{ T = [string]$g.State; C = $clr }) $cb
+        [void]$Script:PrnPanel.Children.Add($row)
+        [void]$Script:PrnChecks.Add($cb)
+    }
+}
+
+function Refresh-PrinterBackups {
+    $cb = $Script:PrnBackupBox
+    if (-not $cb) { return }
+    $cb.Items.Clear()
+    try {
+        $root = Join-Path $Script:LogDir 'Imprimantes'
+        if (Test-Path -LiteralPath $root) {
+            foreach ($f in @(Get-ChildItem -LiteralPath $root -Filter *.printerExport -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)) {
+                $it = New-Object Windows.Controls.ComboBoxItem
+                $it.Content = ("{0}  ({1:dd/MM/yyyy HH:mm})" -f $f.BaseName, $f.LastWriteTime)
+                $it.Tag = [string]$f.BaseName
+                [void]$cb.Items.Add($it)
+            }
+        }
+    } catch {}
+    if ($cb.Items.Count -gt 0) { $cb.SelectedIndex = 0 }
+}
+
 function New-ToggleButton {
     # Bouton « Tout cocher / Tout décocher » : agit directement sur la liste demandée.
     param([string]$Text, [string]$Which, [bool]$Value)
@@ -2979,7 +3069,7 @@ function New-ToggleButton {
     $b.Add_Click({ param($s, $e)
         try {
             $w = [string]$s.Tag[0]; $v = [bool]$s.Tag[1]
-            $lst = @(); if ($w -eq 'up') { $lst = @($Script:UpChecks) } elseif ($w -eq 'ghost') { $lst = @($Script:GhostChecks) }
+            $lst = @(); if ($w -eq 'up') { $lst = @($Script:UpChecks) } elseif ($w -eq 'ghost') { $lst = @($Script:GhostChecks) } elseif ($w -eq 'prn') { $lst = @($Script:PrnChecks) }
             foreach ($c in $lst) { if ($c.IsEnabled) { $c.IsChecked = $v } }
         } catch { Add-Console ('  [!]   ' + $_.Exception.Message) 'Yellow' }
     })
@@ -3276,6 +3366,9 @@ $Script:PlainMap = @(
     @{ K = '^Reset-PowerPlan|¦Modes d.alimentation'; C = 'repar'; T = 'Nous avons remis les modes d''économie d''énergie à leurs réglages normaux.' }
     @{ K = '^Restart-ExplorerShell'; C = 'repar'; T = 'Nous avons relancé l''affichage de Windows, c''est-à-dire la barre du bas et le bureau.' }
     @{ K = '^Restart-AudioServices|¦Services audio'; C = 'repar'; T = 'Nous avons relancé le son de votre ordinateur.' }
+    @{ K = '^Get-PrinterDiagnostic'; C = 'skip'; T = '' }
+    @{ K = '^Remove-DeadPrinters|¦Nettoyage des imprimantes'; C = 'repar'; T = 'Nous avons retiré les imprimantes qui n''existaient plus, ce qui évite que Word, Excel ou l''impression restent bloqués à attendre une imprimante absente.' }
+    @{ K = '^Restore-PrintersBackup|¦Restauration des imprimantes'; C = 'repar'; T = 'Nous avons remis vos imprimantes comme avant le nettoyage.' }
     @{ K = '^Clear-PrintQueue|¦File d.impression'; C = 'repar'; T = 'Nous avons débloqué la file d''impression.' }
     @{ K = '^Sync-Clock|¦Horloge'; C = 'repar'; T = 'Nous avons remis votre ordinateur à l''heure.' }
     @{ K = '^Clear-DnsCache|¦Cache DNS'; C = 'repar'; T = 'Nous avons vidé la mémoire temporaire de la connexion Internet, ce qui règle certains sites qui ne s''ouvraient pas.' }
@@ -4458,6 +4551,9 @@ if ($env:BJMPC_SELFTEST -and $env:BJMPC_SELFTEST -ne 'PREVIEW') {
         T 'Recherche de pilotes (Catalog, appareils sans pilote)' (Wait-Run 300) ("lignes={0}, cases={1}" -f @($Script:UpPanel.Children).Count, $Script:UpChecks.Count)
         Start-Run -Engine 'tools' -Code 'Get-Win11DefaultsState' -Title '' -OnDone { param($r) Show-DefaultsRows $r }
         T 'Comparaison avec Windows 11 (analyse + liste)' (Wait-Run 120) ("écarts={0}, lignes={1}" -f $Script:DefChecks.Count, @($Script:DefPanel.Children).Count)
+        $Script:Sync.Result = $null
+        Start-Run -Engine 'tools' -Code 'Get-PrinterDiagnostic' -Title '' -OnDone { param($r) Show-PrinterList $r }
+        T 'Imprimantes (analyse + liste)' (Wait-Run 120) ("lignes={0}" -f $Script:PrnChecks.Count)
         $Script:Sync.Result = $null
         Start-Run -Engine 'tools' -Code 'Get-GhostDevices' -Title '' -OnDone { param($r) Show-GhostList $r }
         T 'Appareils fantômes (analyse + liste)' (Wait-Run 120) ("fantômes={0}" -f $Script:GhostChecks.Count)

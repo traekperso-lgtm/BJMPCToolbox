@@ -5,6 +5,9 @@ NOUVEAUTES 2.1.1
   - Reparation DISM : si le ScanHealth ne detecte aucune alteration du magasin de composants, RestoreHealth n'est plus lance.
   - Observateur d'evenements : lecture des journaux Defender et Integrite du code ; nouvelles regles (menace Defender, mise a jour Defender,
     protection temps reel, fichier bloque par signature/strategie, disque retire, NTFS 50) d'apres les pages Microsoft Learn.
+  - Reparer > Nettoyage et depannage > Imprimantes et blocages d'impression : analyse (lecture seule) des imprimantes reseau TCP/IP, WSD et IPP
+    (test de l'adresse), retrait des files et ports morts apres sauvegarde complete (PrintBrm), restauration, et option "ne plus laisser Windows
+    choisir l'imprimante par defaut" (Word/Excel qui restent figes jusqu'a "Annuler"). USB, virtuelles (PDF, XPS, OneNote) et partagees : jamais touchees.
 
 NOUVEAUTES 2.1
   1. REPARATION AUTOMATIQUE D'APRES L'OBSERVATEUR D'EVENEMENTS (Reparer > Reparation automatique)
