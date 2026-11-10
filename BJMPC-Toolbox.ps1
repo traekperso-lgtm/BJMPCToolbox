@@ -1967,7 +1967,7 @@ function Build-Events {
     $e = $Script:Evt
 
     # ---- Analyse à la demande
-    $c = New-Card 'Erreurs relevées par Windows' 'Journaux Système et Application. La lecture ne modifie rien ; survolez une ligne pour lire le message d''origine.'
+    $c = New-Card 'Erreurs relevées par Windows' 'Journaux Système, Application, Defender et intégrité du code. La lecture ne modifie rien ; survolez une ligne pour lire le message d''origine.'
     $e.Period = New-Combo @(@('24 dernières heures', 'h24'), @('7 derniers jours', 'd7'), @('30 derniers jours', 'd30')) 190
     $e.Period.SelectedIndex = 1
     $bar = New-Object Windows.Controls.WrapPanel

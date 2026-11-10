@@ -1,6 +1,11 @@
 ﻿BJMPC Toolbox 2.1 - interface graphique (Windows 11)
 =====================================================
 
+NOUVEAUTES 2.1.1
+  - Reparation DISM : si le ScanHealth ne detecte aucune alteration du magasin de composants, RestoreHealth n'est plus lance.
+  - Observateur d'evenements : lecture des journaux Defender et Integrite du code ; nouvelles regles (menace Defender, mise a jour Defender,
+    protection temps reel, fichier bloque par signature/strategie, disque retire, NTFS 50) d'apres les pages Microsoft Learn.
+
 NOUVEAUTES 2.1
   1. REPARATION AUTOMATIQUE D'APRES L'OBSERVATEUR D'EVENEMENTS (Reparer > Reparation automatique)
      Nouveau fichier BJMPC-Evenements-Win11.ps1. L'onglet lit les journaux Systeme et Application (lecture seule,

@@ -24,10 +24,13 @@
 #>
 
 $ErrorActionPreference = 'Continue'
-$Script:EventsVersion = '1.0'
+$Script:EventsVersion = '1.1'
 $Script:LogDir       = Join-Path $env:SystemDrive 'BJMPC-Logs'
 $Script:LogFile      = Join-Path $Script:LogDir ("Evenements_{0}_{1}.log" -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd_HHmmss'))
 $Script:EvtStateFile = Join-Path $Script:LogDir 'Evenements_reparations.json'
+# Journaux lus. Defender et l'intégrité du code ont leur propre journal (références : pages Microsoft Learn
+# « Microsoft Defender Antivirus event IDs and error codes » et « Understanding App Control event IDs »).
+$Script:EvtLogs = @('System', 'Application', 'Microsoft-Windows-Windows Defender/Operational', 'Microsoft-Windows-CodeIntegrity/Operational')
 
 # Réparations disponibles, de la plus légère à la plus lourde (c'est l'ordre d'exécution).
 # Safe = peut être lancée sans demander par la surveillance en direct (rapide, sans perte, sans redémarrage).
@@ -60,7 +63,11 @@ $Script:EvtRules = @(
        Title = 'Un disque renvoie des erreurs de lecture ou d''écriture'
        Why = 'Le disque (ou son câble) a du mal à lire ou écrire certaines zones. C''est souvent le signe d''un disque en fin de vie.'
        Advice = 'Sauvegardez les fichiers sans attendre, puis contrôlez la santé du disque (Réparer > Diagnostics). Si les erreurs reviennent après l''analyse, le disque est à remplacer.' }
-    @{ Id = 'ntfs'; P = '^(Ntfs|Microsoft-Windows-Ntfs)$'; Ids = @(55, 98, 130, 131, 137, 140); W = $true; Kind = 'fix'; Fix = 'chkdsk_scan'; Sev = 3
+    @{ Id = 'disk_removed'; P = '^(disk|classpnp)$'; Ids = @(157); W = $true; Kind = 'advice'; Sev = 2
+       Title = 'Un disque a été retiré ou s''est déconnecté en cours d''utilisation'
+       Why = 'Windows a perdu la liaison avec un disque : câble ou alimentation défaillants, boîtier USB, ou disque en panne. Un disque externe débranché sans éjection produit aussi ce message.'
+       Advice = 'Disque externe : l''éjecter proprement avant de le débrancher et essayer un autre câble ou port. Disque interne : contrôler les câbles et la santé du disque (Réparer > Diagnostics).' }
+    @{ Id = 'ntfs'; P = '^(Ntfs|Microsoft-Windows-Ntfs)$'; Ids = @(50, 55, 98, 130, 131, 137, 140); W = $true; Kind = 'fix'; Fix = 'chkdsk_scan'; Sev = 3
        Title = 'Le système de fichiers d''un disque est endommagé'
        Why = 'Windows a trouvé des incohérences dans l''organisation des fichiers (coupure de courant, arrêt forcé, disque fatigué).'
        Advice = 'Si l''analyse en ligne signale des erreurs à corriger : Réparer Windows > CHKDSK > « Réparer au redémarrage ».' }
@@ -85,7 +92,7 @@ $Script:EvtRules = @(
     @{ Id = 'power_loss'; P = '(Kernel-Power|^EventLog)$'; Ids = @(41, 6008); Kind = 'advice'; Sev = 3
        Title = 'Le PC s''est arrêté brutalement'
        Why = 'Coupure de courant, plantage complet ou appui long sur le bouton : Windows n''a pas pu s''éteindre proprement.'
-       Advice = 'Si ce n''était pas volontaire : contrôler l''alimentation et les températures, et regarder s''il y a aussi des écrans bleus ou des erreurs WHEA dans cette liste.' }
+       Advice = 'Survolez la ligne : un code d''arrêt (BugcheckCode) non nul indique un écran bleu à rechercher ; un horodatage du bouton d''alimentation (PowerButtonTimestamp) non nul indique un arrêt forcé à la main ; si tout est à zéro, suspecter l''alimentation, la surchauffe ou la mémoire. Regarder aussi les écrans bleus ou erreurs WHEA de cette liste.' }
     @{ Id = 'bsod'; P = '(WER-SystemErrorReporting|^BugCheck)$'; Ids = @(1001); Kind = 'fix'; Fix = 'sfc_dism'; Sev = 3
        Title = 'Écran bleu : Windows a planté complètement'
        Why = 'Le code du plantage est dans le détail (survolez la ligne). Des fichiers système abîmés en sont une cause possible, que la réparation élimine.'
@@ -187,6 +194,31 @@ $Script:EvtRules = @(
        Why = 'Le détail nomme le produit concerné.'
        Advice = 'Relancer l''installation en administrateur, après un redémarrage.' }
 
+    # ---- Microsoft Defender et intégrité du code (journaux dédiés)
+    @{ Id = 'def_threat'; P = 'Windows Defender'; Ids = @(1006, 1008, 1015, 1116, 1119); W = $true; Kind = 'advice'; Sev = 3
+       Title = 'Microsoft Defender a détecté une menace ou n''a pas pu la traiter'
+       Why = 'Le détail (survolez la ligne) donne le nom de la menace, le fichier et l''action tentée. Une menace déjà mise en quarantaine ne demande rien de plus.'
+       Advice = 'Ouvrir Sécurité Windows > Protection contre les virus > Historique de protection ; si l''action a échoué, mettre à jour les définitions puis lancer une analyse complète, voire Microsoft Defender hors ligne.' }
+    @{ Id = 'def_update'; P = 'Windows Defender'; Ids = @(2001, 2003, 2004); W = $true; Kind = 'advice'; Sev = 2
+       Title = 'Les définitions ou le moteur de Defender ne se sont pas mis à jour'
+       Why = 'Souvent une coupure réseau passagère. Sans mise à jour, la détection prend du retard.'
+       Advice = 'Vérifier la connexion Internet, puis Sécurité Windows > Protection contre les virus > Mises à jour de la protection > Rechercher les mises à jour. Si cela échoue encore : Réparer Windows > Windows Update.' }
+    @{ Id = 'def_engine'; P = 'Windows Defender'; Ids = @(3002, 5008); W = $true; Kind = 'advice'; Sev = 2
+       Title = 'La protection en temps réel de Defender a eu une défaillance'
+       Why = 'Le moteur de Defender s''est arrêté ou une fonction de protection a échoué.'
+       Advice = 'Redémarrer le PC puis lancer une analyse complète (méthode indiquée par Microsoft). Si cela se répète, rechercher les mises à jour Windows ; un autre antivirus installé peut gêner Defender.' }
+    @{ Id = 'def_off'; P = 'Windows Defender'; Ids = @(5001, 5010, 5012); W = $true; Kind = 'advice'; Sev = 1
+       Title = 'La protection de Defender a été désactivée'
+       Why = 'Normal si un autre antivirus a pris le relais ou si la désactivation était voulue. Sinon, c''est à vérifier : certains logiciels malveillants coupent la protection.'
+       Advice = 'Ouvrir Sécurité Windows et vérifier qu''une protection est active (Defender ou l''antivirus installé).' }
+    @{ Id = 'def_minor'; P = 'Windows Defender'; Ids = @(1118, 5007); W = $true; Kind = 'noise'; Sev = 0
+       Title = 'Messages d''état de Defender'
+       Why = 'Microsoft indique qu''aucune action n''est nécessaire pour un échec de traitement non critique ; un changement de configuration n''est à vérifier que s''il est inattendu.'; Advice = '' }
+    @{ Id = 'ci_block'; P = 'CodeIntegrity'; Ids = @(3001, 3004, 3023, 3033, 3077); W = $true; Kind = 'advice'; Sev = 2
+       Title = 'Windows a bloqué un pilote ou un fichier (signature ou stratégie de sécurité)'
+       Why = 'Le fichier nommé dans le détail n''a pas une signature acceptée, ou une stratégie (App Control, Smart App Control, isolation du noyau) l''a refusé. Le matériel ou le logiciel concerné peut ne pas fonctionner.'
+       Advice = 'Mettre à jour ce pilote ou ce logiciel auprès de son éditeur. Ne pas désactiver la protection pour le faire passer, sauf si l''origine du fichier est connue et sûre.' }
+
     # ---- Bruit connu : rien à réparer
     @{ Id = 'dcom'; P = 'DistributedCOM'; Ids = @(10000, 10001, 10005, 10010, 10016); Kind = 'noise'; Sev = 0
        Title = 'Messages DCOM (autorisations ou composant lent à répondre)'
@@ -265,9 +297,11 @@ function Get-EventGroups {
     $groups = @{}; $trunc = $false; $read = 0
     $iso = $After.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
     $xp = "*[System[(Level=1 or Level=2 or Level=3) and TimeCreated[@SystemTime>'$iso']]]"
-    foreach ($log in 'System', 'Application') {
+    foreach ($log in $Script:EvtLogs) {
         $rd = $null
         try {
+            # Journal absent sur ce PC (Defender désinstallé, édition particulière) : on passe sans bruit.
+            try { $null = New-Object System.Diagnostics.Eventing.Reader.EventLogConfiguration($log) } catch { continue }
             $q = New-Object System.Diagnostics.Eventing.Reader.EventLogQuery($log, [System.Diagnostics.Eventing.Reader.PathType]::LogName, $xp)
             $q.ReverseDirection = $true
             $rd = New-Object System.Diagnostics.Eventing.Reader.EventLogReader($q)
@@ -434,7 +468,7 @@ function Get-EventFindings {
     param([int]$Days = 7, [int]$Hours = 0)
     $after = $(if ($Hours -gt 0) { (Get-Date).AddHours(-$Hours) } else { (Get-Date).AddDays(-[math]::Max(1, $Days)) })
     $span = $(if ($Hours -gt 0) { "$Hours dernières heures" } else { "$Days derniers jours" })
-    Write-Log "Lecture de l'Observateur d'événements (Système et Application, $span)…"
+    Write-Log "Lecture de l'Observateur d'événements (Système, Application, Defender, intégrité du code ; $span)…"
     $res = Get-EventGroups -After $after
     $state = Get-EventFixState
     $Script:EvtSvcCache = $null
