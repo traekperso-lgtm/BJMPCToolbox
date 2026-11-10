@@ -9,7 +9,7 @@
 #>
 
 $ErrorActionPreference = 'Continue'
-$Script:Version = '1.0'
+$Script:Version = '1.1'
 $Script:LogDir  = Join-Path $env:SystemDrive 'BJMPC-Logs'
 $Script:LogFile = Join-Path $LogDir ("Maintenance_{0}_{1}.log" -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd_HHmmss'))
 $Script:RebootNeeded = $false
@@ -58,10 +58,14 @@ function Invoke-Native {
     # Exécute une commande native et journalise la sortie
     param([string]$Exe, [string]$Arguments)
     Write-Log "Exécution : $Exe $Arguments"
+    $lines = New-Object System.Collections.ArrayList
     & cmd.exe /c "$Exe $Arguments 2>&1" | ForEach-Object {
-        if ($_ -and $_.Trim()) { Write-Host "        $_" -ForegroundColor DarkGray; Add-Content -Path $Script:LogFile -Value "        $_" -Encoding UTF8 }
+        if ($_ -and $_.Trim()) { [void]$lines.Add([string]$_); Write-Host "        $_" -ForegroundColor DarkGray; Add-Content -Path $Script:LogFile -Value "        $_" -Encoding UTF8 }
     }
-    Write-Log "Code retour : $LASTEXITCODE" $(if ($LASTEXITCODE -eq 0) { 'OK' } else { 'WARN' })
+    $code = $LASTEXITCODE
+    $Script:LastNativeOutput = ($lines -join "`n")
+    $Script:LastNativeCode   = $code
+    Write-Log "Code retour : $code" $(if ($code -eq 0) { 'OK' } else { 'WARN' })
 }
 
 function Show-Header {
@@ -124,6 +128,25 @@ function Invoke-DISM {
     Write-Log "DISM - vérification de l'image Windows"
     Invoke-Native 'DISM.exe' '/Online /Cleanup-Image /CheckHealth'
     Invoke-Native 'DISM.exe' '/Online /Cleanup-Image /ScanHealth'
+    $scanOut  = [string]$Script:LastNativeOutput
+    $scanCode = $Script:LastNativeCode
+    # Magasin de composants sain : aucune réparation à proposer (gain de temps)
+    $sain = $null
+    if ($scanOut -match 'Aucune alt.{1,3}ration|No component store corruption detected') { $sain = $true }
+    elseif ($scanOut -match 'r.parable|repairable|is repairable|corrupt') { $sain = $false }
+    if ($null -eq $sain) {
+        # Texte non reconnu (autre langue) : état lu via l'API, indépendante de la langue
+        try {
+            $st = [string](Repair-WindowsImage -Online -CheckHealth -ErrorAction Stop).ImageHealthState
+            if ($st -eq 'Healthy') { $sain = $true } elseif ($st) { $sain = $false }
+        } catch { }
+    }
+    if ($sain -eq $true -and $scanCode -eq 0) {
+        Write-Log "Magasin de composants sain : aucune altération détectée, réparation (RestoreHealth) inutile" 'OK'
+        return
+    }
+    if ($sain -eq $true) { Write-Log "Magasin de composants signalé sain mais DISM a renvoyé le code $scanCode : réparation proposée par précaution" 'WARN' }
+    elseif ($null -eq $sain) { Write-Log "État du magasin de composants non déterminé : réparation proposée par précaution" 'WARN' }
     if (Confirm-Action "Lancer la réparation (RestoreHealth, nécessite Internet/Windows Update) ?") {
         Invoke-Native 'DISM.exe' '/Online /Cleanup-Image /RestoreHealth'
     }
