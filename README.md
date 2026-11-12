@@ -2,7 +2,7 @@
 
 🇫🇷 [Français](#-français) · 🇬🇧 [English](#-english)
 
-> **Version 2.1** · Windows 11 · Windows PowerShell 5.1 (WPF) · by **BJMPC Informatique**
+> **Version 2.2** · Windows 11 · Windows PowerShell 5.1 (WPF) · by **BJMPC Informatique**
 
 ---
 
@@ -21,6 +21,16 @@ Elle est écrite en Windows PowerShell 5.1 (interface WPF), sans installation : 
 - **Sauvegarde automatique des fichiers du client** vers un autre disque, à la demande ou planifiée.
 - **Optimisations dépassées retirées** : Nagle, priorités MMCSS, SysMain désactivé, services « inutiles », Win32PrioritySeparation, compression mémoire, désactivation de HVCI… Elles n'apportent rien de mesurable sur Windows 11 aujourd'hui, ou retirent une protection.
 - **Pilotes revus en profondeur** : entre deux familles de pilotes d'une même puce, c'est la date qui départage (comme le fait Windows), plus le seul numéro de version ; retour arrière réel après une mise à jour.
+
+### Nouveautés de la version 2.2
+
+- **Historique** : tout ce qui peut être annulé (retour aux valeurs Windows 11, pilotes, imprimantes, doublons de photos, réglages) au même endroit, avec un bouton « Annuler » par ligne.
+- **Rapport d'intervention en PDF** à remettre au client : ce qui a été fait, état du PC en début et en fin d'intervention (place libre, durée de démarrage, programmes au démarrage, erreurs graves, batterie, disques), remarques.
+- **Réglages appliqués au bon compte** : les réglages « utilisateur » visent la personne connectée à l'écran, même si la Toolbox est lancée avec un autre compte administrateur.
+- **Section « Fichiers et restauration »** : sauvegarde des fichiers, doublons de photos, historique, journal et points de restauration.
+- **Mise à jour de la Toolbox depuis GitHub** (Accueil), avec contrôle des fichiers et archive de la version en place.
+- **Tests automatiques sur Windows** à chaque envoi sur le dépôt (GitHub Actions, Pester, PSScriptAnalyzer).
+- La version 2.1 reste disponible sur la branche `archive/v2.1`.
 
 Le détail, version par version, est dans [`LISEZMOI.txt`](LISEZMOI.txt).
 
@@ -52,6 +62,8 @@ Prérequis : Windows 11, droits administrateur, Windows PowerShell 5.1 (inclus d
 | `BJMPC-Outils-Win11.ps1` | Diagnostics, dépannage, pilotes, catalogue winget, nettoyage, retour aux valeurs Windows |
 | `BJMPC-Toolbox.bat` | Lanceur (demande l'élévation administrateur) |
 | `Verif.bat` / `Apercu.bat` | Autotest en lecture seule / aperçu du résumé client |
+| `tests/`, `.github/workflows/` | Tests automatiques (Pester) lancés sur Windows par GitHub Actions |
+| `LICENSE.md` | Licence PolyForm Noncommercial 1.0.0 |
 
 ### Les six sections
 
@@ -62,7 +74,7 @@ Prérequis : Windows 11, droits administrateur, Windows PowerShell 5.1 (inclus d
 | **Optimiser** | Jeux et alimentation · Réseau et DNS · Disque et démarrage · Affichage et OLED |
 | **Confidentialité et réglages** | Confidentialité · Interface et Explorateur · Mises à jour et sécurité |
 | **Logiciels et pilotes** | Applications · Pilotes |
-| **Sauvegarde et restauration** | Sauvegarde des fichiers · Restauration |
+| **Fichiers et restauration** | Sauvegarde des fichiers · Doublons de photos · Historique · Journal et points de restauration |
 
 - **Accueil** : ce qui est en ordre sur ce PC et où agir pour le reste (sauvegarde récente, point de restauration, place libre, santé des disques, plantages récents…). Un bouton « Réglages recommandés » applique seulement ce qui est sûr partout. Le *résumé pour le client* raconte l'intervention en langage simple.
 - **Réparation automatique** : chaque erreur de l'Observateur d'événements est rangée dans une famille.
@@ -78,7 +90,8 @@ Prérequis : Windows 11, droits administrateur, Windows PowerShell 5.1 (inclus d
 - **Applications** : catalogue de logiciels (winget), mises à jour, inventaire, retrait des applications préinstallées.
 - **Pilotes** : analyse de tous les appareils, comparée à ce que Windows Update propose pour ce matériel exact. Jamais un pilote plus ancien que celui en place, et le pilote fourni par Windows est gardé s'il est plus récent que celui du constructeur. Carte graphique : dernier pilote par l'outil officiel (NVIDIA, AMD, Intel). Appareils sans pilote : paquet chipset signé, jamais de pilote non signé. Point de restauration et sauvegarde avant, vérification de l'appareil et retrait de l'ancienne version après. Autres onglets : pilotes installés (anciennes versions), ajouter un pilote, appareils absents, sauvegardes.
 - **Sauvegarde des fichiers** : deux modes. *Dossiers choisis* : dossiers personnels et favoris copiés vers un autre disque, seuls les fichiers nouveaux ou modifiés, rien n'est jamais supprimé dans la sauvegarde. *Miroir* : copie exacte du dossier utilisateur (hors AppData, OneDrive et dossiers système) ; un fichier supprimé du PC reste 30 jours dans `Miroir-Corbeille`, et un passage qui retirerait une grande partie du miroir est suspendu jusqu'à confirmation. Tâche planifiée quotidienne ou hebdomadaire, indépendante de la Toolbox.
-- **Restauration** : journal des modifications (annuler tout ou une catégorie) et points de restauration.
+- **Historique** : chaque action annulable de la Toolbox, avec son bouton « Annuler ».
+- **Journal et points de restauration** : valeurs d'origine des réglages (annuler tout ou une catégorie) et points de restauration.
 
 ### Sécurité et réversibilité
 
@@ -93,13 +106,17 @@ Prérequis : Windows 11, droits administrateur, Windows PowerShell 5.1 (inclus d
 
 - **Sauvegarde des fichiers** : ce sont les fichiers personnels, pas Windows ni les logiciels ; une seule version de chaque fichier est gardée ; un fichier ouvert pendant la copie est repris la fois suivante ; les mots de passe des navigateurs ne sont pas copiés.
 - **Réparation automatique** : 33 règles couvrent les erreurs courantes ; le reste est montré sans réparation inventée.
-- Le Windows Update est approximatif et peut limiter les requêtes : un résultat anormal est signalé « Erreur », jamais pris pour « aucun pilote ».
+- **Pilotes** : seuls les pilotes que Windows Update propose sont installés automatiquement ; pour le reste (carte graphique, outils du fabricant), la Toolbox indique l'outil officiel.
 - La suppression « forcée » de pilotes (DriverStore Explorer) n'est volontairement pas reprise.
 - Les valeurs « par défaut de Windows 11 » peuvent varier selon l'édition et la version : comparez avant d'appliquer.
 
+### Licence
+
+BJMPC Toolbox est distribuée sous la licence [PolyForm Noncommercial 1.0.0](LICENSE.md) : vous pouvez l'utiliser, l'étudier et la modifier pour un usage non commercial. Toute utilisation commerciale (par exemple facturer des interventions faites avec l'outil, ou le revendre) demande l'accord de BJMPC Informatique.
+
 ### Retours
 
-Ouvrez une *issue* en précisant la version de Windows, la version de l'outil (2.1) et, si possible, le journal de `C:\BJMPC-Logs\`.
+Ouvrez une *issue* en précisant la version de Windows, la version de l'outil (2.2) et, si possible, le journal de `C:\BJMPC-Logs\`.
 
 ---
 
@@ -118,6 +135,16 @@ It is written in Windows PowerShell 5.1 (WPF UI) and needs no installation: laun
 - **Automatic backup of the customer's files** to another disk, on demand or scheduled.
 - **Outdated tweaks removed**: Nagle, MMCSS priorities, disabling SysMain, "useless" services, Win32PrioritySeparation, memory compression, disabling HVCI… They bring nothing measurable on today's Windows 11, or remove a protection.
 - **Drivers reviewed in depth**: between two driver families for the same chip, the date decides (as Windows does), no longer the version number alone; a real rollback after an update.
+
+### What's new in version 2.2
+
+- **History**: everything that can be undone (Windows 11 defaults restore, drivers, printers, duplicate photos, settings) in one place, with an "Undo" button per line.
+- **PDF service report** for the customer: what was done, the PC's state at the start and end of the visit (free space, boot time, startup programs, serious errors, battery, disks), remarks.
+- **Settings applied to the right account**: per-user settings target the person signed in on screen, even when the Toolbox runs under another administrator account.
+- **"Files & restore" section**: file backup, duplicate photos, history, journal and restore points.
+- **Toolbox update from GitHub** (Home), with file checks and an archive of the current version.
+- **Automatic tests on Windows** on every push (GitHub Actions, Pester, PSScriptAnalyzer).
+- Version 2.1 remains available on the `archive/v2.1` branch.
 
 The version-by-version detail is in [`LISEZMOI.txt`](LISEZMOI.txt) (French).
 
@@ -149,6 +176,8 @@ Requirements: Windows 11, administrator rights, Windows PowerShell 5.1 (built in
 | `BJMPC-Outils-Win11.ps1` | Diagnostics, troubleshooting, drivers, winget catalogue, cleanup, Windows defaults restore |
 | `BJMPC-Toolbox.bat` | Launcher (asks for administrator elevation) |
 | `Verif.bat` / `Apercu.bat` | Read-only self-test / customer summary preview |
+| `tests/`, `.github/workflows/` | Automatic tests (Pester) run on Windows by GitHub Actions |
+| `LICENSE.md` | PolyForm Noncommercial License 1.0.0 |
 
 ### The six sections
 
@@ -159,7 +188,7 @@ Requirements: Windows 11, administrator rights, Windows PowerShell 5.1 (built in
 | **Optimise** | Gaming & power · Network & DNS · Disk & startup · Display & OLED |
 | **Privacy & settings** | Privacy · Interface & Explorer · Updates & security |
 | **Software & drivers** | Applications · Drivers |
-| **Backup & restore** | File backup · Restore |
+| **Files & restore** | File backup · Duplicate photos · History · Journal & restore points |
 
 - **Home**: what is in order on this PC and where to act for the rest (recent backup, restore point, free space, disk health, recent crashes…). A "Recommended settings" button applies only what is safe everywhere. The *customer summary* tells the story of the visit in plain language.
 - **Automatic repair**: each Event Viewer error is sorted into a family.
@@ -175,7 +204,8 @@ Requirements: Windows 11, administrator rights, Windows PowerShell 5.1 (built in
 - **Applications**: software catalogue (winget), updates, inventory, removal of preinstalled apps.
 - **Drivers**: every device is checked against what Windows Update offers for that exact hardware. Never a driver older than the installed one, and the Windows in-box driver is kept when it is newer than the vendor's. Graphics card: latest driver through the official vendor tool (NVIDIA, AMD, Intel). Devices without a driver: signed chipset package, never an unsigned driver. Restore point and backup before, device check and removal of the old version after. Other tabs: installed drivers (old versions), add a driver, absent devices, backups.
 - **File backup**: two modes. *Chosen folders*: personal folders and bookmarks copied to another disk, only new or changed files, nothing is ever deleted from the backup. *Mirror*: exact copy of the user folder (except AppData, OneDrive and system folders); a file deleted from the PC is kept 30 days in `Miroir-Corbeille`, and a run that would remove a large part of the mirror is suspended until confirmed. Daily or weekly scheduled task, independent of the Toolbox.
-- **Restore**: change journal (undo everything or one category) and restore points.
+- **History**: every undoable Toolbox action, with its "Undo" button.
+- **Journal & restore points**: original values of settings (undo everything or one category) and restore points.
 
 ### Safety and reversibility
 
@@ -190,10 +220,14 @@ Requirements: Windows 11, administrator rights, Windows PowerShell 5.1 (built in
 
 - **File backup**: personal files only, not Windows or installed software; a single version of each file is kept; a file open during the copy is picked up next time; browser passwords are not copied.
 - **Automatic repair**: 33 rules cover common errors; the rest is shown without an invented fix.
-- The Windows Update is fuzzy and may rate-limit: an abnormal response is reported as "Error", never mistaken for "no driver".
+- **Drivers**: only drivers offered by Windows Update are installed automatically; for the rest (graphics card, PC maker tools), the Toolbox points to the official tool.
 - "Forced" driver deletion (as in DriverStore Explorer) is intentionally not implemented.
 - "Windows 11 default" values may vary with the edition and build: compare before applying.
 
+### Licence
+
+BJMPC Toolbox is released under the [PolyForm Noncommercial License 1.0.0](LICENSE.md): you may use, study and modify it for noncommercial purposes. Any commercial use (for example billing for work done with the tool, or reselling it) requires permission from BJMPC Informatique.
+
 ### Feedback
 
-Open an *issue* with your Windows version, the tool version (2.1) and, if possible, the log from `C:\BJMPC-Logs\`.
+Open an *issue* with your Windows version, the tool version (2.2) and, if possible, the log from `C:\BJMPC-Logs\`.

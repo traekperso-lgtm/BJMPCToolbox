@@ -14,7 +14,7 @@
 #>
 
 $ErrorActionPreference = 'Continue'
-$Script:ReglagesVersion = '1.0'
+$Script:ReglagesVersion = '1.1'
 
 $Script:TweakCatalog = @(
     @{

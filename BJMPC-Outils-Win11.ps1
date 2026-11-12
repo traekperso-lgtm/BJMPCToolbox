@@ -10,7 +10,7 @@
 #>
 
 $ErrorActionPreference = 'Continue'
-$Script:ToolsVersion = '1.6'
+$Script:ToolsVersion = '1.7'
 $Script:LogDir       = Join-Path $env:SystemDrive 'BJMPC-Logs'
 $Script:ReportDir    = Join-Path $Script:LogDir 'Rapports'
 $Script:LogFile      = Join-Path $Script:LogDir ("Outils_{0}_{1}.log" -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd_HHmmss'))
@@ -1214,6 +1214,225 @@ function Clear-PrintQueue {
         Write-Log "Échec : $($_.Exception.Message)" 'ERROR'
         try { Start-Service -Name Spooler -ErrorAction SilentlyContinue } catch {}
     }
+}
+
+# ---------------------------------------------------------------- Mise à jour de la Toolbox (dépôt GitHub)
+$Script:UpdRepo = 'traekperso-lgtm/bjmpctoolbox'
+$Script:UpdBranch = 'main'
+$Script:UpdFiles = @('BJMPC-Toolbox.ps1', 'BJMPC-Optimisation-Win11.ps1', 'BJMPC-Reglages-Win11.ps1', 'BJMPC-Maintenance-Win11.ps1', 'BJMPC-Outils-Win11.ps1',
+    'BJMPC-Sauvegarde-Win11.ps1', 'BJMPC-Evenements-Win11.ps1', 'BJMPC-Toolbox.bat', 'Verif.bat', 'Apercu.bat', 'LISEZMOI.txt', 'LICENSE.md')
+
+function Get-ToolboxRemoteVersion {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $u = 'https://raw.githubusercontent.com/{0}/{1}/BJMPC-Toolbox.ps1' -f $Script:UpdRepo, $Script:UpdBranch
+    $txt = (Invoke-WebRequest -Uri $u -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop).Content
+    if ($txt -is [byte[]]) { $txt = [Text.Encoding]::UTF8.GetString($txt) }
+    if ([string]$txt -match "\`$Script:AppVersion\s*=\s*'(\d+(?:\.\d+){1,3})'") { return $Matches[1] }
+    throw 'numéro de version introuvable dans le fichier publié'
+}
+
+function Get-ToolboxUpdate {
+    # Lecture seule : compare la version en place à celle publiée sur GitHub.
+    param([string]$Current)
+    Write-Log '=== Recherche d''une nouvelle version de la Toolbox ==='
+    $res = @{ Current = $Current; Latest = ''; Newer = $false; Error = '' }
+    try {
+        $res.Latest = Get-ToolboxRemoteVersion
+        $res.Newer = ([version]$res.Latest -gt [version]$Current)
+        if ($res.Newer) { Write-Log ("Nouvelle version disponible : {0} (en place : {1})." -f $res.Latest, $Current) 'WARN' }
+        else { Write-Log ("La Toolbox est à jour ({0})." -f $Current) 'OK' }
+    } catch { $res.Error = $_.Exception.Message; Write-Log ("Vérification impossible : " + $res.Error) 'WARN' }
+    Set-SyncResult $res
+}
+
+function Install-ToolboxUpdate {
+    # Télécharge la dernière version, la vérifie, archive la version en place dans _Archive\, puis remplace les fichiers.
+    param([string]$Root, [string]$Current)
+    $res = @{ Ok = @(); Bad = @(); Reboot = $false; Version = '' }
+    try {
+        if (-not $Root -or -not (Test-Path -LiteralPath (Join-Path $Root 'BJMPC-Toolbox.ps1'))) { throw "dossier de la Toolbox introuvable : $Root" }
+        $latest = Get-ToolboxRemoteVersion
+        if (-not ([version]$latest -gt [version]$Current)) { Write-Log ("Déjà à jour ({0})." -f $Current) 'OK'; Set-SyncResult $res; return }
+        Write-Log ("Téléchargement de la version {0}…" -f $latest)
+        $work = Join-Path $env:TEMP ('bjmpc_maj_' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $work -Force | Out-Null
+        try {
+            $zip = Join-Path $work 'toolbox.zip'
+            Invoke-WebRequest -Uri ('https://github.com/{0}/archive/refs/heads/{1}.zip' -f $Script:UpdRepo, $Script:UpdBranch) -OutFile $zip -UseBasicParsing -TimeoutSec 120 -ErrorAction Stop
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            [IO.Compression.ZipFile]::ExtractToDirectory($zip, (Join-Path $work 'x'))
+            $src = @(Get-ChildItem -LiteralPath (Join-Path $work 'x') -Directory | Select-Object -First 1)[0].FullName
+            # Contrôles : tous les fichiers présents, scripts sans erreur de syntaxe, bonne version
+            foreach ($f in $Script:UpdFiles) { if (-not (Test-Path -LiteralPath (Join-Path $src $f))) { throw "fichier manquant dans la version publiée : $f" } }
+            foreach ($f in @($Script:UpdFiles | Where-Object { $_ -like '*.ps1' })) {
+                $t = $null; $e = $null
+                [void][Management.Automation.Language.Parser]::ParseFile((Join-Path $src $f), [ref]$t, [ref]$e)
+                if ($e -and $e.Count -gt 0) { throw ("erreur de syntaxe dans {0} : {1}" -f $f, $e[0].Message) }
+            }
+            $v = [IO.File]::ReadAllText((Join-Path $src 'BJMPC-Toolbox.ps1'))
+            if ($v -notmatch ("\`$Script:AppVersion\s*=\s*'" + [regex]::Escape($latest) + "'")) { throw 'la version téléchargée ne correspond pas' }
+            # Archive de la version en place
+            $arch = Join-Path (Join-Path $Root '_Archive') ('v{0}_{1}' -f $Current, (Get-Date -Format 'yyyyMMdd_HHmmss'))
+            New-Item -ItemType Directory -Path $arch -Force -ErrorAction Stop | Out-Null
+            foreach ($f in $Script:UpdFiles) { $p = Join-Path $Root $f; if (Test-Path -LiteralPath $p) { Copy-Item -LiteralPath $p -Destination $arch -Force -ErrorAction Stop } }
+            Write-Log "Version $Current archivée : $arch" 'OK'
+            foreach ($f in $Script:UpdFiles) { Copy-Item -LiteralPath (Join-Path $src $f) -Destination (Join-Path $Root $f) -Force -ErrorAction Stop }
+            if (Test-Path -LiteralPath (Join-Path $src 'README.md')) { Copy-Item -LiteralPath (Join-Path $src 'README.md') -Destination (Join-Path $Root 'README.md') -Force -ErrorAction SilentlyContinue }
+            Write-Log ("Toolbox mise à jour en {0}. Fermez-la et relancez BJMPC-Toolbox.bat pour utiliser la nouvelle version." -f $latest) 'OK'
+            $res.Ok = @($latest); $res.Version = $latest
+        } finally { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }
+    } catch { Write-Log ("Mise à jour annulée, rien n'a été remplacé : " + $_.Exception.Message) 'ERROR'; $res.Bad = @('mise à jour') }
+    Set-SyncResult $res
+}
+
+# ---------------------------------------------------------------- Mesures avant / après et rapport d'intervention
+$Script:MeasureDir = Join-Path $Script:LogDir 'Mesures'
+$Script:ReportDir = Join-Path $Script:LogDir 'Rapports'
+
+function Get-PcMeasures {
+    # Lecture seule (seul le fichier de mesure est écrit dans C:\BJMPC-Logs\Mesures). -Label : avant / apres.
+    param([string]$Label = 'avant')
+    if ($Label -ne 'apres') { $Label = 'avant' }
+    Write-Log ("=== Mesure de l'état du PC ({0} intervention) ===" -f $(if ($Label -eq 'avant') { 'début d''' } else { 'fin d''' }))
+    $m = [ordered]@{ Label = $Label; Date = (Get-Date).ToString('s'); Pc = $env:COMPUTERNAME }
+    try { $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop; $m.Model = ('{0} {1}' -f $cs.Manufacturer, $cs.Model).Trim() } catch {}
+    try {
+        $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+        $m.Os = ('{0} (build {1})' -f $os.Caption, $os.BuildNumber)
+        $m.RamGB = [math]::Round([double]$os.TotalVisibleMemorySize / 1MB, 1)
+    } catch {}
+    try { $d = New-Object IO.DriveInfo ($env:SystemDrive); $m.FreeGB = [math]::Round($d.AvailableFreeSpace / 1GB, 1); $m.SizeGB = [math]::Round($d.TotalSize / 1GB, 0) } catch {}
+    # Durée du dernier démarrage, mesurée par Windows (journal Diagnostics-Performance, événement 100)
+    try {
+        $ev = Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-Diagnostics-Performance/Operational'; Id = 100 } -MaxEvents 1 -ErrorAction Stop
+        $x = [xml]$ev.ToXml()
+        $bt = @($x.Event.EventData.Data | Where-Object { $_.Name -eq 'BootTime' }) | Select-Object -First 1
+        if ($bt -and $bt.'#text') { $m.BootSec = [math]::Round([double]$bt.'#text' / 1000, 1); $m.BootDate = $ev.TimeCreated.ToString('s') }
+    } catch {}
+    try { $m.Startup = @(Get-CimInstance Win32_StartupCommand -ErrorAction Stop).Count } catch {}
+    try { $m.Errors7d = @(Get-WinEvent -FilterHashtable @{ LogName = 'System', 'Application'; Level = 1, 2; StartTime = (Get-Date).AddDays(-7) } -MaxEvents 5000 -ErrorAction Stop).Count }
+    catch { if ([string]$_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') { $m.Errors7d = 0 } }
+    # Batterie : capacité actuelle par rapport à la capacité d'origine (rapport powercfg)
+    try {
+        if (@(Get-CimInstance Win32_Battery -ErrorAction Stop).Count -gt 0) {
+            $f = Join-Path $env:TEMP ('bjmpc_batt_' + [guid]::NewGuid().ToString('N') + '.xml')
+            & powercfg.exe /batteryreport /xml /output "$f" 2>$null | Out-Null
+            if (Test-Path -LiteralPath $f) {
+                try {
+                    [xml]$bx = Get-Content -LiteralPath $f -Raw
+                    $b = @($bx.BatteryReport.Batteries.Battery) | Select-Object -First 1
+                    $dc = [double]$b.DesignCapacity; $fc = [double]$b.FullChargeCapacity
+                    if ($dc -gt 0) { $m.BatteryPct = [math]::Round(100 * $fc / $dc) }
+                    if ($b.CycleCount) { $m.BatteryCycles = [string]$b.CycleCount }
+                } finally { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }
+            }
+        }
+    } catch {}
+    try {
+        $m.Disks = @(Get-PhysicalDisk -ErrorAction Stop | ForEach-Object {
+                $h = switch ([string]$_.HealthStatus) { 'Healthy' { 'bon état' } 'Warning' { 'à surveiller' } 'Unhealthy' { 'défaillant' } default { [string]$_.HealthStatus } }
+                '{0} : {1}' -f $_.FriendlyName, $h })
+    } catch {}
+    try {
+        New-Item -ItemType Directory -Path $Script:MeasureDir -Force -ErrorAction Stop | Out-Null
+        $file = Join-Path $Script:MeasureDir ("Mesure_{0}_{1}_{2}.json" -f $env:COMPUTERNAME, $Label, (Get-Date -Format 'yyyyMMdd_HHmmss'))
+        Set-Content -LiteralPath $file -Value (ConvertTo-Json -InputObject $m -Depth 3) -Encoding UTF8 -ErrorAction Stop
+    } catch { Write-Log ("Mesure non enregistrée : " + $_.Exception.Message) 'WARN' }
+    Write-Log ("Place libre : {0} Go · démarrage : {1} s · programmes au démarrage : {2} · erreurs graves (7 j) : {3}{4}" -f $m.FreeGB, $(if ($m.BootSec) { $m.BootSec } else { '?' }), $m.Startup, $m.Errors7d, $(if ($m.BatteryPct) { (' · batterie : {0} %' -f $m.BatteryPct) } else { '' })) 'OK'
+    Get-LatestMeasures
+}
+
+function Get-LatestMeasures {
+    # Dernière mesure « avant » et dernière mesure « après » prise ensuite, pour ce PC.
+    $res = @{ Avant = $null; Apres = $null }
+    $files = @(Get-ChildItem -LiteralPath $Script:MeasureDir -Filter ("Mesure_{0}_*.json" -f $env:COMPUTERNAME) -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)
+    $a = $files | Where-Object { $_.Name -like '*_avant_*' } | Select-Object -First 1
+    if ($a) {
+        try { $res.Avant = Get-Content -LiteralPath $a.FullName -Raw -Encoding UTF8 | ConvertFrom-Json } catch {}
+        $p = $files | Where-Object { $_.Name -like '*_apres_*' -and $_.LastWriteTime -ge $a.LastWriteTime } | Select-Object -First 1
+        if ($p) { try { $res.Apres = Get-Content -LiteralPath $p.FullName -Raw -Encoding UTF8 | ConvertFrom-Json } catch {} }
+    }
+    Set-SyncResult $res
+}
+
+function Convert-HtmlToPdf {
+    # Rapport HTML -> PDF avec Microsoft Edge en mode sans fenêtre (présent sur tout Windows 11). Sinon, ouvre le HTML.
+    param([string]$Html)
+    $res = @{ Ok = @(); Bad = @(); Reboot = $false; Pdf = ''; Html = $Html }
+    $full = ''; try { $full = [IO.Path]::GetFullPath($Html) } catch {}
+    if (-not $full -or $full -notlike ($Script:ReportDir + '\*') -or $full -notmatch '\.html$' -or -not (Test-Path -LiteralPath $full)) {
+        Write-Log "Rapport introuvable ou refusé : $Html" 'ERROR'; $res.Bad = @('rapport'); Set-SyncResult $res; return
+    }
+    $pdf = $full -replace '\.html$', '.pdf'
+    $edge = @((Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe'), (Join-Path $env:ProgramFiles 'Microsoft\Edge\Application\msedge.exe')) |
+        Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+    if ($edge) {
+        $prof = Join-Path $env:TEMP ('bjmpc_edge_' + [guid]::NewGuid().ToString('N'))
+        try {
+            $uri = ([Uri]$full).AbsoluteUri
+            $args2 = @('--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--no-pdf-header-footer',
+                ('--user-data-dir="{0}"' -f $prof), ('--print-to-pdf="{0}"' -f $pdf), $uri)
+            $p = Start-Process -FilePath $edge -ArgumentList $args2 -PassThru -WindowStyle Hidden -ErrorAction Stop
+            if (-not $p.WaitForExit(90000)) { try { $p.Kill() } catch {}; Write-Log 'Edge n''a pas répondu à temps.' 'WARN' }
+            Start-Sleep -Milliseconds 500
+        } catch { Write-Log ("Conversion en PDF impossible : " + $_.Exception.Message) 'WARN' }
+        finally { Remove-Item -LiteralPath $prof -Recurse -Force -ErrorAction SilentlyContinue }
+    } else { Write-Log 'Microsoft Edge introuvable : le rapport reste en HTML (Imprimer > Microsoft Print to PDF).' 'WARN' }
+    if ((Test-Path -LiteralPath $pdf) -and (Get-Item -LiteralPath $pdf).Length -gt 1000) {
+        Write-Log "Rapport PDF : $pdf" 'OK'
+        $res.Ok = @('rapport'); $res.Pdf = $pdf
+        try { Start-Process -FilePath $pdf } catch {}
+    } else {
+        Write-Log 'PDF non créé : le rapport s''ouvre en HTML (Ctrl+P > Microsoft Print to PDF).' 'WARN'
+        $res.Bad = @('pdf')
+        try { Start-Process -FilePath $full } catch {}
+    }
+    Set-SyncResult $res
+}
+
+# ---------------------------------------------------------------- Historique : tout ce qui peut être annulé, au même endroit
+function Get-UndoHistory {
+    # Lecture seule. Une ligne par action annulable, la plus récente en premier, avec la commande d'annulation.
+    Write-Log '=== Historique des actions annulables (lecture seule) ==='
+    $rows = New-Object System.Collections.ArrayList
+    $add = { param($Date, $Kind, $Label, $Detail, $Code) [void]$rows.Add([pscustomobject]@{ Date = $Date; Kind = $Kind; Label = $Label; Detail = $Detail; Code = $Code }) }
+    # Réglages de la Toolbox (Journal des valeurs d'origine)
+    $bk = Join-Path $Script:LogDir 'Backup'
+    $orig = Join-Path $bk ("EtatOrigine_{0}.json" -f $env:COMPUTERNAME)
+    if (Test-Path -LiteralPath $orig) {
+        $n = 0; try { $j = Get-Content -LiteralPath $orig -Raw -Encoding UTF8 | ConvertFrom-Json; $n = @($j.PSObject.Properties).Count } catch {}
+        if ($n -gt 0) { & $add (Get-Item -LiteralPath $orig).LastWriteTime 'journal' 'Réglages de la Toolbox' ("{0} valeur(s) d'origine enregistrée(s) : annulation réglage par réglage dans le Journal" -f $n) '' }
+    }
+    # Retours aux valeurs de Windows 11
+    foreach ($f in @(Get-ChildItem -LiteralPath $bk -Filter 'AvantDefauts_*.json' -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch '_annule\.json$' })) {
+        $n = 0; try { $n = @(Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8 | ConvertFrom-Json).Count } catch {}
+        & $add $f.LastWriteTime 'defaults' 'Retour aux valeurs de Windows 11' ("{0} réglage(s) remis par défaut" -f $n) ("Undo-Win11Defaults -Name '" + $f.Name + "'")
+    }
+    # Pilotes : mises à jour, suppressions du magasin, sauvegardes complètes
+    foreach ($d in @(Get-ChildItem -LiteralPath (Join-Path $Script:LogDir 'Pilotes') -Directory -ErrorAction SilentlyContinue)) {
+        if ($d.Name -notmatch '^[A-Za-z0-9][A-Za-z0-9_.\-]*$') { continue }
+        $ninf = @(Get-ChildItem -LiteralPath $d.FullName -Filter *.inf -Recurse -File -ErrorAction SilentlyContinue).Count
+        if ($ninf -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $d.FullName 'maj.json'))) { continue }
+        if ($d.Name -like 'MAJ_*') { $lbl = 'Mise à jour de pilotes'; $det = 'Annuler retire les nouveaux pilotes et remet les anciens ({0} sauvegardé(s))' -f $ninf }
+        elseif ($d.Name -like 'Suppression_*') { $lbl = 'Pilotes retirés du magasin'; $det = 'Annuler les remet dans Windows ({0} pilote(s))' -f $ninf }
+        else { $lbl = 'Sauvegarde complète des pilotes'; $det = 'Annuler réinstalle les {0} pilote(s) de cette sauvegarde' -f $ninf }
+        & $add $d.LastWriteTime 'drivers' $lbl $det ("Restore-DriverBackup -Name '" + $d.Name + "'")
+    }
+    # Imprimantes retirées
+    foreach ($f in @(Get-ChildItem -LiteralPath (Join-Path $Script:LogDir 'Imprimantes') -Filter '*.printerExport' -File -ErrorAction SilentlyContinue)) {
+        if ($f.BaseName -notmatch '^[A-Za-z0-9][A-Za-z0-9_.\-]*$') { continue }
+        & $add $f.LastWriteTime 'printers' 'Nettoyage des imprimantes' 'Annuler remet toutes les imprimantes comme avant le nettoyage' ("Restore-PrintersBackup -Name '" + $f.BaseName + "'")
+    }
+    # Doublons de photos mis de côté
+    foreach ($f in @(Get-ChildItem -LiteralPath (Join-Path $Script:LogDir 'Doublons') -Filter 'Doublons_*.json' -File -ErrorAction SilentlyContinue)) {
+        $sess = $f.BaseName -replace '^Doublons_', ''
+        if ($sess -notmatch '^\d{8}_\d{6}$') { continue }
+        $n = 0; try { $n = @((Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8 | ConvertFrom-Json).Items).Count } catch {}
+        & $add $f.LastWriteTime 'photos' 'Doublons de photos mis de côté' ("Annuler remet les {0} photo(s) à leur place" -f $n) ("Restore-DuplicatePhotos -Session '" + $sess + "'")
+    }
+    $list = @($rows | Sort-Object Date -Descending)
+    Write-Log ("{0} action(s) annulable(s)." -f $list.Count) 'OK'
+    Set-SyncResult @{ Rows = $list }
 }
 
 # ---------------------------------------------------------------- Doublons de photos
@@ -2948,7 +3167,8 @@ function Get-StartText {
 # Stratégies : un Windows 11 d'origine (hors domaine) n'en pose quasiment aucune. Toute valeur trouvée sous les clés
 # Policies vient donc d'un réglage, d'un outil d'optimisation ou d'un logiciel. La supprimer rend à Windows son comportement
 # standard. Exclues : données que Windows range lui-même sous Policies (certificats, chiffrement TLS, TPM, restrictions logicielles).
-$Script:PolicyRoots = @('HKEY_LOCAL_MACHINE\SOFTWARE\Policies', 'HKEY_CURRENT_USER\SOFTWARE\Policies', 'HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Policies')
+# La racine utilisateur est calculée à l'analyse (Get-UserHiveRoot) : profil de la personne connectée.
+$Script:PolicyRoots = @('HKEY_LOCAL_MACHINE\SOFTWARE\Policies', 'USER\SOFTWARE\Policies', 'HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Policies')
 $Script:PolicyExclude = '\\Policies\\Microsoft\\(SystemCertificates|Cryptography|TPM|Windows\\safer)(\\|$)'
 $Script:PolicyMaxRows = 600
 
@@ -2959,16 +3179,25 @@ function Get-ShortHash {
     finally { $sha.Dispose() }
 }
 
+function Get-UserHiveRoot {
+    # Ruche du profil de la personne connectée (posée par le prélude de la Toolbox), sinon HKEY_CURRENT_USER.
+    if ($Script:UserHive) { return [string]$Script:UserHive }
+    return 'HKEY_CURRENT_USER'
+}
+
 function ConvertTo-HivePath {
     # 'HKLM:\X' ou 'Registry::HKEY_LOCAL_MACHINE\X' -> 'HKEY_LOCAL_MACHINE\X'
     param([string]$Path)
     $p = $Path -replace '^Registry::', ''
-    $p = $p -replace '^HKLM:\\', 'HKEY_LOCAL_MACHINE\' -replace '^HKCU:\\', 'HKEY_CURRENT_USER\'
+    $p = $p -replace '^HKLM:\\', 'HKEY_LOCAL_MACHINE\'
+    if ($p -match '^HKCU:\\') { $p = (Get-UserHiveRoot) + '\' + $p.Substring(6) }
     return $p
 }
 
 function Get-ShortRegPath {
     param([string]$HivePath)
+    $u = Get-UserHiveRoot
+    if ($HivePath.StartsWith($u + '\', [StringComparison]::OrdinalIgnoreCase)) { return 'HKCU:\' + $HivePath.Substring($u.Length + 1) }
     return ($HivePath -replace '^HKEY_LOCAL_MACHINE\\', 'HKLM:\' -replace '^HKEY_CURRENT_USER\\', 'HKCU:\')
 }
 
@@ -2981,6 +3210,7 @@ function Remove-RegValueExact {
     switch ($parts[0]) {
         'HKEY_LOCAL_MACHINE' { $base = [Microsoft.Win32.Registry]::LocalMachine }
         'HKEY_CURRENT_USER'  { $base = [Microsoft.Win32.Registry]::CurrentUser }
+        'HKEY_USERS'         { $base = [Microsoft.Win32.Registry]::Users }
         default { throw ("Ruche non prise en charge : " + $parts[0]) }
     }
     $k = $base.OpenSubKey($parts[1], $true)
@@ -2993,7 +3223,8 @@ function Get-PolicyRows {
     param([hashtable]$Known)
     $out = New-Object System.Collections.ArrayList
     $seen = @{}
-    foreach ($root in $Script:PolicyRoots) {
+    foreach ($root0 in $Script:PolicyRoots) {
+        $root = $(if ($root0 -like 'USER\*') { (Get-UserHiveRoot) + $root0.Substring(4) } else { $root0 })
         $base = 'Registry::' + $root
         if (-not (Test-Path -LiteralPath $base)) { continue }
         $keys = @()
@@ -3254,10 +3485,17 @@ function Restore-Win11Defaults {
 }
 
 function Undo-Win11Defaults {
-    Write-Log '=== Annulation du dernier retour aux valeurs par défaut ==='
+    # -Name : un fichier AvantDefauts_*.json précis (page Historique) ; sinon le dernier.
+    param([string]$Name = '')
+    Write-Log '=== Annulation d''un retour aux valeurs par défaut ==='
     $dir = Join-Path $Script:LogDir 'Backup'
     $f = $null
-    try { $f = Get-ChildItem -LiteralPath $dir -Filter 'AvantDefauts_*.json' -ErrorAction Stop | Where-Object { $_.Name -notmatch '_annule\.json$' } | Sort-Object LastWriteTime -Descending | Select-Object -First 1 } catch {}
+    if ($Name) {
+        if ($Name -notmatch '^AvantDefauts_[A-Za-z0-9_\-]+\.json$') { Write-Log "Nom refusé : $Name" 'ERROR'; return }
+        $f = Get-Item -LiteralPath (Join-Path $dir $Name) -ErrorAction SilentlyContinue
+        if (-not $f) { Write-Log "Rétablissement introuvable (déjà annulé ?) : $Name" 'WARN'; return }
+    }
+    else { try { $f = Get-ChildItem -LiteralPath $dir -Filter 'AvantDefauts_*.json' -ErrorAction Stop | Where-Object { $_.Name -notmatch '_annule\.json$' } | Sort-Object LastWriteTime -Descending | Select-Object -First 1 } catch {} }
     if (-not $f) { Write-Log 'Aucun rétablissement à annuler.' 'WARN'; return }
     $recs = @()
     try { $recs = @(Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8 | ConvertFrom-Json | Where-Object { $_ }) } catch { Write-Log ("Fichier illisible : " + $_.Exception.Message) 'ERROR'; return }

@@ -8,14 +8,14 @@
         BJMPC-Sauvegarde-Win11.ps1
     (qui doivent rester dans le même dossier) et les exécute en arrière-plan.
     Les questions du script (Read-Host, confirmations) s'affichent sous forme de boîtes de dialogue.
-    Chaque modification est enregistrée avant d'être faite (C:\BJMPC-Logs\Backup) : voir Sauvegarde et restauration > "Restauration".
+    Chaque modification est enregistrée avant d'être faite (C:\BJMPC-Logs\Backup) : voir Fichiers et restauration > "Historique" et "Journal et points de restauration".
 
     Interface 2.0 : six sections dans le menu de gauche (Accueil, Réparer, Optimiser, Confidentialité et réglages,
     Logiciels et pilotes, Sauvegardes), chacune avec ses onglets. Une page = un onglet.
 #>
 
 $ErrorActionPreference = 'Continue'
-$Script:AppVersion = '2.1'
+$Script:AppVersion = '2.2'
 $Script:Root       = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $Script:LogDir     = Join-Path $env:SystemDrive 'BJMPC-Logs'
 $Script:BackupDir  = Join-Path $Script:LogDir 'Backup'
@@ -121,6 +121,29 @@ function Get-EngineCode {
 }
 
 # Code injecté au début de chaque exécution : remplace la console par l'interface.
+$Script:HkcuMapCode = @'
+# Réglages « utilisateur » : HKCU désigne la personne connectée à l'écran, même si la Toolbox a été élevée avec un autre
+# compte administrateur (sinon ses réglages iraient dans le profil de l'administrateur). Sans session ouverte : HKCU normal.
+$Script:UserHive = 'HKEY_CURRENT_USER'
+try {
+    $__hkUser = [string](Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).UserName
+    if ($__hkUser) {
+        $__hkSid = (New-Object Security.Principal.NTAccount($__hkUser)).Translate([Security.Principal.SecurityIdentifier]).Value
+        $__hkMe = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        if ($__hkSid -and $__hkSid -ne $__hkMe -and (Test-Path -LiteralPath ('Registry::HKEY_USERS\' + $__hkSid))) {
+            Remove-PSDrive -Name HKCU -Force -ErrorAction Stop
+            New-PSDrive -Name HKCU -PSProvider Registry -Root ('HKEY_USERS\' + $__hkSid) -Scope Global -ErrorAction Stop | Out-Null
+            $Script:UserHive = 'HKEY_USERS\' + $__hkSid
+        }
+    }
+} catch { $Script:UserHive = 'HKEY_CURRENT_USER' }
+if (-not (Get-PSDrive -Name HKCU -ErrorAction SilentlyContinue)) {
+    try { New-PSDrive -Name HKCU -PSProvider Registry -Root 'HKEY_CURRENT_USER' -Scope Global -ErrorAction Stop | Out-Null } catch {}
+    $Script:UserHive = 'HKEY_CURRENT_USER'
+}
+Remove-Variable -Name __hkUser, __hkSid, __hkMe -ErrorAction SilentlyContinue
+'@
+
 $Script:Prelude = @'
 function Get-Auto {
     # Réponse préparée par l'interface pour une question du script (null si aucune).
@@ -182,6 +205,9 @@ function Show-Header {
     if ($Title) { Write-Host ''; Write-Host ('=== ' + $Title + ' ===') -ForegroundColor Yellow }
 }
 '@
+$Script:Prelude += "`r`n" + $Script:HkcuMapCode
+# Même chose pour l'interface elle-même (lectures directes du profil, comme la taille du texte)
+try { . ([scriptblock]::Create($Script:HkcuMapCode)) } catch {}
 
 $Script:EngineCode = @{}
 $Script:EngineError = $null
@@ -718,6 +744,8 @@ function Show-Page {
     $Script:CurrentPage = $Key
     if ($Key -eq 'journal') { Load-Journal; Load-RestorePoints }
     elseif ($Key -eq 'files') { Refresh-BackupStatus }
+    elseif ($Key -eq 'history') { Refresh-History }
+    elseif ($Key -eq 'summary') { Refresh-Measures }
     elseif ($Key -eq 'events') { if (-not $Script:Evt.Analyzed -and -not $Script:Run -and -not $Script:EngineError) { Start-EventAnalysis } }
 }
 
@@ -1005,17 +1033,17 @@ $bak = $null
 try { $bak = Get-Content -LiteralPath (Join-Path $env:SystemDrive 'BJMPC-Logs\Sauvegarde\etat.json') -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json } catch {}
 $bakDays = $null
 if ($bak -and $bak.LastSuccess) { try { $bakDays = [int][math]::Floor(((Get-Date) - [datetime]$bak.LastSuccess).TotalDays) } catch {} }
-$bakHint = if ($null -eq $bakDays) { 'Aucune sauvegarde : section Sauvegarde et restauration' } else { "Dernière il y a $bakDays jour(s) : section Sauvegarde et restauration" }
+$bakHint = if ($null -eq $bakDays) { 'Aucune sauvegarde : section Fichiers et restauration' } else { "Dernière il y a $bakDays jour(s) : section Fichiers et restauration" }
 Chk 'Fichiers personnels sauvegardés depuis moins de 8 jours' ($null -ne $bakDays -and $bakDays -le 7) $bakHint
 $auto = $false
 try { $tk = Get-ScheduledTask -TaskName 'BJMPC Sauvegarde automatique' -TaskPath '\BJMPC\' -ErrorAction Stop; $auto = ([string]$tk.State -ne 'Disabled') } catch {}
-Chk 'Sauvegarde automatique programmée' $auto 'À activer : section Sauvegarde et restauration'
+Chk 'Sauvegarde automatique programmée' $auto 'À activer : section Fichiers et restauration'
 $rpDays = $null
 try {
     $rp = Get-ComputerRestorePoint -ErrorAction Stop | Sort-Object CreationTime -Descending | Select-Object -First 1
     if ($rp) { $rpDays = [int][math]::Floor(((Get-Date) - [Management.ManagementDateTimeConverter]::ToDateTime($rp.CreationTime)).TotalDays) }
 } catch {}
-Chk 'Point de restauration de moins de 30 jours' ($null -ne $rpDays -and $rpDays -le 30) 'À créer : Sauvegarde et restauration > Restauration'
+Chk 'Point de restauration de moins de 30 jours' ($null -ne $rpDays -and $rpDays -le 30) 'À créer : Fichiers et restauration > Journal et points de restauration'
 # --- Santé du PC
 $pct = -1
 try { $ld = Get-CimInstance Win32_LogicalDisk -Filter ("DeviceID='{0}'" -f $env:SystemDrive) -ErrorAction Stop; if ($ld.Size) { $pct = [int](100 * $ld.FreeSpace / $ld.Size) } } catch {}
@@ -1042,7 +1070,7 @@ if ($sm -and $sm.StartType -eq 'Disabled') { $old += 'SysMain' }
 foreach ($ad in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
     if ((Get-RegVal "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($ad.InterfaceGuid)" 'TCPNoDelay') -eq 1) { $old += 'Nagle'; break }
 }
-if ($old.Count -gt 0) { Chk 'Aucun ancien réglage dépassé' $false (($old -join ', ') + ' : Sauvegarde et restauration > Restauration > Comparer avec Windows 11') }
+if ($old.Count -gt 0) { Chk 'Aucun ancien réglage dépassé' $false (($old -join ', ') + ' : Réparer > Registre > Comparer avec Windows 11') }
 $Sync.Result = @{ Info = $i; Checks = @($list) }
 '@
 
@@ -1172,6 +1200,20 @@ function Build-Dashboard {
     Add-Row $tools.Body 'Profil matériel détecté' 'CPU, RAM, GPU, NVMe, Wi-Fi et écran, avec les points d''attention.' '' 'n' @((New-Btn 'Afficher' (New-Spec 'opt' 'Show-HardwareProfile' 'Profil matériel')))
     Add-Row $tools.Body 'Informations système et santé des disques' '' '' 'n' @((New-Btn 'Afficher' (New-Spec 'maint' 'Get-SystemSummary' 'Informations système')))
     [void]$p.Children.Add($tools.Card)
+
+    # ---- Mise à jour de la Toolbox (dépôt GitHub)
+    $upc = New-Card ('BJMPC Toolbox ' + $Script:AppVersion) 'Vérifie s''il existe une version plus récente sur GitHub. La mise à jour contrôle les fichiers téléchargés (présents, sans erreur de syntaxe, bonne version) et archive d''abord la version en place dans le dossier _Archive.'
+    $chk = New-Spec 'tools' '' ''
+    $chk.CodeFn = { 'Get-ToolboxUpdate -Current ' + (ConvertTo-PsLiteral ([string]$Script:AppVersion)) }
+    $chk.OnDone = { param($r) try { if ($r.Error) { $Script:UpdNote.Text = 'Vérification impossible (Internet ?) : ' + [string]$r.Error } elseif ($r.Newer) { $Script:UpdNote.Text = ('Version {0} disponible (en place : {1}).' -f $r.Latest, $r.Current) } else { $Script:UpdNote.Text = ('À jour ({0}).' -f $r.Current) } } catch {} }
+    $ins = New-Spec 'tools' '' 'Mise à jour de la Toolbox'
+    $ins.CodeFn = { 'Install-ToolboxUpdate -Root ' + (ConvertTo-PsLiteral ([string]$Script:Root)) + ' -Current ' + (ConvertTo-PsLiteral ([string]$Script:AppVersion)) }
+    $ins.ConfirmFn = { 'Télécharger et installer la dernière version de la Toolbox depuis GitHub ? La version en place est archivée d''abord ; il faudra relancer la Toolbox.' }
+    $ins.OnDone = { param($r) try { if ($r.Version) { $Script:UpdNote.Text = ('Mise à jour {0} installée : fermez la Toolbox et relancez BJMPC-Toolbox.bat.' -f $r.Version) } } catch {} }
+    Add-Row $upc.Body 'Mise à jour' 'Rien n''est téléchargé sans votre clic.' '' 'n' @((New-Btn 'Vérifier' $chk), (New-Btn 'Mettre à jour' $ins))
+    $Script:UpdNote = New-Text '' 13 '#5AD1FF' 'Normal' -Wrap
+    [void]$upc.Body.Children.Add($Script:UpdNote)
+    [void]$p.Children.Add($upc.Card)
 }
 
 # ---------------------------------------------------------------- Outils et diagnostics
@@ -1228,7 +1270,7 @@ function Build-Maintenance {
     Add-Row $seq.Body '4. WMI : dépôt' 'Vérification, puis réparation sur confirmation.' '' 'n' @((New-Btn 'Vérifier' (New-Spec 'maint' 'Repair-WMI' 'WMI')))
     [void]$p.Children.Add($seq.Card)
 
-    $rst = New-Card 'Réinitialisations' 'Quand un composant de Windows ne répond plus. Créez d''abord un point de restauration (Sauvegarde et restauration > Restauration).'
+    $rst = New-Card 'Réinitialisations' 'Quand un composant de Windows ne répond plus. Créez d''abord un point de restauration (Fichiers et restauration > Journal et points de restauration).'
     Add-Row $rst.Body 'Services Windows' 'Remet les services essentiels à leur démarrage par défaut.' '' 'n' @((New-Btn 'Réinitialiser' (New-Spec 'maint' 'Reset-Services' 'Services Windows')))
     Add-Row $rst.Body 'Réseau' 'DNS, Winsock, TCP/IP, ARP.' 'Coupe la connexion' 'w' @((New-Btn 'Réinitialiser' (New-Spec 'maint' 'Reset-Network' 'Réseau' @{} 'La connexion Internet sera coupée brièvement. Continuer ?')))
     Add-Row $rst.Body 'Windows Update' 'Dossiers renommés en .bak, DLL ré-enregistrées.' 'Redémarrage' 'n' @((New-Btn 'Réinitialiser' (New-Spec 'maint' 'Reset-WindowsUpdate' 'Windows Update')))
@@ -1339,96 +1381,6 @@ function Build-Maintenance {
     [void]$ac.Body.Children.Add($abr)
     [void]$p.Children.Add($ac.Card)
 
-    # Doublons de photos : contenu identique (octet par octet), ou en option même image (pixels identiques)
-    $dc2 = New-Card 'Doublons de photos' 'Deux photos ne sont regroupées que si leur contenu est identique : même empreinte SHA-256 puis comparaison octet par octet. Le nom, la date ou la taille ne suffisent jamais : deux photos de même taille et de même date mais différentes ne sont pas confondues. Rien n''est supprimé : les doublons choisis sont déplacés dans un dossier « BJMPC-Doublons » sur le même disque, et l''opération s''annule.' 'Modifie les fichiers' 'w'
-    [void]$dc2.Body.Children.Add((New-Text 'Où chercher (dossiers de la personne connectée)' 13 '#C5C9D0' 'Normal'))
-    $dw = New-Object Windows.Controls.WrapPanel
-    $dw.Margin = '0,2,0,4'
-    $Script:DupKnown = @()
-    foreach ($kd in @(@('Pictures', 'Images', $true), @('Desktop', 'Bureau', $false), @('Documents', 'Documents', $false), @('Downloads', 'Téléchargements', $false))) {
-        $cb = New-Check ([string]$kd[1]) ([bool]$kd[2])
-        $cb.Tag = [string]$kd[0]; $cb.Margin = '0,6,24,0'
-        [void]$dw.Children.Add($cb)
-        $Script:DupKnown += $cb
-    }
-    [void]$dc2.Body.Children.Add($dw)
-    $Script:DupExtra = New-Object 'System.Collections.Generic.List[string]'
-    $Script:DupExtraText = New-Text 'Autres dossiers : aucun' 12.5 '#9298A3' 'Normal' -Wrap
-    [void]$dc2.Body.Children.Add($Script:DupExtraText)
-    $dxr = New-Object Windows.Controls.WrapPanel
-    $dxr.Margin = '0,4,0,0'
-    [void]$dxr.Children.Add((New-Btn 'Ajouter un dossier…' @{ Fn = {
-                try {
-                    Add-Type -AssemblyName System.Windows.Forms
-                    $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
-                    $dlg.Description = 'Dossier où chercher des photos en double (disque externe, autre dossier…)'
-                    if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK -and $dlg.SelectedPath) {
-                        if (-not $Script:DupExtra.Contains([string]$dlg.SelectedPath)) { $Script:DupExtra.Add([string]$dlg.SelectedPath) }
-                        $Script:DupExtraText.Text = 'Autres dossiers : ' + ($Script:DupExtra -join '  ·  ')
-                    }
-                } catch { Add-Console ('  [!]   ' + $_.Exception.Message) 'Yellow' }
-            } }))
-    [void]$dxr.Children.Add((New-Btn 'Vider la liste' @{ Fn = { $Script:DupExtra.Clear(); $Script:DupExtraText.Text = 'Autres dossiers : aucun' } }))
-    [void]$dc2.Body.Children.Add($dxr)
-    $Script:DupPixels = New-Check 'Chercher aussi la même image avec des métadonnées différentes (date, GPS, logiciel) : pixels comparés un à un, plus lent' $false
-    [void]$dc2.Body.Children.Add($Script:DupPixels)
-    $dsa = New-Spec 'tools' '' 'Recherche des doublons de photos' @{} '' { param($r) Show-DuplicatePhotos $r }
-    $dsa.CodeFn = {
-        $k = @($Script:DupKnown | Where-Object { $_.IsChecked } | ForEach-Object { "'" + ([string]$_.Tag -replace '[^A-Za-z]', '') + "'" })
-        $f = @($Script:DupExtra | ForEach-Object { ConvertTo-PsLiteral ([string]$_) })
-        if (($k.Count + $f.Count) -eq 0) { Add-Console 'Doublons : cochez au moins un dossier ou ajoutez-en un.' 'Yellow'; return '' }
-        return ('Find-DuplicatePhotos -Known @(' + ($k -join ',') + ') -Folders @(' + ($f -join ',') + ') -Pixels $' + ([bool]$Script:DupPixels.IsChecked).ToString().ToLower())
-    }
-    $dsm = New-Spec 'tools' '' 'Mise de côté des doublons de photos'
-    $dsm.CodeFn = {
-        $pairs = @(); $bad = 0
-        foreach ($grp in @($Script:DupChecks | Group-Object { $_.Group })) {
-            $keep = @($grp.Group | Where-Object { -not $_.Check.IsChecked }) | Select-Object -First 1
-            $dups = @($grp.Group | Where-Object { $_.Check.IsChecked })
-            if ($dups.Count -eq 0) { continue }
-            if (-not $keep) { $bad++; continue }
-            foreach ($d in $dups) { $pairs += (ConvertTo-PsLiteral ('{0}|{1}|{2}' -f $d.Kind, $d.Path, $keep.Path)) }
-        }
-        if ($bad -gt 0) { Add-Console ("Doublons : {0} groupe(s) entièrement coché(s). Laissez au moins une photo non cochée par groupe." -f $bad) 'Yellow'; return '' }
-        if ($pairs.Count -eq 0) { Add-Console 'Doublons : aucune photo cochée.' 'Yellow'; return '' }
-        return ('Move-DuplicatePhotos -Pairs @(' + ($pairs -join ',') + ')')
-    }
-    $dsm.ConfirmFn = { "Mettre de côté {0} photo(s) en double ? Elles sont déplacées dans « BJMPC-Doublons » sur leur disque (rien n'est supprimé). Chaque photo est revérifiée juste avant ; l'opération s'annule avec « Remettre les photos en place »." -f @($Script:DupChecks | Where-Object { $_.Check.IsChecked }).Count }
-    $dsm.OnDone = { param($r) $Script:DupPanel.Children.Clear(); $Script:DupChecks.Clear(); $Script:DupNote.Text = 'Terminé. Relancez la recherche pour actualiser.'; try { Refresh-DuplicateSessions } catch {} }
-    $dbar2 = New-Object Windows.Controls.WrapPanel
-    $dbar2.Margin = '0,14,0,8'
-    $d1 = New-Btn 'Chercher les doublons' $dsa -Primary; $d1.Margin = '0,4,0,4'
-    [void]$dbar2.Children.Add($d1)
-    [void]$dbar2.Children.Add((New-Btn 'Mettre de côté la sélection' $dsm -Primary))
-    [void]$dbar2.Children.Add((New-Btn 'Tout décocher' @{ Fn = { foreach ($x in @($Script:DupChecks)) { $x.Check.IsChecked = $false } } }))
-    [void]$dc2.Body.Children.Add($dbar2)
-    $Script:DupNote = New-Text '' 13 '#C9A227' 'Normal' -Wrap
-    $Script:DupNote.Margin = '0,0,0,8'
-    [void]$dc2.Body.Children.Add($Script:DupNote)
-    $dh = New-TableRow $Script:DupCols @('Photo (double-clic pour l''ouvrir)', 'Modifiée le', 'Taille') -Header
-    $dh.Margin = '0,0,18,0'
-    [void]$dc2.Body.Children.Add($dh)
-    $Script:DupPanel = New-Object Windows.Controls.StackPanel
-    [void]$dc2.Body.Children.Add((New-ScrollList $Script:DupPanel 420))
-    $Script:DupSessionBox = New-Object Windows.Controls.ComboBox
-    $Script:DupSessionBox.MinWidth = 340; $Script:DupSessionBox.Padding = '8,4'; $Script:DupSessionBox.Margin = '0,0,8,0'
-    $dsr = New-Spec 'tools' '' 'Remise en place des photos'
-    $dsr.CodeFn = {
-        $i = $Script:DupSessionBox.SelectedItem
-        if (-not $i -or -not $i.Tag) { Add-Console 'Aucune mise de côté sélectionnée.' 'Yellow'; return '' }
-        $n = [string]$i.Tag
-        if ($n -notmatch '^\d{8}_\d{6}$') { return '' }
-        return ("Restore-DuplicatePhotos -Session '" + $n + "'")
-    }
-    $dsr.ConfirmFn = { 'Remettre à leur place les photos de cette mise de côté ? Une photo revenue entre-temps au même endroit n''est jamais écrasée.' }
-    $dsr.OnDone = { param($r) try { Refresh-DuplicateSessions } catch {} }
-    $drow2 = New-Object Windows.Controls.StackPanel
-    $drow2.Orientation = 'Horizontal'; $drow2.Margin = '0,12,0,0'
-    [void]$drow2.Children.Add($Script:DupSessionBox)
-    [void]$drow2.Children.Add((New-Btn 'Remettre les photos en place' $dsr))
-    [void]$dc2.Body.Children.Add($drow2)
-    Refresh-DuplicateSessions
-    [void]$p.Children.Add($dc2.Card)
 
     $ent = New-Card 'Entretien'
     Add-Row $ent.Body 'Nettoyage' 'Fichiers temporaires, corbeille, magasin de composants.' '' 'n' @((New-Btn 'Nettoyer' (New-Spec 'maint' 'Invoke-Cleanup' 'Nettoyage')))
@@ -1563,7 +1515,7 @@ function Build-System {
 
     [void](New-TweakCard $p 'Démarrage et diagnostic' 'Affichage au démarrage, écran bleu et horloge matérielle.')
 
-    $n = New-Text 'Les anciennes cartes « Services inutiles » ont été retirées : désactiver des services ne rend pas Windows 11 plus rapide. Pour remettre par défaut des services modifiés par une ancienne version : Sauvegarde et restauration > Restauration > « Comparer avec Windows 11 ».' 13 '#9298A3' 'Normal' -Wrap
+    $n = New-Text 'Les anciennes cartes « Services inutiles » ont été retirées : désactiver des services ne rend pas Windows 11 plus rapide. Pour remettre par défaut des services modifiés par une ancienne version : Réparer > Registre > « Comparer avec Windows 11 ».' 13 '#9298A3' 'Normal' -Wrap
     [void]$p.Children.Add($n)
 }
 
@@ -1896,10 +1848,139 @@ function Build-Registry {
     [void]$d.Body.Children.Add($dh)
     $Script:DefPanel = New-Object Windows.Controls.StackPanel
     [void]$d.Body.Children.Add((New-ScrollList $Script:DefPanel 420))
-    $dn = New-Text 'Non cochés d''office : « Interface et Explorateur » (choix personnels), « Autres stratégies détectées » (peuvent venir d''un logiciel légitime : survolez la ligne pour voir la clé) et quelques réglages de prise en charge (Bureau à distance, accès invité à un NAS ancien, chemins longs). Les réglages réseau avancés, DNS et plans d''alimentation posés par la Toolbox se défont depuis Sauvegarde et restauration > Restauration.' 12 '#9298A3' 'Normal' -Wrap
+    $dn = New-Text 'Non cochés d''office : « Interface et Explorateur » (choix personnels), « Autres stratégies détectées » (peuvent venir d''un logiciel légitime : survolez la ligne pour voir la clé) et quelques réglages de prise en charge (Bureau à distance, accès invité à un NAS ancien, chemins longs). Les réglages réseau avancés, DNS et plans d''alimentation posés par la Toolbox se défont depuis Fichiers et restauration > Historique.' 12 '#9298A3' 'Normal' -Wrap
     $dn.Margin = '0,8,0,0'
     [void]$d.Body.Children.Add($dn)
     [void]$p.Children.Add($d.Card)
+}
+
+function Build-Photos {
+    $p = New-Page 'photos' 'Doublons de photos' 'Retrouve les photos en double sur ce PC ou un disque externe, en comparant leur contenu, jamais leur seul nom, leur taille ou leur date. Les doublons choisis sont mis de côté, jamais supprimés, et peuvent être remis en place.'
+    # Doublons de photos : contenu identique (octet par octet), ou en option même image (pixels identiques)
+    $dc2 = New-Card 'Doublons de photos' 'Deux photos ne sont regroupées que si leur contenu est identique : même empreinte SHA-256 puis comparaison octet par octet. Le nom, la date ou la taille ne suffisent jamais : deux photos de même taille et de même date mais différentes ne sont pas confondues. Rien n''est supprimé : les doublons choisis sont déplacés dans un dossier « BJMPC-Doublons » sur le même disque, et l''opération s''annule.' 'Modifie les fichiers' 'w'
+    [void]$dc2.Body.Children.Add((New-Text 'Où chercher (dossiers de la personne connectée)' 13 '#C5C9D0' 'Normal'))
+    $dw = New-Object Windows.Controls.WrapPanel
+    $dw.Margin = '0,2,0,4'
+    $Script:DupKnown = @()
+    foreach ($kd in @(@('Pictures', 'Images', $true), @('Desktop', 'Bureau', $false), @('Documents', 'Documents', $false), @('Downloads', 'Téléchargements', $false))) {
+        $cb = New-Check ([string]$kd[1]) ([bool]$kd[2])
+        $cb.Tag = [string]$kd[0]; $cb.Margin = '0,6,24,0'
+        [void]$dw.Children.Add($cb)
+        $Script:DupKnown += $cb
+    }
+    [void]$dc2.Body.Children.Add($dw)
+    $Script:DupExtra = New-Object 'System.Collections.Generic.List[string]'
+    $Script:DupExtraText = New-Text 'Autres dossiers : aucun' 12.5 '#9298A3' 'Normal' -Wrap
+    [void]$dc2.Body.Children.Add($Script:DupExtraText)
+    $dxr = New-Object Windows.Controls.WrapPanel
+    $dxr.Margin = '0,4,0,0'
+    [void]$dxr.Children.Add((New-Btn 'Ajouter un dossier…' @{ Fn = {
+                try {
+                    Add-Type -AssemblyName System.Windows.Forms
+                    $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
+                    $dlg.Description = 'Dossier où chercher des photos en double (disque externe, autre dossier…)'
+                    if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK -and $dlg.SelectedPath) {
+                        if (-not $Script:DupExtra.Contains([string]$dlg.SelectedPath)) { $Script:DupExtra.Add([string]$dlg.SelectedPath) }
+                        $Script:DupExtraText.Text = 'Autres dossiers : ' + ($Script:DupExtra -join '  ·  ')
+                    }
+                } catch { Add-Console ('  [!]   ' + $_.Exception.Message) 'Yellow' }
+            } }))
+    [void]$dxr.Children.Add((New-Btn 'Vider la liste' @{ Fn = { $Script:DupExtra.Clear(); $Script:DupExtraText.Text = 'Autres dossiers : aucun' } }))
+    [void]$dc2.Body.Children.Add($dxr)
+    $Script:DupPixels = New-Check 'Chercher aussi la même image avec des métadonnées différentes (date, GPS, logiciel) : pixels comparés un à un, plus lent' $false
+    [void]$dc2.Body.Children.Add($Script:DupPixels)
+    $dsa = New-Spec 'tools' '' 'Recherche des doublons de photos' @{} '' { param($r) Show-DuplicatePhotos $r }
+    $dsa.CodeFn = {
+        $k = @($Script:DupKnown | Where-Object { $_.IsChecked } | ForEach-Object { "'" + ([string]$_.Tag -replace '[^A-Za-z]', '') + "'" })
+        $f = @($Script:DupExtra | ForEach-Object { ConvertTo-PsLiteral ([string]$_) })
+        if (($k.Count + $f.Count) -eq 0) { Add-Console 'Doublons : cochez au moins un dossier ou ajoutez-en un.' 'Yellow'; return '' }
+        return ('Find-DuplicatePhotos -Known @(' + ($k -join ',') + ') -Folders @(' + ($f -join ',') + ') -Pixels $' + ([bool]$Script:DupPixels.IsChecked).ToString().ToLower())
+    }
+    $dsm = New-Spec 'tools' '' 'Mise de côté des doublons de photos'
+    $dsm.CodeFn = {
+        $pairs = @(); $bad = 0
+        foreach ($grp in @($Script:DupChecks | Group-Object { $_.Group })) {
+            $keep = @($grp.Group | Where-Object { -not $_.Check.IsChecked }) | Select-Object -First 1
+            $dups = @($grp.Group | Where-Object { $_.Check.IsChecked })
+            if ($dups.Count -eq 0) { continue }
+            if (-not $keep) { $bad++; continue }
+            foreach ($d in $dups) { $pairs += (ConvertTo-PsLiteral ('{0}|{1}|{2}' -f $d.Kind, $d.Path, $keep.Path)) }
+        }
+        if ($bad -gt 0) { Add-Console ("Doublons : {0} groupe(s) entièrement coché(s). Laissez au moins une photo non cochée par groupe." -f $bad) 'Yellow'; return '' }
+        if ($pairs.Count -eq 0) { Add-Console 'Doublons : aucune photo cochée.' 'Yellow'; return '' }
+        return ('Move-DuplicatePhotos -Pairs @(' + ($pairs -join ',') + ')')
+    }
+    $dsm.ConfirmFn = { "Mettre de côté {0} photo(s) en double ? Elles sont déplacées dans « BJMPC-Doublons » sur leur disque (rien n'est supprimé). Chaque photo est revérifiée juste avant ; l'opération s'annule avec « Remettre les photos en place »." -f @($Script:DupChecks | Where-Object { $_.Check.IsChecked }).Count }
+    $dsm.OnDone = { param($r) $Script:DupPanel.Children.Clear(); $Script:DupChecks.Clear(); $Script:DupNote.Text = 'Terminé. Relancez la recherche pour actualiser.'; try { Refresh-DuplicateSessions } catch {} }
+    $dbar2 = New-Object Windows.Controls.WrapPanel
+    $dbar2.Margin = '0,14,0,8'
+    $d1 = New-Btn 'Chercher les doublons' $dsa -Primary; $d1.Margin = '0,4,0,4'
+    [void]$dbar2.Children.Add($d1)
+    [void]$dbar2.Children.Add((New-Btn 'Mettre de côté la sélection' $dsm -Primary))
+    [void]$dbar2.Children.Add((New-Btn 'Tout décocher' @{ Fn = { foreach ($x in @($Script:DupChecks)) { $x.Check.IsChecked = $false } } }))
+    [void]$dc2.Body.Children.Add($dbar2)
+    $Script:DupNote = New-Text '' 13 '#C9A227' 'Normal' -Wrap
+    $Script:DupNote.Margin = '0,0,0,8'
+    [void]$dc2.Body.Children.Add($Script:DupNote)
+    $dh = New-TableRow $Script:DupCols @('Photo (double-clic pour l''ouvrir)', 'Modifiée le', 'Taille') -Header
+    $dh.Margin = '0,0,18,0'
+    [void]$dc2.Body.Children.Add($dh)
+    $Script:DupPanel = New-Object Windows.Controls.StackPanel
+    [void]$dc2.Body.Children.Add((New-ScrollList $Script:DupPanel 420))
+    $Script:DupSessionBox = New-Object Windows.Controls.ComboBox
+    $Script:DupSessionBox.MinWidth = 340; $Script:DupSessionBox.Padding = '8,4'; $Script:DupSessionBox.Margin = '0,0,8,0'
+    $dsr = New-Spec 'tools' '' 'Remise en place des photos'
+    $dsr.CodeFn = {
+        $i = $Script:DupSessionBox.SelectedItem
+        if (-not $i -or -not $i.Tag) { Add-Console 'Aucune mise de côté sélectionnée.' 'Yellow'; return '' }
+        $n = [string]$i.Tag
+        if ($n -notmatch '^\d{8}_\d{6}$') { return '' }
+        return ("Restore-DuplicatePhotos -Session '" + $n + "'")
+    }
+    $dsr.ConfirmFn = { 'Remettre à leur place les photos de cette mise de côté ? Une photo revenue entre-temps au même endroit n''est jamais écrasée.' }
+    $dsr.OnDone = { param($r) try { Refresh-DuplicateSessions } catch {} }
+    $drow2 = New-Object Windows.Controls.StackPanel
+    $drow2.Orientation = 'Horizontal'; $drow2.Margin = '0,12,0,0'
+    [void]$drow2.Children.Add($Script:DupSessionBox)
+    [void]$drow2.Children.Add((New-Btn 'Remettre les photos en place' $dsr))
+    [void]$dc2.Body.Children.Add($drow2)
+    Refresh-DuplicateSessions
+    [void]$p.Children.Add($dc2.Card)
+}
+
+function Build-History {
+    $p = New-Page 'history' 'Historique' 'Tout ce que la Toolbox a fait sur ce PC et qui peut être annulé, au même endroit : retour aux valeurs de Windows 11, pilotes, imprimantes, doublons de photos et réglages. Le plus récent en premier.'
+    $c = New-Card 'Actions annulables' 'Chaque ligne s''annule séparément. Les réglages de la Toolbox (registre, services) s''annulent un par un, ou tous ensemble, dans le Journal.'
+    $bar = New-Object Windows.Controls.WrapPanel
+    $bar.Margin = '0,10,0,8'
+    [void]$bar.Children.Add((New-Btn 'Actualiser' @{ Fn = { Refresh-History } }))
+    [void]$bar.Children.Add((New-Btn 'Ouvrir les journaux (C:\BJMPC-Logs)' @{ Fn = { try { if (Test-Path -LiteralPath $Script:LogDir) { Start-Process explorer.exe ('"' + $Script:LogDir + '"') } } catch {} } }))
+    [void]$c.Body.Children.Add($bar)
+    $Script:HistPanel = New-Object Windows.Controls.StackPanel
+    [void]$Script:HistPanel.Children.Add((New-Text 'Lecture de l''historique…' 13 '#9298A3'))
+    [void]$c.Body.Children.Add($Script:HistPanel)
+    [void]$p.Children.Add($c.Card)
+}
+
+function Refresh-History {
+    if ($Script:EngineError -or $Script:Run -or -not $Script:HistPanel) { return }
+    Start-Run -Engine 'tools' -Code 'Get-UndoHistory' -Title '' -OnDone { param($r) Show-History $r }
+}
+
+function Show-History {
+    param($Res)
+    $Script:HistPanel.Children.Clear()
+    $rows = @(); if ($Res -and $Res.Rows) { $rows = @($Res.Rows | Where-Object { $_ }) }
+    if ($rows.Count -eq 0) { [void]$Script:HistPanel.Children.Add((New-Text 'Aucune action à annuler sur ce PC.' 13 '#7CE3A1' 'Normal' -Wrap)); return }
+    foreach ($r in $rows) {
+        $when = ''; try { $when = ([datetime]$r.Date).ToString('dd/MM/yyyy HH:mm') } catch {}
+        if ([string]$r.Kind -eq 'journal' -or -not [string]$r.Code) { $btn = New-Btn 'Ouvrir le Journal' @{ Fn = { Open-Page 'journal' } } }
+        else {
+            $spec = New-Spec 'tools' ([string]$r.Code) ('Annulation : ' + [string]$r.Label) @{} ("Annuler « {0} » du {1} ?`n{2}." -f [string]$r.Label, $when, [string]$r.Detail) { param($x) Refresh-History }
+            $btn = New-Btn 'Annuler' $spec
+        }
+        Add-Row $Script:HistPanel ('{0}  ·  {1}' -f $when, [string]$r.Label) ([string]$r.Detail) '' 'n' @($btn)
+    }
 }
 
 function Build-Journal {
@@ -2889,6 +2970,7 @@ $Script:PrnCols = @(3.0, 1.1, 2.6, 1.8)
 $Script:DupChecks = New-Object 'System.Collections.Generic.List[object]'
 $Script:DupCols = @(5.0, 1.4, 1.0)
 $Script:DupMaxShown = 400
+$Script:MeasCols = @(3.2, 1.2, 1.2)
 
 function New-Combo {
     # Liste déroulante à choix fixes (aucune saisie) : $Items = @(@('libellé', 'valeur'), …)
@@ -3623,6 +3705,10 @@ $Script:PlainMap = @(
     @{ K = '^Restart-AudioServices|¦Services audio'; C = 'repar'; T = 'Nous avons relancé le son de votre ordinateur.' }
     @{ K = '^Get-PrinterDiagnostic'; C = 'skip'; T = '' }
     @{ K = '^Get-DiscAutoplayState'; C = 'skip'; T = '' }
+    @{ K = '^Get-UndoHistory'; C = 'skip'; T = '' }
+    @{ K = '^Get-ToolboxUpdate|^Install-ToolboxUpdate|¦Mise à jour de la Toolbox'; C = 'skip'; T = '' }
+    @{ K = '^Get-PcMeasures|^Get-LatestMeasures'; C = 'skip'; T = '' }
+    @{ K = '^Convert-HtmlToPdf|¦Rapport d.intervention'; C = 'skip'; T = '' }
     @{ K = '^Find-DuplicatePhotos|¦Recherche des doublons de photos'; C = 'skip'; T = '' }
     @{ K = '^Move-DuplicatePhotos|¦Mise de côté des doublons de photos'; C = 'repar'; T = 'Nous avons mis de côté les photos en double (copies strictement identiques), sans rien supprimer : elles sont rangées dans un dossier « BJMPC-Doublons » et peuvent être remises en place.' }
     @{ K = '^Restore-DuplicatePhotos|¦Remise en place des photos'; C = 'repar'; T = 'Nous avons remis vos photos à leur place.' }
@@ -4542,8 +4628,117 @@ function Build-Summary {
     $Script:SumUi.Preview.Margin = '0,10,0,0'
     [void]$v.Body.Children.Add($Script:SumUi.Preview)
     [void]$p.Children.Add($v.Card)
+
+    # ---- Rapport d'intervention (PDF) avec mesures avant / après
+    $r = New-Card 'Rapport d''intervention' 'Un document à remettre au client : ce qui a été fait (le même contenu que le résumé, cases ci-dessus comprises), l''état du PC en début et en fin d''intervention, et vos remarques. Prenez la mesure « début » en arrivant, la mesure « fin » avant de partir.'
+    $mb = New-Object Windows.Controls.WrapPanel
+    $mb.Margin = '0,10,0,6'
+    $m1 = New-Btn 'Mesurer : début d''intervention' (New-Spec 'tools' 'Get-PcMeasures -Label avant' '' @{} '' { param($x) Show-Measures $x }) -Primary
+    $m1.Margin = '0,4,0,4'
+    [void]$mb.Children.Add($m1)
+    [void]$mb.Children.Add((New-Btn 'Mesurer : fin d''intervention' (New-Spec 'tools' 'Get-PcMeasures -Label apres' '' @{} '' { param($x) Show-Measures $x })))
+    [void]$r.Body.Children.Add($mb)
+    $mh = New-TableRow $Script:MeasCols @('Mesure', 'Début', 'Fin') -Header
+    [void]$r.Body.Children.Add($mh)
+    $Script:MeasPanel = New-Object Windows.Controls.StackPanel
+    [void]$Script:MeasPanel.Children.Add((New-Text 'Aucune mesure pour l''instant.' 13 '#9298A3'))
+    [void]$r.Body.Children.Add($Script:MeasPanel)
+    [void]$r.Body.Children.Add((New-Text 'Remarques pour le client (facultatif) : conseils, pièce à changer, prochaine visite…' 12 '#9298A3' 'Normal' -Wrap))
+    $Script:RepNotes = New-Object Windows.Controls.TextBox
+    $Script:RepNotes.AcceptsReturn = $true; $Script:RepNotes.TextWrapping = 'Wrap'; $Script:RepNotes.MinHeight = 70; $Script:RepNotes.MaxLength = 2000
+    $Script:RepNotes.Margin = '0,4,0,10'; $Script:RepNotes.Padding = '8,6'; $Script:RepNotes.FontSize = 13
+    $Script:RepNotes.Background = (Br '#15171C'); $Script:RepNotes.Foreground = (Br '#ECEDEF'); $Script:RepNotes.BorderBrush = (Br '#2A2E36'); $Script:RepNotes.CaretBrush = (Br '#ECEDEF')
+    [void]$r.Body.Children.Add($Script:RepNotes)
+    $rs = New-Spec 'tools' '' 'Rapport d''intervention'
+    $rs.CodeFn = {
+        try { $f = Save-ReportHtml } catch { Add-Console ("  [X]   Rapport impossible : " + $_.Exception.Message) 'Red'; return '' }
+        if (-not $f) { return '' }
+        return ('Convert-HtmlToPdf -Html ' + (ConvertTo-PsLiteral $f))
+    }
+    $rb2 = New-Btn 'Créer le rapport PDF' $rs -Primary
+    $rb2.HorizontalAlignment = 'Left'
+    [void]$r.Body.Children.Add($rb2)
+    [void]$p.Children.Add($r.Card)
     Import-SessionLog
     Refresh-SummaryList
+}
+
+function Refresh-Measures {
+    if ($Script:EngineError -or $Script:Run -or -not $Script:MeasPanel) { return }
+    Start-Run -Engine 'tools' -Code 'Get-LatestMeasures' -Title '' -OnDone { param($x) Show-Measures $x }
+}
+
+function Get-MeasureLines {
+    # Lignes du tableau avant / après : @(libellé, début, fin).
+    param($A, $B)
+    $f = { param($o, [string]$k, [string]$fmt) if ($o -and $null -ne $o.$k -and [string]$o.$k -ne '') { $fmt -f $o.$k } else { '—' } }
+    $lines = @(
+        @('Place libre sur le disque de Windows', (& $f $A 'FreeGB' '{0} Go'), (& $f $B 'FreeGB' '{0} Go')),
+        @('Durée du dernier démarrage (mesure Windows)', (& $f $A 'BootSec' '{0} s'), (& $f $B 'BootSec' '{0} s')),
+        @('Programmes lancés au démarrage', (& $f $A 'Startup' '{0}'), (& $f $B 'Startup' '{0}')),
+        @('Erreurs graves des 7 derniers jours', (& $f $A 'Errors7d' '{0}'), (& $f $B 'Errors7d' '{0}'))
+    )
+    if (($A -and $A.BatteryPct) -or ($B -and $B.BatteryPct)) { $lines += , @('Batterie : capacité restante', (& $f $A 'BatteryPct' '{0} %'), (& $f $B 'BatteryPct' '{0} %')) }
+    return $lines
+}
+
+function Show-Measures {
+    param($Res)
+    if (-not $Script:MeasPanel) { return }
+    $Script:MeasData = $Res
+    $Script:MeasPanel.Children.Clear()
+    if (-not $Res -or -not $Res.Avant) { [void]$Script:MeasPanel.Children.Add((New-Text 'Aucune mesure de début d''intervention : cliquez sur « Mesurer : début d''intervention ».' 13 '#9298A3' 'Normal' -Wrap)); return }
+    foreach ($l in (Get-MeasureLines $Res.Avant $Res.Apres)) { [void]$Script:MeasPanel.Children.Add((New-TableRow $Script:MeasCols @($l[0], $l[1], @{ T = $l[2]; C = '#7CE3A1' }))) }
+    $when = ''; try { $when = 'Début mesuré le ' + ([datetime]$Res.Avant.Date).ToString('dd/MM/yyyy à HH:mm') } catch {}
+    if ($Res.Apres) { try { $when += ' · fin le ' + ([datetime]$Res.Apres.Date).ToString('dd/MM/yyyy à HH:mm') } catch {} }
+    $t = New-Text $when 12 '#9298A3'; $t.Margin = '0,6,0,8'
+    [void]$Script:MeasPanel.Children.Add($t)
+}
+
+function Save-ReportHtml {
+    # Écrit le rapport d'intervention en HTML (C:\BJMPC-Logs\Rapports) et rend son chemin.
+    $enc = { param([string]$t) [System.Net.WebUtility]::HtmlEncode($t) }
+    $company = ([string]$Script:SumUi.Company.Text).Trim(); if (-not $company) { $company = 'BJMPC Informatique' }
+    $client = ([string]$Script:SumUi.Client.Text).Trim()
+    $A = $null; $B = $null; if ($Script:MeasData) { $A = $Script:MeasData.Avant; $B = $Script:MeasData.Apres }
+    $info = $(if ($B) { $B } else { $A })
+    $sb = New-Object Text.StringBuilder
+    [void]$sb.Append('<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Rapport d''intervention</title><style>')
+    [void]$sb.Append('body{font-family:"Segoe UI",Arial,sans-serif;color:#1d2330;margin:32px 40px;font-size:12.5pt;line-height:1.45}')
+    [void]$sb.Append('h1{font-size:22pt;margin:0 0 4px;color:#1f4fa8}h2{font-size:14pt;margin:26px 0 8px;color:#1f4fa8;border-bottom:2px solid #dbe4f5;padding-bottom:4px}')
+    [void]$sb.Append('h3{font-size:12pt;margin:14px 0 4px}.sub{color:#5a6475}table{border-collapse:collapse;width:100%;margin-top:6px}th,td{border:1px solid #d5dbe6;padding:6px 10px;text-align:left}')
+    [void]$sb.Append('th{background:#eef3fb}td.v{text-align:center;width:22%}.foot{margin-top:30px;color:#5a6475;font-size:10.5pt;border-top:1px solid #dbe4f5;padding-top:10px}ul{margin:4px 0 4px 18px;padding:0}')
+    [void]$sb.Append('</style></head><body>')
+    [void]$sb.Append('<h1>' + (& $enc $company) + '</h1><div class="sub">Rapport d''intervention du ' + (Get-Date).ToString('dd/MM/yyyy') + '</div>')
+    $who = @()
+    if ($client) { $who += ('Client : ' + $client) }
+    $who += ('Ordinateur : ' + $env:COMPUTERNAME + $(if ($info -and $info.Model) { ' (' + [string]$info.Model + ')' } else { '' }))
+    if ($info -and $info.Os) { $who += ('Système : ' + [string]$info.Os) }
+    [void]$sb.Append('<p>' + (($who | ForEach-Object { & $enc $_ }) -join '<br>') + '</p>')
+    [void]$sb.Append('<h2>Ce qui a été fait</h2>')
+    $sc = @(Get-SummaryScenesFromUi | Where-Object { [string]$_.Title -notin 'Bienvenue', 'Au revoir' })
+    foreach ($x in $sc) {
+        [void]$sb.Append('<h3>' + (& $enc ([string]$x.Title)) + '</h3><ul>')
+        foreach ($l in @($x.Lines)) { [void]$sb.Append('<li>' + (& $enc ([string]$l)) + '</li>') }
+        [void]$sb.Append('</ul>')
+    }
+    if ($A) {
+        [void]$sb.Append('<h2>État de l''ordinateur</h2><table><tr><th>Mesure</th><th>Début</th><th>Fin</th></tr>')
+        foreach ($l in (Get-MeasureLines $A $B)) { [void]$sb.Append('<tr><td>' + (& $enc $l[0]) + '</td><td class="v">' + (& $enc $l[1]) + '</td><td class="v">' + (& $enc $l[2]) + '</td></tr>') }
+        [void]$sb.Append('</table>')
+        $disks = @(); if ($info -and $info.Disks) { $disks = @($info.Disks) }
+        if ($disks.Count -gt 0) { [void]$sb.Append('<p><b>Santé des disques :</b> ' + (($disks | ForEach-Object { & $enc ([string]$_) }) -join ' · ') + '</p>') }
+    }
+    $notes = ([string]$Script:RepNotes.Text).Trim()
+    if ($notes) { [void]$sb.Append('<h2>Remarques</h2><p>' + ((& $enc $notes) -replace "`r?`n", '<br>') + '</p>') }
+    [void]$sb.Append('<div class="foot">Aucun document, photo ou fichier personnel n''a été supprimé. Chaque modification a été enregistrée et peut être annulée. ' + (& $enc $company) + '</div>')
+    [void]$sb.Append('</body></html>')
+    $dir = Join-Path $Script:LogDir 'Rapports'
+    New-Item -ItemType Directory -Path $dir -Force -ErrorAction Stop | Out-Null
+    $file = Join-Path $dir ("Rapport_{0}_{1}.html" -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd_HHmmss'))
+    [IO.File]::WriteAllText($file, $sb.ToString(), (New-Object Text.UTF8Encoding($true)))
+    Add-Console ("Rapport : " + $file) 'Green'
+    return $file
 }
 
 function Test-SummarySelf {
@@ -4608,13 +4803,13 @@ function Test-SummarySelf {
 #region Démarrage
 
 try {
-    # Six sections ; chaque onglet est une page (clé de page, libellé).
+    # Sections ; chaque onglet est une page (clé de page, libellé).
     Add-Section 'home' 'Accueil' ([string][char]0xE80F) @(@('dash', 'Vue d''ensemble'), @('summary', 'Résumé pour le client'))
     Add-Section 'repair' 'Réparer' ([string][char]0xE90F) @(@('events', 'Réparation automatique'), @('maint', 'Réparer Windows'), @('care', 'Nettoyage et dépannage'), @('registry', 'Registre'), @('tools', 'Diagnostics'))
     Add-Section 'optim' 'Optimiser' ([string][char]0xE945) @(@('gaming', 'Jeux et alimentation'), @('net', 'Réseau et DNS'), @('sys', 'Disque et démarrage'), @('display', 'Affichage et OLED'))
     Add-Section 'settings' 'Confidentialité et réglages' ([string][char]0xE72E) @(@('priv', 'Confidentialité'), @('ui', 'Interface et Explorateur'), @('winset', 'Mises à jour et sécurité'))
     Add-Section 'soft' 'Logiciels et pilotes' ([string][char]0xE71D) @(@('apps', 'Applications'), @('drivers', 'Pilotes'))
-    Add-Section 'backup' 'Sauvegarde et restauration' ([string][char]0xE81C) @(@('files', 'Sauvegarde des fichiers'), @('journal', 'Restauration'))
+    Add-Section 'backup' 'Fichiers et restauration' ([string][char]0xE81C) @(@('files', 'Sauvegarde des fichiers'), @('photos', 'Doublons de photos'), @('history', 'Historique'), @('journal', 'Journal et points de restauration'))
 
     Build-Dashboard
     Build-Summary
@@ -4631,7 +4826,9 @@ try {
     Build-Apps
     Build-Drivers
     Build-Backup
+    Build-Photos
     Build-Registry
+    Build-History
     Build-Journal
 } catch {
     Show-Fatal "Construction de l'interface impossible : $($_.Exception.Message)`n$($_.ScriptStackTrace)"
@@ -4805,6 +5002,21 @@ if ($env:BJMPC_SELFTEST -and $env:BJMPC_SELFTEST -ne 'PREVIEW') {
         $Script:Sync.Result = $null
         Start-Run -Engine 'tools' -Code 'Get-PrinterDiagnostic' -Title '' -OnDone { param($r) Show-PrinterList $r }
         T 'Imprimantes (analyse + liste)' (Wait-Run 120) ("lignes={0}" -f $Script:PrnChecks.Count)
+        # Rapport d'intervention : HTML construit avec des mesures fictives (aucune mesure réelle enregistrée, pas d'Edge lancé)
+        $repOk = $false; $repInfo = ''
+        try {
+            $Script:MeasData = @{ Avant = [pscustomobject]@{ FreeGB = 40.5; BootSec = 31.2; Startup = 12; Errors7d = 8; Model = 'Essai'; Os = 'Windows 11'; Date = (Get-Date).ToString('s') }; Apres = [pscustomobject]@{ FreeGB = 52.1; BootSec = 22.4; Startup = 7; Errors7d = 1; Date = (Get-Date).ToString('s') } }
+            Show-Measures $Script:MeasData
+            $rf = Save-ReportHtml
+            $txt = [IO.File]::ReadAllText($rf)
+            $repOk = ($txt -match 'Ce qui a été fait' -and $txt -match '52,1 Go|52.1 Go' -and $txt -match '</html>')
+            $repInfo = $rf
+            Remove-Item -LiteralPath $rf -Force -ErrorAction SilentlyContinue
+        } catch { $repInfo = $_.Exception.Message }
+        $Script:MeasData = $null
+        T 'Rapport d''intervention : HTML (ce qui a été fait, mesures, notes)' $repOk $repInfo
+        Start-Run -Engine 'tools' -Code 'Get-UndoHistory' -Title '' -OnDone { param($r) Show-History $r }
+        T 'Historique des actions annulables (lecture + liste)' (Wait-Run 60) ("lignes={0}" -f @($Script:HistPanel.Children).Count)
         # Doublons de photos : vraies images créées dans le dossier temporaire puis effacées (aucun fichier du client touché)
         $photoTest = @'
 $t = Join-Path $env:TEMP ('BJMPC-Test-' + [guid]::NewGuid().ToString('N').Substring(0, 8))

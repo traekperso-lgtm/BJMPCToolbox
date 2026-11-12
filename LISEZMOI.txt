@@ -1,5 +1,24 @@
-﻿BJMPC Toolbox 2.1 - interface graphique (Windows 11)
+﻿BJMPC Toolbox 2.2 - interface graphique (Windows 11)
 =====================================================
+
+NOUVEAUTES 2.2
+  Version 2.1 conservee : branche "archive/v2.1" du depot GitHub (et zip BJMPC-Toolbox-2.1).
+  - Reglages "utilisateur" (HKCU) : ils visent la personne connectee a l'ecran, meme si la Toolbox est lancee
+    avec un autre compte administrateur (lecture automatique CD/DVD, imprimante par defaut, catalogue de reglages,
+    retour aux valeurs Windows 11, strategies). Sans session ouverte : comportement d'avant.
+  - Nouvelle section "Fichiers et restauration" : Sauvegarde des fichiers, Doublons de photos (deplace de Reparer),
+    Historique (nouveau), Journal et points de restauration.
+  - Historique : chaque action annulable au meme endroit (retour aux valeurs Windows 11, mises a jour et suppressions
+    de pilotes, nettoyage des imprimantes, doublons de photos), bouton "Annuler" par ligne ; reglages -> Journal.
+  - Accueil > Resume pour le client > Rapport d'intervention : mesures "debut" et "fin" (place libre, duree du
+    dernier demarrage, programmes au demarrage, erreurs graves sur 7 jours, batterie, sante des disques), remarques,
+    puis PDF cree par Microsoft Edge (sinon HTML a imprimer). Dossiers : C:\BJMPC-Logs\Mesures et \Rapports.
+  - Accueil > Mise a jour de la Toolbox : compare avec la version publiee sur GitHub, telecharge, verifie (fichiers
+    presents, syntaxe, numero de version), archive la version en place dans _Archive\, puis remplace. A relancer ensuite.
+  - Tests automatiques : tests\BJMPC.Tests.ps1 (Pester) lances sur une machine Windows par GitHub Actions a chaque
+    envoi sur le depot : syntaxe et encodage, chargement des moteurs, regles des pilotes, classement des evenements,
+    doublons de photos (octets et pixels), miroir robocopy, catalogue Windows 11, PSScriptAnalyzer.
+  - Licence : PolyForm Noncommercial 1.0.0 (LICENSE.md).
 
 NOUVEAUTES 2.1.1
   - Reparation DISM : si le ScanHealth ne detecte aucune alteration du magasin de composants, RestoreHealth n'est plus lance.
@@ -140,7 +159,8 @@ CONTENU DU DOSSIER (ne pas separer les fichiers)
   BJMPC-Outils-Win11.ps1          diagnostics, depannage, catalogue de logiciels winget, nettoyage
   BJMPC-Toolbox.bat               lanceur
   Verif.bat / Apercu.bat          autotest en lecture seule / apercu du resume (facultatifs)
-  _Archive\v1.8                   la version precedente complete, au cas ou
+  LICENSE.md                      licence PolyForm Noncommercial 1.0.0
+  _Archive\                       versions precedentes, creees par la mise a jour de la Toolbox
 
 NOUVEAUTES 2.0
   1. UNE INTERFACE PLUS SIMPLE : 6 sections au lieu de 14 pages
