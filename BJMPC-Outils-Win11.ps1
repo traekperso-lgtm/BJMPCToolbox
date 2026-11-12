@@ -2463,12 +2463,14 @@ function Remove-DefaultUser0 {
 # n'est touché. Avant toute modification : point de restauration + fichier des valeurs actuelles (annulable).
 $Script:Win11DefCats = [ordered]@{
     sys  = 'Système'
+    sec  = 'Sécurité'
     net  = 'Réseau'
     hw   = 'Matériel'
     nc   = 'Paramètre non critique'
     spec = 'Prise en charge spécifique'
     pref = 'Préférence utilisateur (sans impact négatif)'
     priv = 'Confidentialité et stratégies'
+    polx = 'Autres stratégies détectées (à vérifier)'
     ui   = 'Interface et Explorateur (confort)'
     task = 'Tâches planifiées'
 }
@@ -2493,7 +2495,32 @@ $Script:Win11DefServices = @(
     @('spec', 'dmwappushservice', 3, 0, 'Routage de messages push WAP'),
     @('spec', 'TermService',      3, 0, 'Bureau à distance (RDP)'),
     @('pref', 'DiagTrack',        2, 0, 'Télémétrie (Expériences utilisateur connectées)'),
-    @('pref', 'SysMain',          2, 0, 'SysMain (Superfetch)')
+    @('pref', 'SysMain',          2, 0, 'SysMain (Superfetch)'),
+    @('sys',  'wuauserv',         3, 0, 'Windows Update'),
+    @('sys',  'UsoSvc',           2, 1, 'Orchestrateur des mises à jour'),
+    @('sys',  'BITS',             3, 0, 'Service de transfert intelligent (BITS)'),
+    @('sys',  'WSearch',          2, 1, 'Windows Search'),
+    @('sys',  'Themes',           2, 0, 'Thèmes'),
+    @('sys',  'AudioSrv',         2, 0, 'Audio Windows'),
+    @('sys',  'AudioEndpointBuilder', 2, 0, 'Générateur de points de terminaison audio'),
+    @('sys',  'EventLog',         2, 0, 'Journal d''événements Windows'),
+    @('sys',  'ShellHWDetection', 2, 0, 'Détection matériel Shell (lecture automatique)'),
+    @('sys',  'FontCache',        2, 0, 'Cache de polices Windows'),
+    @('sys',  'CryptSvc',         2, 0, 'Services de chiffrement'),
+    @('sys',  'Winmgmt',          2, 0, 'Infrastructure de gestion Windows (WMI)'),
+    @('sys',  'WpnService',       2, 0, 'Notifications Push Windows'),
+    @('sys',  'seclogon',         3, 0, 'Ouverture de session secondaire'),
+    @('net',  'iphlpsvc',         2, 0, 'Assistance IP'),
+    @('sec',  'mpssvc',           2, 0, 'Pare-feu Windows Defender'),
+    @('sec',  'BFE',              2, 0, 'Moteur de filtrage de base'),
+    @('sec',  'wscsvc',           2, 1, 'Centre de sécurité'),
+    @('sec',  'RemoteRegistry',   4, 0, 'Registre à distance'),
+    @('nc',   'XblAuthManager',   3, 0, 'Gestion de l''authentification Xbox Live'),
+    @('nc',   'XblGameSave',      3, 0, 'Sauvegarde de jeu Xbox Live'),
+    @('nc',   'XboxNetApiSvc',    3, 0, 'Service de mise en réseau Xbox Live'),
+    @('nc',   'XboxGipSvc',       3, 0, 'Gestion des accessoires Xbox'),
+    @('nc',   'WbioSrvc',         3, 0, 'Biométrie Windows'),
+    @('nc',   'SCardSvr',         3, 0, 'Carte à puce')
 )
 
 # Registre : catégorie, chemin, nom, valeur Windows 11 ($null = « non définie »), type, valeur(s) posée(s) par nos outils ($null = tout écart)
@@ -2687,7 +2714,98 @@ $Script:Win11DefRegistry = @(
     @('ui', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Serialize', 'StartupDelayInMSec', $null, 'DWord', 0),
     @('net', 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Psched', 'NonBestEffortLimit', $null, 'DWord', 0),
     @('net', 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization', 'DODownloadMode', $null, 'DWord', 0),
-    @('sys', 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters', 'DisabledComponents', $null, 'DWord', 32)
+    @('sys', 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters', 'DisabledComponents', $null, 'DWord', 32),
+    # ---- Élargissement 2.1 : réglages modifiés par des outils d'optimisation courants (tout écart, quel que soit l'outil)
+    # Sécurité : contrôle de compte (UAC), restrictions posées par des logiciels malveillants, protections du processeur
+    @('sec', 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System', 'EnableLUA', 1, 'DWord', $null),
+    @('sec', 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System', 'ConsentPromptBehaviorAdmin', 5, 'DWord', $null),
+    @('sec', 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System', 'ConsentPromptBehaviorUser', 3, 'DWord', $null),
+    @('sec', 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System', 'PromptOnSecureDesktop', 1, 'DWord', $null),
+    @('sec', 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System', 'EnableInstallerDetection', 1, 'DWord', $null),
+    @('sec', 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System', 'EnableVirtualization', 1, 'DWord', $null),
+    @('sec', 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System', 'EnableSecureUIAPaths', 1, 'DWord', $null),
+    @('sec', 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System', 'ValidateAdminCodeSignatures', 0, 'DWord', $null),
+    @('sec', 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System', 'LocalAccountTokenFilterPolicy', $null, 'DWord', $null),
+    @('sec', 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System', 'DisableTaskMgr', $null, 'DWord', $null),
+    @('sec', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\System', 'DisableTaskMgr', $null, 'DWord', $null),
+    @('sec', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\System', 'DisableRegistryTools', $null, 'DWord', $null),
+    @('sec', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\System', 'DisableChangePassword', $null, 'DWord', $null),
+    @('sec', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\System', 'DisableLockWorkstation', $null, 'DWord', $null),
+    @('sec', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\System', 'NoDispCPL', $null, 'DWord', $null),
+    @('sec', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer', 'NoRun', $null, 'DWord', $null),
+    @('sec', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer', 'NoControlPanel', $null, 'DWord', $null),
+    @('sec', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer', 'NoFolderOptions', $null, 'DWord', $null),
+    @('sec', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer', 'NoViewContextMenu', $null, 'DWord', $null),
+    @('sec', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer', 'NoDrives', $null, 'DWord', $null),
+    @('sec', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer', 'NoViewOnDrive', $null, 'DWord', $null),
+    @('sec', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer', 'NoClose', $null, 'DWord', $null),
+    @('sec', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer', 'NoLogoff', $null, 'DWord', $null),
+    @('sec', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer', 'NoDesktop', $null, 'DWord', $null),
+    @('sec', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer', 'NoTrayContextMenu', $null, 'DWord', $null),
+    @('sec', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer', 'NoFind', $null, 'DWord', $null),
+    @('sec', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer', 'NoSetTaskbar', $null, 'DWord', $null),
+    @('sec', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer', 'DisallowRun', $null, 'DWord', $null),
+    @('sec', 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management', 'FeatureSettingsOverride', $null, 'DWord', $null),
+    @('sec', 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management', 'FeatureSettingsOverrideMask', $null, 'DWord', $null),
+    @('sec', 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel', 'DisableExceptionChainValidation', $null, 'DWord', $null),
+    @('sec', 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa', 'NoLMHash', 1, 'DWord', $null),
+    @('sec', 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa', 'LimitBlankPasswordUse', 1, 'DWord', $null),
+    @('sec', 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa', 'restrictanonymous', 0, 'DWord', $null),
+    @('sec', 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa', 'everyoneincludesanonymous', 0, 'DWord', $null),
+    @('spec', 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters', 'AllowInsecureGuestAuth', $null, 'DWord', $null, 'noauto'),
+    @('spec', 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server', 'fDenyTSConnections', 1, 'DWord', $null, 'noauto'),
+    # Système : mémoire, priorités, arrêt, système de fichiers, carte graphique
+    @('sys', 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management', 'LargeSystemCache', 0, 'DWord', $null),
+    @('sys', 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management', 'DisablePagingExecutive', 0, 'DWord', $null),
+    @('sys', 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management', 'IoPageLockLimit', $null, 'DWord', $null),
+    @('pref', 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management', 'ClearPageFileAtShutdown', 0, 'DWord', $null, 'noauto'),
+    @('sys', 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters', 'EnablePrefetcher', 3, 'DWord', $null),
+    @('sys', 'HKLM:\SYSTEM\CurrentControlSet\Control', 'WaitToKillServiceTimeout', '5000', 'String', $null),
+    @('sys', 'HKCU:\Control Panel\Desktop', 'AutoEndTasks', $null, 'String', '1'),
+    @('sys', 'HKCU:\Control Panel\Desktop', 'HungAppTimeout', $null, 'String', @('0', '100', '500', '1000', '1500', '2000', '2500', '3000', '4000')),
+    @('sys', 'HKCU:\Control Panel\Desktop', 'WaitToKillAppTimeout', $null, 'String', @('0', '100', '500', '1000', '1500', '2000', '2500', '3000', '4000', '5000')),
+    @('sys', 'HKCU:\Control Panel\Desktop', 'LowLevelHooksTimeout', $null, 'String', @('0', '100', '500', '1000', '1500', '2000', '2500', '3000', '4000')),
+    @('sys', 'HKCU:\Control Panel\Desktop', 'ForegroundLockTimeout', 200000, 'DWord', $null),
+    @('sys', 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel', 'GlobalTimerResolutionRequests', $null, 'DWord', $null),
+    @('sys', 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel', 'DistributeTimers', $null, 'DWord', $null),
+    @('sys', 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile', 'NoLazyMode', $null, 'DWord', $null),
+    @('sys', 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile', 'AlwaysOn', $null, 'DWord', $null),
+    @('sys', 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile', 'LazyModeTimeout', $null, 'DWord', $null),
+    @('hw', 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games', 'Clock Rate', 10000, 'DWord', $null),
+    @('nc', 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games', 'Background Only', 'False', 'String', $null),
+    @('sys', 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem', 'NtfsDisableLastAccessUpdate', 2147483650, 'DWord', @(1, 2147483649)),
+    @('sys', 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem', 'NtfsMemoryUsage', $null, 'DWord', 2),
+    @('sys', 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem', 'NtfsDisable8dot3NameCreation', 2, 'DWord', $null),
+    @('pref', 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem', 'LongPathsEnabled', 0, 'DWord', $null, 'noauto'),
+    @('hw', 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers', 'TdrDelay', $null, 'DWord', $null),
+    @('hw', 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers', 'TdrDdiDelay', $null, 'DWord', $null),
+    @('hw', 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers', 'TdrLevel', $null, 'DWord', $null),
+    @('hw', 'HKLM:\SYSTEM\CurrentControlSet\Control\Power', 'PlatformAoAcOverride', $null, 'DWord', $null),
+    # Réseau : réglages TCP/IP, SMB, DNS et navigateur « accélérateurs » (absents d'un Windows d'origine)
+    @('net', 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters', 'TcpTimedWaitDelay', $null, 'DWord', $null),
+    @('net', 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters', 'MaxUserPort', $null, 'DWord', $null),
+    @('net', 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters', 'DefaultTTL', $null, 'DWord', $null),
+    @('net', 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters', 'Tcp1323Opts', $null, 'DWord', $null),
+    @('net', 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters', 'TcpMaxDupAcks', $null, 'DWord', $null),
+    @('net', 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters', 'SackOpts', $null, 'DWord', $null),
+    @('net', 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters', 'TcpMaxDataRetransmissions', $null, 'DWord', $null),
+    @('net', 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters', 'EnablePMTUBHDetect', $null, 'DWord', $null),
+    @('net', 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters', 'GlobalMaxTcpWindowSize', $null, 'DWord', $null),
+    @('net', 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters', 'TcpWindowSize', $null, 'DWord', $null),
+    @('net', 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters', 'MaxFreeTcbs', $null, 'DWord', $null),
+    @('net', 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters', 'MaxHashTableSize', $null, 'DWord', $null),
+    @('net', 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters', 'TcpNumConnections', $null, 'DWord', $null),
+    @('net', 'HKLM:\SYSTEM\CurrentControlSet\Services\AFD\Parameters', 'DefaultReceiveWindow', $null, 'DWord', $null),
+    @('net', 'HKLM:\SYSTEM\CurrentControlSet\Services\AFD\Parameters', 'DefaultSendWindow', $null, 'DWord', $null),
+    @('net', 'HKLM:\SYSTEM\CurrentControlSet\Services\AFD\Parameters', 'FastSendDatagramThreshold', $null, 'DWord', $null),
+    @('net', 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters', 'IRPStackSize', $null, 'DWord', $null),
+    @('net', 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters', 'Size', $null, 'DWord', $null),
+    @('net', 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters', 'MaxCacheTtl', $null, 'DWord', $null),
+    @('net', 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters', 'MaxNegativeCacheTtl', $null, 'DWord', $null),
+    @('net', 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings', 'MaxConnectionsPerServer', $null, 'DWord', $null),
+    @('net', 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings', 'MaxConnectionsPer1_0Server', $null, 'DWord', $null),
+    @('net', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings', 'MaxConnectionsPerServer', $null, 'DWord', $null),
+    @('net', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings', 'MaxConnectionsPer1_0Server', $null, 'DWord', $null)
 )
 
 $Script:Win11DefTasks = @(
@@ -2744,14 +2862,102 @@ function Get-StartText {
     switch ([int]$Start) { 0 { 'Démarrage (0)' } 1 { 'Système (1)' } 2 { 'Automatique (2)' } 3 { 'Manuel (3)' } 4 { 'Désactivé (4)' } default { [string]$Start } }
 }
 
+# Stratégies : un Windows 11 d'origine (hors domaine) n'en pose quasiment aucune. Toute valeur trouvée sous les clés
+# Policies vient donc d'un réglage, d'un outil d'optimisation ou d'un logiciel. La supprimer rend à Windows son comportement
+# standard. Exclues : données que Windows range lui-même sous Policies (certificats, chiffrement TLS, TPM, restrictions logicielles).
+$Script:PolicyRoots = @('HKEY_LOCAL_MACHINE\SOFTWARE\Policies', 'HKEY_CURRENT_USER\SOFTWARE\Policies', 'HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Policies')
+$Script:PolicyExclude = '\\Policies\\Microsoft\\(SystemCertificates|Cryptography|TPM|Windows\\safer)(\\|$)'
+$Script:PolicyMaxRows = 600
+
+function Get-ShortHash {
+    param([string]$Text)
+    $sha = [System.Security.Cryptography.SHA1]::Create()
+    try { return ((@($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Text.ToLowerInvariant()))) | Select-Object -First 8 | ForEach-Object { $_.ToString('x2') }) -join '') }
+    finally { $sha.Dispose() }
+}
+
+function ConvertTo-HivePath {
+    # 'HKLM:\X' ou 'Registry::HKEY_LOCAL_MACHINE\X' -> 'HKEY_LOCAL_MACHINE\X'
+    param([string]$Path)
+    $p = $Path -replace '^Registry::', ''
+    $p = $p -replace '^HKLM:\\', 'HKEY_LOCAL_MACHINE\' -replace '^HKCU:\\', 'HKEY_CURRENT_USER\'
+    return $p
+}
+
+function Get-ShortRegPath {
+    param([string]$HivePath)
+    return ($HivePath -replace '^HKEY_LOCAL_MACHINE\\', 'HKLM:\' -replace '^HKEY_CURRENT_USER\\', 'HKCU:\')
+}
+
+function Remove-RegValueExact {
+    # Supprime exactement cette valeur (sans jokers : certains noms de stratégie contiennent * ou [ ]).
+    param([string]$Path, [string]$Name)
+    $hp = ConvertTo-HivePath $Path
+    $parts = $hp -split '\\', 2
+    $base = $null
+    switch ($parts[0]) {
+        'HKEY_LOCAL_MACHINE' { $base = [Microsoft.Win32.Registry]::LocalMachine }
+        'HKEY_CURRENT_USER'  { $base = [Microsoft.Win32.Registry]::CurrentUser }
+        default { throw ("Ruche non prise en charge : " + $parts[0]) }
+    }
+    $k = $base.OpenSubKey($parts[1], $true)
+    if (-not $k) { throw 'clé introuvable' }
+    try { $k.DeleteValue($Name, $true) } finally { $k.Close() }
+}
+
+function Get-PolicyRows {
+    # Valeurs de stratégie hors catalogue. Lecture seule. Renvoie des objets prêts pour la liste.
+    param([hashtable]$Known)
+    $out = New-Object System.Collections.ArrayList
+    $seen = @{}
+    foreach ($root in $Script:PolicyRoots) {
+        $base = 'Registry::' + $root
+        if (-not (Test-Path -LiteralPath $base)) { continue }
+        $keys = @()
+        try { $keys = @(Get-Item -LiteralPath $base -ErrorAction Stop) + @(Get-ChildItem -LiteralPath $base -Recurse -ErrorAction SilentlyContinue) } catch { continue }
+        foreach ($k in $keys) {
+            $kn = [string]$k.Name
+            if ($kn -match $Script:PolicyExclude) { continue }
+            $names = @()
+            try { $names = @($k.GetValueNames()) } catch {}
+            foreach ($n in $names) {
+                if ([string]::IsNullOrEmpty($n)) { continue }
+                $id = ($kn + '|' + $n).ToLowerInvariant()
+                if ($Known.ContainsKey($id)) { continue }
+                # même stratégie vue par la vue 32 bits : une seule ligne
+                $rel = (($kn -replace '\\WOW6432Node\\', '\') + '|' + $n).ToLowerInvariant()
+                if ($seen.ContainsKey($rel)) { continue }
+                $seen[$rel] = $true
+                $val = $null; $kind = ''
+                try { $val = $k.GetValue($n, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames); $kind = $k.GetValueKind($n).ToString() } catch {}
+                $short = Get-ShortRegPath $kn
+                $after = ($kn -split '\\Policies\\', 2)
+                $vendor = ''; if ($after.Count -gt 1) { $vendor = ($after[1] -split '\\')[0] }
+                $seg = ($kn -split '\\')[-1]
+                $lbl = $(if ($seg -eq $vendor -or -not $vendor) { $seg } else { $vendor + ' · ' + $seg }) + ' · ' + $n
+                $cur = Format-DefValue $val
+                if ($cur.Length -gt 60) { $cur = $cur.Substring(0, 57) + '...' }
+                [void]$out.Add([pscustomobject]@{
+                    Id = 'pol:' + (Get-ShortHash $id); Cat = 'polx'; CatName = $Script:Win11DefCats['polx']; Label = $lbl; Kind = 'pol'
+                    Def = 'non définie'; Cur = $cur; Tip = ($short + '\' + $n + '  (' + $kind + ')'); On = $false
+                    RegPath = 'Registry::' + $kn; RegName = $n
+                })
+                if ($out.Count -ge $Script:PolicyMaxRows) { Write-Log ("Plus de {0} stratégies : la liste est tronquée." -f $Script:PolicyMaxRows) 'WARN'; return @($out) }
+            }
+        }
+    }
+    return @($out)
+}
+
 function Get-Win11DefaultsRows {
     # Tous les écarts entre l'état actuel et Windows 11 d'origine. Lecture seule.
     $rows = New-Object System.Collections.ArrayList
     $domain = $false
     try { $domain = [bool](Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).PartOfDomain } catch {}
     $add = {
-        param($Cat, $Id, $Label, $Kind, $DefText, $CurText, $Tip)
-        [void]$rows.Add([pscustomobject]@{ Id = $Id; Cat = $Cat; CatName = $Script:Win11DefCats[$Cat]; Label = $Label; Kind = $Kind; Def = $DefText; Cur = $CurText; Tip = $Tip; On = ($Cat -ne 'ui') })
+        param($Cat, $Id, $Label, $Kind, $DefText, $CurText, $Tip, $On = $null)
+        if ($null -eq $On) { $On = ($Cat -ne 'ui' -and $Cat -ne 'polx') }
+        [void]$rows.Add([pscustomobject]@{ Id = $Id; Cat = $Cat; CatName = $Script:Win11DefCats[$Cat]; Label = $Label; Kind = $Kind; Def = $DefText; Cur = $CurText; Tip = $Tip; On = [bool]$On })
     }
     # --- Services
     foreach ($s in $Script:Win11DefServices) {
@@ -2764,6 +2970,7 @@ function Get-Win11DefaultsRows {
     }
     # --- Registre
     $j = 0
+    $known = @{}   # valeurs déjà listées par le catalogue : la détection des stratégies ne les répète pas
     foreach ($e in $Script:Win11DefRegistry) {
         $j++
         $path = [string]$e[1]; $name = [string]$e[2]
@@ -2782,7 +2989,13 @@ function Get-Win11DefaultsRows {
         $lbl = $seg + ' · ' + $name
         if ($name -eq 'Value') { $lbl = 'Autorisation : ' + $seg }
         if ($path -match '\\Policies\\') { $lbl = $seg + ' · ' + $name + ' (stratégie)' }
-        & $add $e[0] ('reg:' + $j) $lbl 'reg' (Format-DefValue $e[3]) $curTxt ($path + '\' + $name)
+        $on = $null; if ($e.Count -ge 7 -and $e[6]) { $on = $false }
+        $known[((ConvertTo-HivePath $path) + '|' + $name).ToLowerInvariant()] = $true
+        & $add $e[0] ('reg:' + $j) $lbl 'reg' (Format-DefValue $e[3]) $curTxt ($path + '\' + $name) $on
+    }
+    # --- Stratégies hors catalogue (tout logiciel ou outil) ; ignorées sur un PC de domaine
+    if (-not $domain) {
+        foreach ($pr in @(Get-PolicyRows $known)) { [void]$rows.Add($pr) }
     }
     # --- Nagle : valeurs par interface réseau
     $ifRoot = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces'
@@ -2820,6 +3033,9 @@ function Get-Win11DefaultsState {
     $dom = $false
     try { $dom = [bool](Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).PartOfDomain } catch {}
     if ($dom) { Write-Log 'PC joint à un domaine : les stratégies de groupe ne sont pas touchées.' 'WARN' }
+    $np = @($rows | Where-Object { $_.Kind -eq 'pol' }).Count
+    if ($np -gt 0) { Write-Log ("{0} stratégie(s) hors catalogue détectée(s) : non cochées, à vérifier une par une (survolez la ligne pour voir la clé)." -f $np) 'WARN' }
+    Write-Log 'Référence : valeurs d''origine de Windows 11 24H2 à 26H2 (même base système), pour le compte qui lance la Toolbox côté HKCU.'
     if ($rows.Count -eq 0) { Write-Log 'Aucun écart : ce PC est déjà aux valeurs par défaut de Windows 11 pour les réglages connus.' 'OK' }
     else { Write-Log ("{0} réglage(s) différent(s) de Windows 11." -f $rows.Count) 'OK' }
     Set-SyncResult $rows
@@ -2884,6 +3100,7 @@ function Restore-Win11Defaults {
                     $before = Get-ServiceModeName ([string]$sv[1])
                     $mode = 'demand'
                     if ([int]$sv[2] -eq 2) { if ([int]$sv[3] -eq 1) { $mode = 'delayed-auto' } else { $mode = 'auto' } }
+                    elseif ([int]$sv[2] -eq 4) { $mode = 'disabled' }
                     & sc.exe config ([string]$sv[1]) start= $mode | Out-Null
                     if ($LASTEXITCODE -ne 0) { throw ("sc.exe a répondu " + $LASTEXITCODE) }
                     [void]$rec.Add(@{ Kind = 'svc'; Name = [string]$sv[1]; Mode = $before })
@@ -2902,6 +3119,17 @@ function Restore-Win11Defaults {
                         Set-DefRegValue $path $name $e[3] ([string]$e[4])
                     }
                     Write-Log ("{0} : {1} -> {2}" -f $name, $r.Cur, $r.Def) 'OK'
+                }
+                'pol' {
+                    $p = [string]$r.RegPath; $n = [string]$r.RegName
+                    $i = Get-RegValueInfo $p $n
+                    if ($i.Exists) {
+                        $val = $i.Value
+                        if ($val -is [byte[]]) { $val = @($val | ForEach-Object { [int]$_ }) }
+                        [void]$rec.Add(@{ Kind = 'reg'; Path = $p; Name = $n; Existed = $true; Value = $val; VKind = $i.Kind })
+                        Remove-RegValueExact $p $n
+                        Write-Log ("Stratégie retirée : {0}\{1} ({2})" -f (Get-ShortRegPath (ConvertTo-HivePath $p)), $n, $r.Cur) 'OK'
+                    }
                 }
                 'if' {
                     $parts = ([string]$r.Tip) -split '\|'

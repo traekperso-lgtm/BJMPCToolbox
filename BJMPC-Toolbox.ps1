@@ -1752,28 +1752,10 @@ function Show-DefaultsRows {
     Update-DefaultsHeaders
 }
 
-function Build-Journal {
-    $p = New-Page 'journal' 'Restauration' 'Revenir en arrière : annuler ce que la Toolbox a modifié, rétablir les réglages d''origine de Windows 11, ou utiliser un point de restauration.'
-    $c = New-Card 'Journal : annuler les modifications de la Toolbox' 'Chaque modification a gardé sa valeur d''origine. Cochez les catégories à annuler ; les valeurs sont restaurées dans l''ordre inverse des modifications.'
-    $Script:JournalPanel = New-Object Windows.Controls.StackPanel
-    $Script:JournalPanel.Margin = '0,10,0,0'
-    [void]$c.Body.Children.Add($Script:JournalPanel)
-    $bar = New-Object Windows.Controls.StackPanel
-    $bar.Orientation = 'Horizontal'; $bar.Margin = '0,16,0,0'
-    $selSpec = New-Spec 'opt' '' 'Annulation de la sélection' @{} 'Annuler les modifications des catégories cochées ?' { param($r) Load-Journal; Refresh-Dashboard }
-    $selSpec.CodeFn = {
-        $types = @($Script:JournalChecks | Where-Object { $_.IsChecked } | ForEach-Object { "'" + ([string]$_.Tag -replace "(['\u2018\u2019\u201A\u201B])", '$1$1') + "'" })
-        $Script:RevertCode.Replace('__TYPES__', ($types -join ','))
-    }
-    $b1 = New-Btn 'Annuler la sélection' $selSpec -Primary; $b1.Margin = '0,0,0,0'
-    [void]$bar.Children.Add($b1)
-    [void]$bar.Children.Add((New-Btn 'Tout annuler' (New-Spec 'opt' 'Restore-All' 'Retour à l''état d''origine' @{} '' { param($r) Load-Journal; Refresh-Dashboard })))
-    [void]$bar.Children.Add((New-Btn 'Actualiser' @{ Fn = { Load-Journal } }))
-    [void]$c.Body.Children.Add($bar)
-    [void]$p.Children.Add($c.Card)
-
+function Build-Registry {
+    $p = New-Page 'registry' 'Registre' 'Remettre le registre et les services aux valeurs standard de Windows 11 : utile après un logiciel d''optimisation, un « debloater » ou un réglage oublié. La comparaison ne modifie rien ; le rétablissement s''annule.'
     # ---- Retour aux valeurs par défaut de Windows 11
-    $d = New-Card 'Rétablir les valeurs par défaut de Windows 11' 'Compare ce PC à un Windows 11 d''origine (services, priorités système, réseau, télémétrie, stratégies, tâches) et remet les écarts à leur valeur par défaut. Utile quand le Journal est vide (réglages posés par une ancienne version ou un autre outil). Ne touche ni la sécurité, ni les pilotes, ni les stratégies d''un PC en domaine. Un point de restauration est créé et les valeurs actuelles sont enregistrées : tout s''annule.' 'Sans risque pour Windows' 'g'
+    $d = New-Card 'Rétablir les valeurs par défaut de Windows 11' 'Compare ce PC aux valeurs d''origine de Windows 11 (24H2 à 26H2, même base système) : services, sécurité et contrôle de compte, mémoire et priorités, réseau, télémétrie, tâches planifiées, et toute stratégie posée par un outil d''optimisation ou un logiciel. Les écarts sont remis à leur valeur standard, quel que soit l''outil qui les a posés. Les pilotes, les logiciels installés et les stratégies d''un PC en domaine ne sont pas touchés. Un point de restauration est créé et les valeurs actuelles sont enregistrées : tout s''annule.' 'Annulable' 'g'
     $dc = New-Spec 'tools' 'Get-Win11DefaultsState' 'Comparaison avec Windows 11'
     $dc.OnDone = { param($r) Show-DefaultsRows $r }
     $dr = New-Spec 'tools' '' 'Rétablissement des valeurs par défaut Windows 11'
@@ -1811,10 +1793,32 @@ function Build-Journal {
     [void]$d.Body.Children.Add($dh)
     $Script:DefPanel = New-Object Windows.Controls.StackPanel
     [void]$d.Body.Children.Add((New-ScrollList $Script:DefPanel 420))
-    $dn = New-Text 'Les réglages « Interface et Explorateur » (confort : fichiers cachés, menu classique, souris…) ne sont pas cochés : ce sont des choix personnels. Les réglages réseau avancés, DNS et plans d''alimentation se défont depuis le Journal ci-dessus.' 12 '#9298A3' 'Normal' -Wrap
+    $dn = New-Text 'Non cochés d''office : « Interface et Explorateur » (choix personnels), « Autres stratégies détectées » (peuvent venir d''un logiciel légitime : survolez la ligne pour voir la clé) et quelques réglages de prise en charge (Bureau à distance, accès invité à un NAS ancien, chemins longs). Les réglages réseau avancés, DNS et plans d''alimentation posés par la Toolbox se défont depuis Sauvegarde et restauration > Restauration.' 12 '#9298A3' 'Normal' -Wrap
     $dn.Margin = '0,8,0,0'
     [void]$d.Body.Children.Add($dn)
     [void]$p.Children.Add($d.Card)
+}
+
+function Build-Journal {
+    $p = New-Page 'journal' 'Restauration' 'Revenir en arrière : annuler ce que la Toolbox a modifié, ou utiliser un point de restauration. Le retour aux valeurs standard de Windows 11 est dans Réparer > Registre.'
+    $c = New-Card 'Journal : annuler les modifications de la Toolbox' 'Chaque modification a gardé sa valeur d''origine. Cochez les catégories à annuler ; les valeurs sont restaurées dans l''ordre inverse des modifications.'
+    $Script:JournalPanel = New-Object Windows.Controls.StackPanel
+    $Script:JournalPanel.Margin = '0,10,0,0'
+    [void]$c.Body.Children.Add($Script:JournalPanel)
+    $bar = New-Object Windows.Controls.StackPanel
+    $bar.Orientation = 'Horizontal'; $bar.Margin = '0,16,0,0'
+    $selSpec = New-Spec 'opt' '' 'Annulation de la sélection' @{} 'Annuler les modifications des catégories cochées ?' { param($r) Load-Journal; Refresh-Dashboard }
+    $selSpec.CodeFn = {
+        $types = @($Script:JournalChecks | Where-Object { $_.IsChecked } | ForEach-Object { "'" + ([string]$_.Tag -replace "(['\u2018\u2019\u201A\u201B])", '$1$1') + "'" })
+        $Script:RevertCode.Replace('__TYPES__', ($types -join ','))
+    }
+    $b1 = New-Btn 'Annuler la sélection' $selSpec -Primary; $b1.Margin = '0,0,0,0'
+    [void]$bar.Children.Add($b1)
+    [void]$bar.Children.Add((New-Btn 'Tout annuler' (New-Spec 'opt' 'Restore-All' 'Retour à l''état d''origine' @{} '' { param($r) Load-Journal; Refresh-Dashboard })))
+    [void]$bar.Children.Add((New-Btn 'Actualiser' @{ Fn = { Load-Journal } }))
+    [void]$c.Body.Children.Add($bar)
+    [void]$p.Children.Add($c.Card)
+
 
     $r = New-Card 'Points de restauration' 'Les 6 plus récents.'
     $Script:RestorePanel = New-Object Windows.Controls.StackPanel
@@ -4439,7 +4443,7 @@ function Test-SummarySelf {
 try {
     # Six sections ; chaque onglet est une page (clé de page, libellé).
     Add-Section 'home' 'Accueil' ([string][char]0xE80F) @(@('dash', 'Vue d''ensemble'), @('summary', 'Résumé pour le client'))
-    Add-Section 'repair' 'Réparer' ([string][char]0xE90F) @(@('events', 'Réparation automatique'), @('maint', 'Réparer Windows'), @('care', 'Nettoyage et dépannage'), @('tools', 'Diagnostics'))
+    Add-Section 'repair' 'Réparer' ([string][char]0xE90F) @(@('events', 'Réparation automatique'), @('maint', 'Réparer Windows'), @('care', 'Nettoyage et dépannage'), @('registry', 'Registre'), @('tools', 'Diagnostics'))
     Add-Section 'optim' 'Optimiser' ([string][char]0xE945) @(@('gaming', 'Jeux et alimentation'), @('net', 'Réseau et DNS'), @('sys', 'Disque et démarrage'), @('display', 'Affichage et OLED'))
     Add-Section 'settings' 'Confidentialité et réglages' ([string][char]0xE72E) @(@('priv', 'Confidentialité'), @('ui', 'Interface et Explorateur'), @('winset', 'Mises à jour et sécurité'))
     Add-Section 'soft' 'Logiciels et pilotes' ([string][char]0xE71D) @(@('apps', 'Applications'), @('drivers', 'Pilotes'))
@@ -4460,6 +4464,7 @@ try {
     Build-Apps
     Build-Drivers
     Build-Backup
+    Build-Registry
     Build-Journal
 } catch {
     Show-Fatal "Construction de l'interface impossible : $($_.Exception.Message)`n$($_.ScriptStackTrace)"

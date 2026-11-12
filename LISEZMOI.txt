@@ -12,6 +12,19 @@ NOUVEAUTES 2.1.1
     (reglage desactive, strategie NoDriveTypeAutoRun, detection du lecteur cdrom, service Detection materiel Shell) et choix du lecteur
     (Windows Media Player herite, Lecteur multimedia ou autre) parmi ceux que Windows connait pour chaque type de disque. Annulable depuis le Journal.
     Windows 11 n'a pas de lecteur de DVD video integre : les CD audio fonctionnent, les DVD video pas toujours.
+  - Nouvel onglet Reparer > Registre : "Retablir les valeurs par defaut de Windows 11" y est deplace (avant : Restauration)
+    et elargi. Reference : Windows 11 24H2 a 26H2 (26H2 est un paquet d'activation sur la meme base).
+      * Catalogue elargi (277 valeurs, 44 services) : securite et UAC, restrictions posees par des logiciels
+        malveillants (gestionnaire des taches, regedit, panneau de configuration...), protections du processeur,
+        memoire, priorites, arret, NTFS, carte graphique, TCP/IP, SMB, DNS. Tout ecart compte, quel que soit l'outil.
+      * Detection des strategies : toute valeur sous les cles Policies (HKLM, HKCU, 32 bits), de Microsoft ou
+        d'un autre editeur (Chrome, Edge...), est listee dans "Autres strategies detectees", non cochee : un Windows
+        d'origine hors domaine n'en a quasiment pas. Exclus : certificats, chiffrement TLS, TPM, restrictions logicielles.
+      * Non coches d'office aussi : Bureau a distance, acces invite a un NAS ancien, chemins longs, effacement du
+        fichier d'echange. Point de restauration + fichier des valeurs avant : annulation en un clic.
+      * Limite : impossible de comparer "tout le registre" (Microsoft ne publie pas de liste des valeurs par defaut,
+        et le registre contient les reglages propres au materiel et aux logiciels). Les cles HKCU sont celles du
+        compte qui lance la Toolbox.
 
 NOUVEAUTES 2.1
   1. REPARATION AUTOMATIQUE D'APRES L'OBSERVATEUR D'EVENEMENTS (Reparer > Reparation automatique)
@@ -154,7 +167,7 @@ NOUVEAUTES 2.0
      cela depend du PC et se choisit dans Optimiser. "Equilibre" est indique comme mode d'alimentation recommande.
      PC DEJA TRAITES AVEC UNE VERSION 1.x : rien n'est casse. Le Journal annule toujours ces anciens reglages, et
      l'accueil affiche "Aucun ancien reglage depasse" en orange s'il en reste. Pour les remettre par defaut :
-     Sauvegarde et restauration > Restauration > "Comparer avec Windows 11".
+     Reparer > Registre > "Comparer avec Windows 11".
 
   Verifications faites sur cette version : syntaxe des 6 scripts, autotest complet (Verif.bat), ouverture de
   chaque onglet, sauvegarde / 2e sauvegarde / restauration / disque absent sur des dossiers d'essai.
