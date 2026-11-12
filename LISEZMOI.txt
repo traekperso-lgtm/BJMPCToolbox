@@ -8,6 +8,10 @@ NOUVEAUTES 2.1.1
   - Reparer > Nettoyage et depannage > Imprimantes et blocages d'impression : analyse (lecture seule) des imprimantes reseau TCP/IP, WSD et IPP
     (test de l'adresse), retrait des files et ports morts apres sauvegarde complete (PrintBrm), restauration, et option "ne plus laisser Windows
     choisir l'imprimante par defaut" (Word/Excel qui restent figes jusqu'a "Annuler"). USB, virtuelles (PDF, XPS, OneNote) et partagees : jamais touchees.
+  - Reparer > Nettoyage et depannage > Lecture automatique des CD audio et DVD : analyse (lecture seule) de ce qui bloque l'ouverture d'un disque
+    (reglage desactive, strategie NoDriveTypeAutoRun, detection du lecteur cdrom, service Detection materiel Shell) et choix du lecteur
+    (Windows Media Player herite, Lecteur multimedia ou autre) parmi ceux que Windows connait pour chaque type de disque. Annulable depuis le Journal.
+    Windows 11 n'a pas de lecteur de DVD video integre : les CD audio fonctionnent, les DVD video pas toujours.
 
 NOUVEAUTES 2.1
   1. REPARATION AUTOMATIQUE D'APRES L'OBSERVATEUR D'EVENEMENTS (Reparer > Reparation automatique)

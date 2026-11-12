@@ -1289,6 +1289,44 @@ function Build-Maintenance {
     [void]$p.Children.Add($pc.Card)
     [void](New-TweakCard $p 'Impression' 'Option contre les blocages liés à l''imprimante par défaut choisie automatiquement par Windows.')
 
+    # Lecture automatique des CD audio et des DVD (Windows Media Player hérité ou Lecteur multimédia)
+    $ac = New-Card 'Lecture automatique des CD audio et DVD' 'Rétablit l''ouverture automatique d''un disque inséré. L''analyse (lecture seule) cherche ce qui la bloque : réglage désactivé, stratégie, détection du lecteur ou service arrêté, et propose les lecteurs que Windows connaît pour chaque type de disque. Toute modification est annulable depuis le Journal.' 'Modifie le système' 'w'
+    $as2 = New-Spec 'opt' 'Get-DiscAutoplayState' 'Analyse de la lecture automatique' @{} '' { param($r) Show-DiscAutoplay $r }
+    $ar2 = New-Spec 'opt' '' 'Lecture automatique des CD et DVD'
+    $ar2.CodeFn = {
+        $q = { param($v) "'" + (([string]$v) -replace "(['\u2018\u2019\u201A\u201B])", '$1$1' -replace '[\x00-\x1F]', '') + "'" }
+        $c = ''; $d = ''
+        try { $c = [string]$Script:DiscCdBox.SelectedItem.Tag } catch {}
+        try { $d = [string]$Script:DiscDvdBox.SelectedItem.Tag } catch {}
+        return ('Restore-DiscAutoplay -CdHandler ' + (& $q $c) + ' -DvdHandler ' + (& $q $d))
+    }
+    $ar2.ConfirmFn = { 'Rétablir la lecture automatique des CD audio et DVD ? Les réglages qui la bloquent sont corrigés et le lecteur choisi ci-dessous est défini pour votre compte Windows. Chaque modification est annulable depuis le Journal.' }
+    $ar2.OnDone = { param($r) try { $Script:DiscNote.Text = 'Terminé. Relancez l''analyse pour actualiser ; un redémarrage peut être nécessaire.' } catch {} }
+    $ab = New-Object Windows.Controls.WrapPanel
+    $ab.Margin = '0,14,0,8'
+    $a1 = New-Btn 'Analyser' $as2 -Primary; $a1.Margin = '0,4,0,4'
+    [void]$ab.Children.Add($a1)
+    [void]$ac.Body.Children.Add($ab)
+    $Script:DiscPanel = New-Object Windows.Controls.StackPanel
+    [void]$ac.Body.Children.Add($Script:DiscPanel)
+    $Script:DiscCdBox = New-Object Windows.Controls.ComboBox
+    $Script:DiscCdBox.MinWidth = 420; $Script:DiscCdBox.Padding = '8,4'; $Script:DiscCdBox.Margin = '0,4,0,10'
+    $Script:DiscDvdBox = New-Object Windows.Controls.ComboBox
+    $Script:DiscDvdBox.MinWidth = 420; $Script:DiscDvdBox.Padding = '8,4'; $Script:DiscDvdBox.Margin = '0,4,0,10'
+    [void]$ac.Body.Children.Add((New-Text 'Lecteur pour les CD audio' 13 '#C5C9D0' 'Normal'))
+    [void]$ac.Body.Children.Add($Script:DiscCdBox)
+    [void]$ac.Body.Children.Add((New-Text 'Lecteur pour les DVD vidéo' 13 '#C5C9D0' 'Normal'))
+    [void]$ac.Body.Children.Add($Script:DiscDvdBox)
+    [void]$ac.Body.Children.Add((New-Text 'Windows 11 n''inclut pas de lecteur de DVD vidéo : Windows Media Player et le Lecteur multimédia ne lisent pas toujours un DVD vidéo (les CD audio, eux, fonctionnent). Pour les DVD, un lecteur tiers comme VLC apparaît dans la liste s''il est installé.' 12 '#9298A3' 'Normal' -Wrap))
+    $Script:DiscNote = New-Text '' 13 '#9298A3' 'Normal' -Wrap
+    $Script:DiscNote.Margin = '0,8,0,0'
+    [void]$ac.Body.Children.Add($Script:DiscNote)
+    $abr = New-Object Windows.Controls.WrapPanel
+    $abr.Margin = '0,12,0,0'
+    [void]$abr.Children.Add((New-Btn 'Rétablir la lecture automatique' $ar2 -Primary))
+    [void]$ac.Body.Children.Add($abr)
+    [void]$p.Children.Add($ac.Card)
+
     $ent = New-Card 'Entretien'
     Add-Row $ent.Body 'Nettoyage' 'Fichiers temporaires, corbeille, magasin de composants.' '' 'n' @((New-Btn 'Nettoyer' (New-Spec 'maint' 'Invoke-Cleanup' 'Nettoyage')))
     $wo = New-Check 'Supprimer aussi l''ancienne installation de Windows (Windows.old) : retour à la version précédente impossible ensuite' $false
@@ -3042,6 +3080,40 @@ function Show-PrinterList {
     }
 }
 
+function Show-DiscAutoplay {
+    param($Res)
+    $Script:DiscPanel.Children.Clear(); $Script:DiscNote.Text = ''
+    $Script:DiscCdBox.Items.Clear(); $Script:DiscDvdBox.Items.Clear()
+    if (-not $Res) { [void]$Script:DiscPanel.Children.Add((New-Text 'Analyse impossible.' 13 '#FF8A80' 'Normal' -Wrap)); return }
+    foreach ($c in @($Res.Checks)) {
+        $mark = $(if ($c.Ok) { '✔' } else { '✖' })
+        $clr = $(if ($c.Ok) { '#7CE3A1' } else { '#FF8A80' })
+        [void]$Script:DiscPanel.Children.Add((New-Text ("{0}  {1} : {2}" -f $mark, $c.Label, $c.Detail) 13 $clr 'Normal' -Wrap))
+    }
+    $wm = $(if ($Res.Wmp) { 'installé' } else { 'absent (Fonctionnalités facultatives de Windows)' })
+    $nm = $(if ($Res.NewMediaPlayer) { 'installé' } else { 'absent' })
+    $t = New-Text ("Windows Media Player (hérité) : {0}. Lecteur multimédia (nouveau) : {1}." -f $wm, $nm) 12 '#9298A3' 'Normal' -Wrap
+    $t.Margin = '0,6,0,8'
+    [void]$Script:DiscPanel.Children.Add($t)
+    foreach ($e in @($Res.Events)) {
+        $box = $(if ([string]$e.Event -eq 'PlayCDAudioOnArrival') { $Script:DiscCdBox } else { $Script:DiscDvdBox })
+        $keep = New-Object Windows.Controls.ComboBoxItem
+        $keep.Content = $(if ($e.Current) { 'Ne pas changer le choix actuel (' + [string]$e.Current + ')' } else { 'Ne pas changer le choix actuel' })
+        $keep.Tag = ''
+        [void]$box.Items.Add($keep)
+        $sel = 0; $i = 0
+        foreach ($h in @($e.Handlers)) {
+            $i++
+            $it = New-Object Windows.Controls.ComboBoxItem
+            $it.Content = [string]$h.Label + $(if ($h.Media) { '  ← lecteur multimédia Windows' } else { '' })
+            $it.Tag = [string]$h.Name
+            [void]$box.Items.Add($it)
+            if ($h.Name -eq $e.Suggested -and $sel -eq 0) { $sel = $i }
+        }
+        $box.SelectedIndex = $sel
+    }
+}
+
 function Refresh-PrinterBackups {
     $cb = $Script:PrnBackupBox
     if (-not $cb) { return }
@@ -3367,6 +3439,8 @@ $Script:PlainMap = @(
     @{ K = '^Restart-ExplorerShell'; C = 'repar'; T = 'Nous avons relancé l''affichage de Windows, c''est-à-dire la barre du bas et le bureau.' }
     @{ K = '^Restart-AudioServices|¦Services audio'; C = 'repar'; T = 'Nous avons relancé le son de votre ordinateur.' }
     @{ K = '^Get-PrinterDiagnostic'; C = 'skip'; T = '' }
+    @{ K = '^Get-DiscAutoplayState'; C = 'skip'; T = '' }
+    @{ K = '^Restore-DiscAutoplay|¦Lecture automatique des CD'; C = 'repar'; T = 'Nous avons rétabli l''ouverture automatique des CD audio et des DVD quand vous insérez un disque.' }
     @{ K = '^Remove-DeadPrinters|¦Nettoyage des imprimantes'; C = 'repar'; T = 'Nous avons retiré les imprimantes qui n''existaient plus, ce qui évite que Word, Excel ou l''impression restent bloqués à attendre une imprimante absente.' }
     @{ K = '^Restore-PrintersBackup|¦Restauration des imprimantes'; C = 'repar'; T = 'Nous avons remis vos imprimantes comme avant le nettoyage.' }
     @{ K = '^Clear-PrintQueue|¦File d.impression'; C = 'repar'; T = 'Nous avons débloqué la file d''impression.' }
@@ -4551,6 +4625,9 @@ if ($env:BJMPC_SELFTEST -and $env:BJMPC_SELFTEST -ne 'PREVIEW') {
         T 'Recherche de pilotes (Catalog, appareils sans pilote)' (Wait-Run 300) ("lignes={0}, cases={1}" -f @($Script:UpPanel.Children).Count, $Script:UpChecks.Count)
         Start-Run -Engine 'tools' -Code 'Get-Win11DefaultsState' -Title '' -OnDone { param($r) Show-DefaultsRows $r }
         T 'Comparaison avec Windows 11 (analyse + liste)' (Wait-Run 120) ("écarts={0}, lignes={1}" -f $Script:DefChecks.Count, @($Script:DefPanel.Children).Count)
+        $Script:Sync.Result = $null
+        Start-Run -Engine 'opt' -Code 'Get-DiscAutoplayState' -Title '' -OnDone { param($r) Show-DiscAutoplay $r }
+        T 'Lecture automatique CD/DVD (analyse + listes)' (Wait-Run 120) ("lecteurs CD={0}, DVD={1}" -f $Script:DiscCdBox.Items.Count, $Script:DiscDvdBox.Items.Count)
         $Script:Sync.Result = $null
         Start-Run -Engine 'tools' -Code 'Get-PrinterDiagnostic' -Title '' -OnDone { param($r) Show-PrinterList $r }
         T 'Imprimantes (analyse + liste)' (Wait-Run 120) ("lignes={0}" -f $Script:PrnChecks.Count)

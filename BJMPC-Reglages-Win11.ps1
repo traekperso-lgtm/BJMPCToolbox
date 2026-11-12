@@ -1213,3 +1213,153 @@ function Set-BuiltinPowerPlan {
     if ($LASTEXITCODE -eq 0) { Write-Log "Plan d'alimentation actif : $Mode ($target)" 'OK' }
     else { Write-Log "Activation du plan impossible (code $LASTEXITCODE)" 'WARN' }
 }
+
+# ---------------------------------------------------------------- Lecture automatique des CD audio et DVD
+# Windows ouvre un disque inséré selon : le réglage général de la lecture automatique, les stratégies NoDriveTypeAutoRun,
+# la valeur AutoRun du service cdrom, le service Détection matériel Shell, et le choix de l'utilisateur par type de disque
+# (UserChosenExecuteHandlers). Rien n'est supposé : les lecteurs proposés sont ceux que Windows a enregistrés pour l'événement.
+$Script:AutoplayRoot = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\AutoplayHandlers'
+$Script:DiscEvents = @(
+    @{ Event = 'PlayCDAudioOnArrival';  Label = 'CD audio' },
+    @{ Event = 'PlayDVDMovieOnArrival'; Label = 'DVD vidéo' }
+)
+$Script:NoDriveTypePaths = @(
+    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer',
+    'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer'
+)
+$Script:CdromDriveBit = 0x20   # NoDriveTypeAutoRun : bit « lecteur de CD/DVD »
+
+function Set-OptResult {
+    param($Value)
+    $sv = Get-Variable -Name Sync -ErrorAction SilentlyContinue
+    if ($sv) { $sv.Value.Result = $Value }
+}
+
+function Resolve-IndirectText {
+    # Les noms de fournisseur d'un gestionnaire peuvent être des références « @dll,-123 » : on les traduit en texte.
+    param([string]$Text)
+    if (-not $Text -or $Text -notmatch '^@') { return $Text }
+    try {
+        if (-not ('BJ.ShlText' -as [type])) {
+            Add-Type -Namespace BJ -Name ShlText -MemberDefinition '[DllImport("shlwapi.dll", CharSet = CharSet.Unicode)] public static extern int SHLoadIndirectString(string pszSource, System.Text.StringBuilder pszOutBuf, int cchOutBuf, IntPtr ppvReserved);'
+        }
+        $sb = New-Object System.Text.StringBuilder 260
+        if ([BJ.ShlText]::SHLoadIndirectString($Text, $sb, 260, [IntPtr]::Zero) -eq 0 -and $sb.Length -gt 0) { return $sb.ToString() }
+    } catch {}
+    return $Text
+}
+
+function Get-AutoplayHandlers {
+    # Gestionnaires que Windows (ou une application) a enregistrés pour un type de disque.
+    param([string]$EventName)
+    $out = New-Object System.Collections.ArrayList
+    $seen = @{}
+    foreach ($hive in 'HKLM:', 'HKCU:') {
+        $ek = "$hive\$($Script:AutoplayRoot)\EventHandlers\$EventName"
+        if (-not (Test-Path -LiteralPath $ek)) { continue }
+        $names = @()
+        try { $names = @((Get-Item -LiteralPath $ek -ErrorAction Stop).GetValueNames()) } catch {}
+        foreach ($n in $names) {
+            if (-not $n -or $seen.ContainsKey($n)) { continue }
+            $seen[$n] = $true
+            $info = @{}
+            foreach ($h2 in 'HKLM:', 'HKCU:') {
+                $hk = "$h2\$($Script:AutoplayRoot)\Handlers\$n"
+                if (-not (Test-Path -LiteralPath $hk)) { continue }
+                try {
+                    $props = Get-ItemProperty -LiteralPath $hk -ErrorAction Stop
+                    foreach ($f in 'Provider', 'Action', 'InvokeProgID', 'ProgID', 'InitCmdLine', 'DefaultIcon') {
+                        $v = $props.$f
+                        if ($v -and -not $info.ContainsKey($f)) { $info[$f] = [string]$v }
+                    }
+                } catch {}
+            }
+            $prov = Resolve-IndirectText $info['Provider']
+            $act  = Resolve-IndirectText $info['Action']
+            $blob = (@($n, $prov, $act, $info['InvokeProgID'], $info['ProgID'], $info['InitCmdLine'], $info['DefaultIcon']) | Where-Object { $_ }) -join ' '
+            $isMp = [bool]($blob -match 'wmplayer|Windows Media Player|Lecteur Windows Media|Lecteur multim|Media Player|ZuneMusic')
+            $label = $n
+            if ($act -and $prov) { $label = "$act ($prov)" } elseif ($act) { $label = $act } elseif ($prov) { $label = "$n ($prov)" }
+            [void]$out.Add([pscustomobject]@{ Name = $n; Label = $label; Media = $isMp })
+        }
+    }
+    return @($out)
+}
+
+function Get-DiscAutoplayState {
+    # Lecture seule : ce qui peut empêcher la lecture automatique d'un CD audio ou d'un DVD, et les lecteurs proposés.
+    Write-Log '=== Lecture automatique des CD audio et DVD (lecture seule) ==='
+    $checks = New-Object System.Collections.ArrayList
+    $dom = $false; try { $dom = [bool](Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).PartOfDomain } catch {}
+    $da = Get-RegValue "HKCU:\$($Script:AutoplayRoot)" 'DisableAutoplay'
+    [void]$checks.Add([pscustomobject]@{ Label = 'Lecture automatique activée (Paramètres > Périphériques > Exécution automatique)'; Ok = ($da -ne 1); Detail = $(if ($da -eq 1) { 'désactivée' } else { 'activée' }) })
+    foreach ($pth in $Script:NoDriveTypePaths) {
+        $v = Get-RegValue $pth 'NoDriveTypeAutoRun'
+        if ($null -ne $v) {
+            $blocked = [bool]([int]$v -band $Script:CdromDriveBit)
+            [void]$checks.Add([pscustomobject]@{ Label = ("Stratégie NoDriveTypeAutoRun ({0})" -f $pth.Substring(0, 4)); Ok = (-not $blocked); Detail = $(if ($blocked) { "bloque les lecteurs de CD/DVD (valeur $v)" } else { "ne concerne pas les CD/DVD (valeur $v)" }) })
+        }
+    }
+    $ar = Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Services\cdrom' 'AutoRun'
+    [void]$checks.Add([pscustomobject]@{ Label = 'Détection d''insertion du lecteur (service cdrom)'; Ok = ($ar -ne 0); Detail = $(if ($ar -eq 0) { 'désactivée (AutoRun = 0)' } else { 'active' }) })
+    $mode = Get-SvcMode 'ShellHWDetection'
+    [void]$checks.Add([pscustomobject]@{ Label = 'Service Détection matériel Shell'; Ok = ($mode -eq 'auto' -or $mode -eq 'delayed-auto'); Detail = $(if ($mode) { "démarrage : $mode" } else { 'absent' }) })
+    $events = New-Object System.Collections.ArrayList
+    foreach ($ev in $Script:DiscEvents) {
+        $cur = Get-RegValue "HKCU:\$($Script:AutoplayRoot)\UserChosenExecuteHandlers" $ev.Event
+        $hs = @(Get-AutoplayHandlers $ev.Event)
+        $sug = @($hs | Where-Object { $_.Media }) | Select-Object -First 1
+        [void]$events.Add([pscustomobject]@{ Event = $ev.Event; Label = $ev.Label; Current = [string]$cur; Handlers = @($hs); Suggested = $(if ($sug) { [string]$sug.Name } else { '' }) })
+        Write-Log ("{0} : choix actuel « {1} » ; {2} lecteur(s) enregistré(s)" -f $ev.Label, $(if ($cur) { $cur } else { 'aucun (Windows décide)' }), $hs.Count)
+    }
+    $wmp = Test-Path -LiteralPath (Join-Path $env:ProgramFiles 'Windows Media Player\wmplayer.exe')
+    $newMp = $false; try { $newMp = [bool](Get-AppxPackage -Name 'Microsoft.ZuneMusic' -ErrorAction Stop) } catch {}
+    Write-Log ("Windows Media Player (hérité) : {0} ; Lecteur multimédia (nouveau) : {1}" -f $(if ($wmp) { 'installé' } else { 'absent' }), $(if ($newMp) { 'installé' } else { 'absent' }))
+    foreach ($c in $checks) { Write-Log ("{0} : {1}" -f $c.Label, $c.Detail) $(if ($c.Ok) { 'OK' } else { 'WARN' }) }
+    Set-OptResult @{ Checks = @($checks); Events = @($events); Wmp = $wmp; NewMediaPlayer = $newMp; Domain = $dom }
+}
+
+function Restore-DiscAutoplay {
+    # Rétablit la lecture automatique des CD audio / DVD. Chaque modification passe par le Journal (annulable).
+    # Les deux lecteurs sont choisis dans l'interface et vérifiés ici : ils doivent être enregistrés par Windows pour ce type de disque.
+    param([string]$CdHandler = '', [string]$DvdHandler = '')
+    $ok = @(); $bad = @()
+    $dom = $false; try { $dom = [bool](Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).PartOfDomain } catch {}
+    Write-Log 'Les choix de lecteur concernent le compte Windows qui lance la Toolbox.'
+    # 1. Réglage général
+    if ((Get-RegValue "HKCU:\$($Script:AutoplayRoot)" 'DisableAutoplay') -eq 1) {
+        Set-Reg "HKCU:\$($Script:AutoplayRoot)" 'DisableAutoplay' 0 'DWord'; $ok += 'Lecture automatique réactivée'
+    }
+    # 2. Stratégie qui bloque les lecteurs de CD/DVD (on ne touche qu'à ce bit ; ignorée sur un PC de domaine)
+    foreach ($pth in $Script:NoDriveTypePaths) {
+        $v = Get-RegValue $pth 'NoDriveTypeAutoRun'
+        if ($null -eq $v -or -not ([int]$v -band $Script:CdromDriveBit)) { continue }
+        if ($dom) { Write-Log "PC de domaine : la stratégie $pth\NoDriveTypeAutoRun est gérée par l'administrateur, non modifiée." 'WARN'; $bad += 'Stratégie de domaine'; continue }
+        Set-Reg $pth 'NoDriveTypeAutoRun' ([int]([int]$v -band (-bnot $Script:CdromDriveBit))) 'DWord'; $ok += 'Blocage des lecteurs de CD/DVD levé'
+    }
+    # 3. Détection d'insertion du lecteur
+    if ((Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Services\cdrom' 'AutoRun') -eq 0) {
+        Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Services\cdrom' 'AutoRun' 1 'DWord'; $ok += 'Détection d''insertion du lecteur réactivée'
+        $Script:RebootNeeded = $true
+    }
+    # 4. Service Détection matériel Shell
+    $mode = Get-SvcMode 'ShellHWDetection'
+    if ($mode -and $mode -ne 'auto' -and $mode -ne 'delayed-auto') {
+        Set-SvcMode 'ShellHWDetection' 'auto' 'lecture automatique'
+        try { Start-Service -Name ShellHWDetection -ErrorAction Stop } catch { Write-Log ('Démarrage du service impossible : ' + $_.Exception.Message) 'WARN' }
+        $ok += 'Service Détection matériel Shell rétabli'
+    }
+    # 5. Lecteur choisi pour chaque type de disque (uniquement parmi ceux que Windows a enregistrés)
+    foreach ($pair in @(@('PlayCDAudioOnArrival', $CdHandler, 'CD audio'), @('PlayDVDMovieOnArrival', $DvdHandler, 'DVD vidéo'))) {
+        $name = [string]$pair[1]
+        if (-not $name) { continue }
+        $reg = @(Get-AutoplayHandlers $pair[0] | Where-Object { $_.Name -eq $name })
+        if ($reg.Count -eq 0) { Write-Log ("Lecteur « {0} » non enregistré pour les {1} : ignoré." -f $name, $pair[2]) 'WARN'; $bad += $pair[2]; continue }
+        Set-Reg "HKCU:\$($Script:AutoplayRoot)\UserChosenExecuteHandlers" $pair[0] $name 'String'
+        Write-Log ("{0} : lecture automatique avec « {1} »" -f $pair[2], $reg[0].Label) 'OK'
+        $ok += ("{0} : {1}" -f $pair[2], $reg[0].Label)
+    }
+    if ($ok.Count -eq 0 -and $bad.Count -eq 0) { Write-Log 'Rien à rétablir : les réglages sont déjà corrects et aucun lecteur n''a été demandé.' 'OK' }
+    else { Write-Log ("{0} réglage(s) rétabli(s). Annulable depuis le Journal." -f $ok.Count) 'OK' }
+    Set-OptResult @{ Ok = @($ok); Bad = @($bad); Reboot = [bool]$Script:RebootNeeded }
+}
