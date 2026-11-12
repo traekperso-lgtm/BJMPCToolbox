@@ -830,7 +830,7 @@ function Select-BestCandidate {
     $best = $null
     foreach ($c in @($Cands)) {
         if (-not (Test-CandidateNewer $c $InstalledVersion $InstalledDate)) { continue }
-        if ($best -eq $null -or $c.R.Date -gt $best.R.Date -or ($c.R.Date -eq $best.R.Date -and $c.V -gt $best.V)) { $best = $c }
+        if ($null -eq $best -or $c.R.Date -gt $best.R.Date -or ($c.R.Date -eq $best.R.Date -and $c.V -gt $best.V)) { $best = $c }
     }
     return $best
 }
@@ -1414,7 +1414,7 @@ function Get-GhostLastSeen {
     foreach ($k in @('{83da6326-97a6-4088-9453-a1923f573b29} 102', '{83da6326-97a6-4088-9453-a1923f573b29} 103')) {
         try {
             $p = Get-PnpDeviceProperty -InstanceId $InstanceId -KeyName $k -ErrorAction Stop
-            if ($p.Data -is [datetime] -and ($last -eq $null -or $p.Data -gt $last)) { $last = $p.Data }
+            if ($p.Data -is [datetime] -and ($null -eq $last -or $p.Data -gt $last)) { $last = $p.Data }
         } catch {}
     }
     return $last
@@ -1544,6 +1544,419 @@ function Clear-PrintQueue {
         Write-Log "Échec : $($_.Exception.Message)" 'ERROR'
         try { Start-Service -Name Spooler -ErrorAction SilentlyContinue } catch {}
     }
+}
+
+# ---------------------------------------------------------------- Doublons de photos
+# Deux photos ne sont déclarées identiques que si leur CONTENU l'est : même taille, même empreinte SHA-256,
+# puis comparaison octet par octet. Le nom, la date et la taille seuls ne suffisent jamais.
+# En option, « même image » : les pixels décodés sont identiques mais les métadonnées diffèrent (date, GPS, logiciel).
+# Rien n'est supprimé : les doublons choisis sont déplacés dans <disque>\BJMPC-Doublons\<date>\, et l'opération s'annule.
+$Script:PhotoExt  = @('.jpg', '.jpeg', '.jpe', '.jfif', '.png', '.gif', '.bmp', '.tif', '.tiff', '.heic', '.heif', '.webp', '.avif',
+                      '.dng', '.cr2', '.cr3', '.nef', '.nrw', '.arw', '.orf', '.rw2', '.raf', '.srw', '.pef')
+$Script:PixelExt  = @('.jpg', '.jpeg', '.jpe', '.jfif', '.png', '.gif', '.bmp', '.tif', '.tiff')
+$Script:DupRootName = 'BJMPC-Doublons'
+$Script:DupLogDir = Join-Path $Script:LogDir 'Doublons'
+$Script:DupMaxGroups = 1500
+
+function Format-DupSize {
+    param([double]$Bytes)
+    if ($Bytes -ge 1GB) { return ('{0:N1} Go' -f ($Bytes / 1GB)) }
+    if ($Bytes -ge 1MB) { return ('{0:N0} Mo' -f ($Bytes / 1MB)) }
+    return ('{0:N0} Ko' -f ($Bytes / 1KB))
+}
+
+function Initialize-PhotoTools {
+    # Comparaison rapide en C#. BJ.FileCompare : octets et SHA-256 (sans dépendance). BJ.PixelTools : pixels (System.Drawing).
+    # Rend $true si la comparaison des pixels est disponible. Sans compilation possible, SHA-256 complet en PowerShell.
+    if (-not ('BJ.FileCompare' -as [type])) {
+        $src = @'
+using System;
+using System.IO;
+using System.Security.Cryptography;
+namespace BJ {
+  public static class FileCompare {
+    static int Fill(Stream s, byte[] buf) { int n = 0; while (n < buf.Length) { int r = s.Read(buf, n, buf.Length - n); if (r <= 0) break; n += r; } return n; }
+    static FileStream Open(string p) { return new FileStream(p, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1 << 16); }
+    public static bool SameBytes(string a, string b) {
+      using (var fa = Open(a)) using (var fb = Open(b)) {
+        if (fa.Length != fb.Length) return false;
+        var ba = new byte[1 << 20]; var bb = new byte[1 << 20];
+        while (true) {
+          int na = Fill(fa, ba); int nb = Fill(fb, bb);
+          if (na != nb) return false;
+          if (na == 0) return true;
+          for (int i = 0; i < na; i++) { if (ba[i] != bb[i]) return false; }
+        }
+      }
+    }
+    public static string Sha256(string path, long limit) {
+      using (var fs = Open(path)) using (var sha = SHA256.Create()) {
+        byte[] h;
+        if (limit > 0) { var buf = new byte[(int)Math.Min(limit, fs.Length)]; int n = Fill(fs, buf); h = sha.ComputeHash(buf, 0, n); }
+        else h = sha.ComputeHash(fs);
+        return BitConverter.ToString(h).Replace("-", "");
+      }
+    }
+  }
+}
+'@
+        try { Add-Type -TypeDefinition $src -ErrorAction Stop }
+        catch { Write-Log ("Comparateur rapide indisponible ({0}) : comparaison par SHA-256 complet." -f $_.Exception.Message) 'WARN' }
+    }
+    if ('BJ.PixelTools' -as [type]) { return $true }
+    $px = @'
+using System;
+using System.IO;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+namespace BJ {
+  public static class PixelTools {
+    static FileStream Open(string p) { return new FileStream(p, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete); }
+    public static string Dimensions(string path) {
+      using (var fs = Open(path)) using (var img = Image.FromStream(fs, false, false)) { return img.Width + "x" + img.Height; }
+    }
+    public static string PixelHash(string path) {
+      using (var fs = Open(path)) using (var img = Image.FromStream(fs, false, true)) using (var bmp = new Bitmap(img)) {
+        var data = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        try {
+          int row = bmp.Width * 4; var line = new byte[row];
+          using (var sha = SHA256.Create()) {
+            var head = BitConverter.GetBytes(bmp.Width * 65536L + bmp.Height);
+            sha.TransformBlock(head, 0, head.Length, null, 0);
+            for (int y = 0; y < bmp.Height; y++) {
+              Marshal.Copy(IntPtr.Add(data.Scan0, y * data.Stride), line, 0, row);
+              sha.TransformBlock(line, 0, row, null, 0);
+            }
+            sha.TransformFinalBlock(new byte[0], 0, 0);
+            return BitConverter.ToString(sha.Hash).Replace("-", "");
+          }
+        } finally { bmp.UnlockBits(data); }
+      }
+    }
+  }
+}
+'@
+    try { Add-Type -TypeDefinition $px -ReferencedAssemblies 'System.Drawing' -ErrorAction Stop; return $true }
+    catch { return $false }
+}
+
+function Get-LongPath {
+    # Préfixe \\?\ : chemins de plus de 260 caractères.
+    param([string]$Path)
+    if ($Path.StartsWith('\\?\')) { return $Path }
+    if ($Path.StartsWith('\\')) { return '\\?\UNC\' + $Path.Substring(2) }
+    return '\\?\' + $Path
+}
+
+function Get-ShortPathText {
+    param([string]$Path)
+    if ($Path.StartsWith('\\?\UNC\')) { return '\\' + $Path.Substring(8) }
+    if ($Path.StartsWith('\\?\')) { return $Path.Substring(4) }
+    return $Path
+}
+
+function Get-FileSha {
+    param([string]$Path, [long]$Limit = 0)
+    try {
+        if ('BJ.FileCompare' -as [type]) { return [BJ.FileCompare]::Sha256($Path, $Limit) }
+        $sha = [Security.Cryptography.SHA256]::Create(); $fs = $null
+        try {
+            $fs = New-Object IO.FileStream($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]'ReadWrite, Delete')
+            if ($Limit -gt 0) {
+                $buf = New-Object byte[] ([int][math]::Min($Limit, $fs.Length)); $n = 0
+                while ($n -lt $buf.Length) { $r = $fs.Read($buf, $n, $buf.Length - $n); if ($r -le 0) { break }; $n += $r }
+                $h = $sha.ComputeHash($buf, 0, $n)
+            } else { $h = $sha.ComputeHash($fs) }
+            return [BitConverter]::ToString($h).Replace('-', '')
+        } finally { if ($fs) { $fs.Dispose() }; $sha.Dispose() }
+    } catch { return $null }
+}
+
+function Test-SameContent {
+    # Vrai seulement si les deux fichiers sont identiques. Octet par octet si possible, sinon SHA-256 complet.
+    param([string]$A, [string]$B)
+    try {
+        if ('BJ.FileCompare' -as [type]) { return [BJ.FileCompare]::SameBytes($A, $B) }
+        $ha = Get-FileSha $A; $hb = Get-FileSha $B
+        return [bool]($ha -and $ha -eq $hb)
+    } catch { return $false }
+}
+
+function Get-PixelSignature {
+    param([string]$Path)
+    try { return [BJ.PixelTools]::PixelHash($Path) } catch { return $null }
+}
+
+function Get-InteractiveUserFolders {
+    # Dossiers personnels de la personne connectée (la Toolbox peut tourner sous un autre compte administrateur).
+    $sid = ''
+    try {
+        $u = [string](Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).UserName
+        if ($u) { $sid = (New-Object Security.Principal.NTAccount($u)).Translate([Security.Principal.SecurityIdentifier]).Value }
+    } catch {}
+    if (-not $sid) { try { $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value } catch {} }
+    $prof = ''
+    try { $prof = [string](Get-ItemProperty -LiteralPath "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid" -ErrorAction Stop).ProfileImagePath } catch {}
+    if (-not $prof) { $prof = $env:USERPROFILE }
+    $map = @{
+        Pictures  = @('My Pictures', 'Pictures')
+        Desktop   = @('Desktop', 'Desktop')
+        Documents = @('Personal', 'Documents')
+        Downloads = @('{374DE290-123F-4565-9164-39C4925E467B}', 'Downloads')
+    }
+    $res = @{}
+    foreach ($k in @($map.Keys)) {
+        $p = ''
+        try {
+            $raw = (Get-Item -LiteralPath "Registry::HKEY_USERS\$sid\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders" -ErrorAction Stop).GetValue($map[$k][0], $null, 'DoNotExpandEnvironmentNames')
+            if ($raw) { $p = ([string]$raw) -ireplace '%USERPROFILE%', $prof.Replace('$', '$$') }
+        } catch {}
+        if (-not $p -or $p -match '%') { $p = Join-Path $prof $map[$k][1] }
+        $res[$k] = $p.TrimEnd('\')
+    }
+    return $res
+}
+
+function Find-DuplicatePhotos {
+    # Lecture seule. -Known : dossiers personnels (Pictures, Desktop, Documents, Downloads) ; -Folders : autres dossiers.
+    param([string[]]$Known = @('Pictures'), [string[]]$Folders = @(), [bool]$Pixels = $false)
+    Write-Log '=== Doublons de photos (lecture seule) ==='
+    $fast = Initialize-PhotoTools
+    if ($Pixels -and -not $fast) { Write-Log 'Comparaison des pixels indisponible sur ce PC : seuls les fichiers identiques sont recherchés.' 'WARN'; $Pixels = $false }
+    $cand = New-Object System.Collections.ArrayList
+    if (@($Known).Count -gt 0) {
+        $uf = Get-InteractiveUserFolders
+        foreach ($k in @($Known)) { if ($uf.ContainsKey([string]$k)) { [void]$cand.Add([string]$uf[[string]$k]) } }
+    }
+    foreach ($f in @($Folders)) { if ($f) { [void]$cand.Add([string]$f) } }
+    $roots = @()
+    foreach ($r in @($cand | ForEach-Object { try { [IO.Path]::GetFullPath(([string]$_).Trim().Trim('"')).TrimEnd('\') } catch {} } | Where-Object { $_ } | Sort-Object Length)) {
+        if ($r.Length -lt 3) { $r += '\' }
+        if (-not (Test-Path -LiteralPath $r)) { Write-Log "Dossier introuvable, ignoré : $r" 'WARN'; continue }
+        $inside = $false
+        foreach ($x in $roots) { if (($r + '\').StartsWith($x.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { $inside = $true; break } }
+        if (-not $inside) { $roots += $r }
+    }
+    if ($roots.Count -eq 0) { Write-Log 'Aucun dossier à analyser.' 'ERROR'; Set-SyncResult @{ Groups = @(); Scanned = 0; Roots = @() }; return }
+    foreach ($r in $roots) { Write-Log "Analyse : $r" }
+
+    # 1. Inventaire (sans suivre les jonctions, sans télécharger les fichiers OneDrive « en ligne uniquement »)
+    $files = New-Object System.Collections.ArrayList
+    $seenFile = @{}   # une photo atteinte par deux chemins (dossier inclus deux fois, lien) n'est comptée qu'une fois
+    $online = 0
+    foreach ($r in $roots) {
+        $stack = New-Object 'System.Collections.Generic.Stack[string]'
+        $stack.Push((Get-LongPath $r))
+        while ($stack.Count -gt 0) {
+            $d = $stack.Pop()
+            try {
+                $di = New-Object IO.DirectoryInfo $d
+                if ($di.Name -ieq $Script:DupRootName) { continue }
+                foreach ($fi in $di.GetFiles()) {
+                    if ($Script:PhotoExt -notcontains $fi.Extension.ToLowerInvariant()) { continue }
+                    if ($fi.Length -le 0) { continue }
+                    # Offline (0x1000), RECALL_ON_OPEN (0x40000), RECALL_ON_DATA_ACCESS (0x400000) : fichier dans le nuage
+                    if (([int64]$fi.Attributes) -band 0x441000) { $online++; continue }
+                    if ($seenFile.ContainsKey($fi.FullName)) { continue }
+                    $seenFile[$fi.FullName] = $true
+                    [void]$files.Add($fi)
+                }
+                foreach ($s in $di.GetDirectories()) {
+                    if (-not ($s.Attributes -band [IO.FileAttributes]::ReparsePoint)) { $stack.Push($s.FullName) }
+                }
+            } catch { Write-Log ("Dossier illisible, ignoré : {0}" -f (Get-ShortPathText $d)) 'WARN' }
+        }
+        Write-Log ("{0} photo(s) trouvée(s) jusqu'ici" -f $files.Count)
+    }
+    if ($online -gt 0) { Write-Log ("{0} photo(s) présente(s) seulement dans le nuage (OneDrive) : non téléchargées, non comparées." -f $online) 'WARN' }
+
+    # 2. Même taille -> même début (64 Ko) -> même SHA-256 complet -> identiques octet par octet
+    $bySize = @{}
+    foreach ($fi in $files) {
+        $k = [string]$fi.Length
+        if (-not $bySize.ContainsKey($k)) { $bySize[$k] = New-Object System.Collections.ArrayList }
+        [void]$bySize[$k].Add($fi)
+    }
+    $groups = New-Object System.Collections.ArrayList
+    $done = 0
+    foreach ($k in @($bySize.Keys)) {
+        $lst = $bySize[$k]
+        if ($lst.Count -lt 2) { continue }
+        $byHead = @{}
+        foreach ($fi in $lst) {
+            $h = Get-FileSha $fi.FullName 65536
+            if (-not $h) { continue }
+            if (-not $byHead.ContainsKey($h)) { $byHead[$h] = New-Object System.Collections.ArrayList }
+            [void]$byHead[$h].Add($fi)
+        }
+        foreach ($hl in @($byHead.Values)) {
+            if ($hl.Count -lt 2) { continue }
+            $byFull = @{}
+            foreach ($fi in $hl) {
+                $h = $(if ([long]$fi.Length -le 65536) { Get-FileSha $fi.FullName 65536 } else { Get-FileSha $fi.FullName })
+                if (-not $h) { continue }
+                if (-not $byFull.ContainsKey($h)) { $byFull[$h] = New-Object System.Collections.ArrayList }
+                [void]$byFull[$h].Add($fi)
+            }
+            foreach ($fl in @($byFull.Values)) {
+                if ($fl.Count -lt 2) { continue }
+                # Confirmation octet par octet contre le premier fichier du groupe
+                $ref = $fl[0]; $same = New-Object System.Collections.ArrayList; [void]$same.Add($ref)
+                for ($i = 1; $i -lt $fl.Count; $i++) {
+                    if (Test-SameContent $ref.FullName $fl[$i].FullName) { [void]$same.Add($fl[$i]) }
+                    else { Write-Log ("Empreinte identique mais contenu différent (écarté) : {0}" -f (Get-ShortPathText $fl[$i].FullName)) 'WARN' }
+                }
+                if ($same.Count -ge 2) { [void]$groups.Add(@{ Kind = 'bin'; Files = @($same) }) }
+            }
+        }
+        $done += $lst.Count
+    }
+    Write-Log ("{0} groupe(s) de fichiers identiques octet par octet." -f $groups.Count) 'OK'
+
+    # 3. Option : même image (pixels identiques), métadonnées différentes
+    if ($Pixels) {
+        Write-Log 'Comparaison des pixels (ignore les métadonnées) : plus lente…'
+        $inBin = @{}
+        foreach ($g in $groups) { foreach ($fi in $g.Files) { $inBin[$fi.FullName] = $g } }
+        # un représentant par groupe binaire + les photos isolées décodables
+        $reps = New-Object System.Collections.ArrayList
+        foreach ($g in $groups) { [void]$reps.Add(@{ File = $g.Files[0]; Group = $g }) }
+        foreach ($fi in $files) {
+            if ($inBin.ContainsKey($fi.FullName)) { continue }
+            if ($Script:PixelExt -contains $fi.Extension.ToLowerInvariant()) { [void]$reps.Add(@{ File = $fi; Group = $null }) }
+        }
+        $byDim = @{}
+        foreach ($rp in $reps) {
+            if ($Script:PixelExt -notcontains $rp.File.Extension.ToLowerInvariant()) { continue }
+            $dim = $null; try { $dim = [BJ.PixelTools]::Dimensions($rp.File.FullName) } catch {}
+            if (-not $dim) { continue }
+            if (-not $byDim.ContainsKey($dim)) { $byDim[$dim] = New-Object System.Collections.ArrayList }
+            [void]$byDim[$dim].Add($rp)
+        }
+        $pix = 0
+        foreach ($dl in @($byDim.Values)) {
+            if ($dl.Count -lt 2) { continue }
+            $byPix = @{}
+            foreach ($rp in $dl) {
+                $h = Get-PixelSignature $rp.File.FullName
+                if (-not $h) { continue }
+                if (-not $byPix.ContainsKey($h)) { $byPix[$h] = New-Object System.Collections.ArrayList }
+                [void]$byPix[$h].Add($rp)
+            }
+            foreach ($pl in @($byPix.Values)) {
+                if ($pl.Count -lt 2) { continue }
+                $all = New-Object System.Collections.ArrayList
+                foreach ($rp in $pl) {
+                    if ($rp.Group) { foreach ($fi in $rp.Group.Files) { [void]$all.Add($fi) }; [void]$groups.Remove($rp.Group) }
+                    else { [void]$all.Add($rp.File) }
+                }
+                [void]$groups.Add(@{ Kind = 'pix'; Files = @($all) }); $pix++
+            }
+        }
+        Write-Log ("{0} groupe(s) « même image, métadonnées différentes »." -f $pix) 'OK'
+    }
+
+    # 4. Résultat : dans chaque groupe, on propose de garder la plus ancienne (identiques) ou la plus lourde (métadonnées les plus complètes)
+    $out = New-Object System.Collections.ArrayList
+    $wasted = [long]0; $n = 0
+    foreach ($g in @($groups | Sort-Object { - ([long]$_.Files[0].Length * ($_.Files.Count - 1)) })) {
+        $n++
+        if ($n -gt $Script:DupMaxGroups) { Write-Log ("Plus de {0} groupes : seuls les {0} plus gros sont affichés ; relancez après traitement." -f $Script:DupMaxGroups) 'WARN'; break }
+        if ($g.Kind -eq 'pix') { $sorted = @($g.Files | Sort-Object @{ Expression = { - [long]$_.Length } }, @{ Expression = { $_.LastWriteTimeUtc } }, @{ Expression = { $_.FullName.Length } }) }
+        else { $sorted = @($g.Files | Sort-Object @{ Expression = { $_.LastWriteTimeUtc } }, @{ Expression = { $_.FullName.Length } }) }
+        $rows = @(); $first = $true
+        foreach ($fi in $sorted) {
+            $rows += [pscustomobject]@{ Path = (Get-ShortPathText $fi.FullName); Size = [long]$fi.Length; Date = $fi.LastWriteTime; Keep = $first }
+            if (-not $first -and $g.Kind -eq 'bin') { $wasted += [long]$fi.Length }
+            $first = $false
+        }
+        [void]$out.Add([pscustomobject]@{ Id = $n; Kind = $g.Kind; Files = $rows })
+    }
+    $nb = @($out | Where-Object { $_.Kind -eq 'bin' }).Count
+    Write-Log ("{0} photo(s) analysée(s) : {1} groupe(s) de doublons exacts ({2} récupérables), {3} groupe(s) « même image »." -f $files.Count, $nb, (Format-DupSize $wasted), (@($out).Count - $nb)) 'OK'
+    Set-SyncResult @{ Groups = @($out); Scanned = $files.Count; Roots = @($roots); Wasted = $wasted; Online = $online }
+}
+
+function Move-DuplicatePhotos {
+    # -Pairs : 'bin|doublon|à garder' ou 'pix|doublon|à garder' ('|' est interdit dans un nom de fichier Windows).
+    # Chaque paire est revérifiée juste avant le déplacement : si le contenu (ou l'image) n'est plus identique, rien ne bouge.
+    param([string[]]$Pairs = @())
+    $fast = Initialize-PhotoTools
+    $session = (Get-Date -Format 'yyyyMMdd_HHmmss')
+    $manifest = New-Object System.Collections.ArrayList
+    $ok = @(); $ko = @(); $bytes = [long]0
+    try { New-Item -ItemType Directory -Path $Script:DupLogDir -Force -ErrorAction Stop | Out-Null } catch {}
+    $mfile = Join-Path $Script:DupLogDir ("Doublons_{0}.json" -f $session)
+    $save = { Set-Content -LiteralPath $mfile -Value (ConvertTo-Json -InputObject @{ Session = $session; Pc = $env:COMPUTERNAME; Items = @($manifest) } -Depth 4) -Encoding UTF8 -ErrorAction SilentlyContinue }
+    foreach ($pr in @($Pairs)) {
+        $parts = ([string]$pr) -split '\|'
+        if ($parts.Count -ne 3) { $ko += [string]$pr; continue }
+        $kind = $parts[0]; $dup = $parts[1]; $keep = $parts[2]
+        if ($dup -ieq $keep) { $ko += $dup; continue }
+        $ld = Get-LongPath $dup; $lk = Get-LongPath $keep
+        if (-not [IO.File]::Exists($ld)) { Write-Log "Déjà absent : $dup" 'WARN'; $ko += $dup; continue }
+        if (-not [IO.File]::Exists($lk)) { Write-Log "Photo à garder introuvable, doublon conservé : $keep" 'WARN'; $ko += $dup; continue }
+        $same = $false
+        if ($kind -eq 'pix') { if ($fast) { $a = Get-PixelSignature $ld; $b = Get-PixelSignature $lk; $same = [bool]($a -and $a -eq $b) } }
+        else { $same = Test-SameContent $ld $lk }
+        if (-not $same) { Write-Log "Plus identique à la photo gardée, conservé : $dup" 'WARN'; $ko += $dup; continue }
+        try {
+            $root = [IO.Path]::GetPathRoot($dup)
+            $rel = $dup.Substring($root.Length)
+            $tag = $(if ($root -match '^([A-Za-z]):') { $Matches[1] } else { 'reseau' })
+            $target = Join-Path (Join-Path (Join-Path (Join-Path $root $Script:DupRootName) $session) $tag) $rel
+            $lt = Get-LongPath $target
+            [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($lt))
+            $len = (New-Object IO.FileInfo $ld).Length
+            [IO.File]::Move($ld, $lt)
+            [void]$manifest.Add(@{ From = $dup; To = $target; Keep = $keep; Kind = $kind })
+            $ok += $dup; $bytes += [long]$len
+            if (($manifest.Count % 50) -eq 0) { & $save }
+        } catch { Write-Log ("Déplacement impossible ({0}) : {1}" -f $_.Exception.Message, $dup) 'WARN'; $ko += $dup }
+    }
+    & $save
+    if ($manifest.Count -eq 0) { Remove-Item -LiteralPath $mfile -Force -ErrorAction SilentlyContinue }
+    Write-Log ("{0} doublon(s) mis de côté ({1}), {2} conservé(s). Dossier : <disque>\{3}\{4}. Annulable : « Remettre les photos en place »." -f $ok.Count, (Format-DupSize $bytes), $ko.Count, $Script:DupRootName, $session) $(if ($ko.Count -eq 0) { 'OK' } else { 'WARN' })
+    Set-SyncResult @{ Ok = @($ok); Bad = @($ko); Reboot = $false; Session = $(if ($manifest.Count -gt 0) { $session } else { '' }); Bytes = $bytes }
+}
+
+function Restore-DuplicatePhotos {
+    # Remet à leur place les photos d'une mise de côté. Un fichier revenu entre-temps au même endroit n'est jamais écrasé.
+    param([string]$Session)
+    if ($Session -notmatch '^\d{8}_\d{6}$') { Write-Log 'Mise de côté invalide.' 'ERROR'; Set-SyncResult @{ Ok = @(); Bad = @('session'); Reboot = $false }; return }
+    $mfile = Join-Path $Script:DupLogDir ("Doublons_{0}.json" -f $Session)
+    if (-not (Test-Path -LiteralPath $mfile)) { Write-Log "Liste introuvable : $mfile" 'ERROR'; Set-SyncResult @{ Ok = @(); Bad = @($Session); Reboot = $false }; return }
+    $m = $null
+    try { $m = Get-Content -LiteralPath $mfile -Raw -Encoding UTF8 | ConvertFrom-Json } catch { Write-Log "Liste illisible : $mfile" 'ERROR'; Set-SyncResult @{ Ok = @(); Bad = @($Session); Reboot = $false }; return }
+    $ok = @(); $ko = @(); $left = New-Object System.Collections.ArrayList
+    foreach ($it in @($m.Items)) {
+        $from = [string]$it.From; $to = [string]$it.To
+        $lf = Get-LongPath $from; $lt = Get-LongPath $to
+        if (-not [IO.File]::Exists($lt)) { Write-Log "Absent du dossier des doublons (déjà remis ou supprimé) : $from" 'WARN'; $ko += $from; continue }
+        if ([IO.File]::Exists($lf)) { Write-Log "Un fichier existe déjà à cet endroit, rien n'est écrasé : $from" 'WARN'; $ko += $from; [void]$left.Add($it); continue }
+        try {
+            [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($lf))
+            [IO.File]::Move($lt, $lf); $ok += $from
+        } catch { Write-Log ("Remise en place impossible ({0}) : {1}" -f $_.Exception.Message, $from) 'WARN'; $ko += $from; [void]$left.Add($it) }
+    }
+    # Ménage des dossiers vides laissés dans BJMPC-Doublons\<session>
+    foreach ($root in @(@($m.Items) | ForEach-Object { [IO.Path]::GetPathRoot([string]$_.To) } | Sort-Object -Unique)) {
+        $sd = Join-Path (Join-Path $root $Script:DupRootName) $Session
+        try {
+            if (Test-Path -LiteralPath $sd) {
+                foreach ($dd in @(Get-ChildItem -LiteralPath $sd -Directory -Recurse -Force -ErrorAction SilentlyContinue | Sort-Object { $_.FullName.Length } -Descending)) {
+                    if (@(Get-ChildItem -LiteralPath $dd.FullName -Force -ErrorAction SilentlyContinue).Count -eq 0) { Remove-Item -LiteralPath $dd.FullName -Force -ErrorAction SilentlyContinue }
+                }
+                if (@(Get-ChildItem -LiteralPath $sd -Force -ErrorAction SilentlyContinue).Count -eq 0) { Remove-Item -LiteralPath $sd -Force -ErrorAction SilentlyContinue }
+            }
+        } catch {}
+    }
+    if ($left.Count -eq 0) { Remove-Item -LiteralPath $mfile -Force -ErrorAction SilentlyContinue }
+    else { Set-Content -LiteralPath $mfile -Value (ConvertTo-Json -InputObject @{ Session = $Session; Pc = [string]$m.Pc; Items = @($left) } -Depth 4) -Encoding UTF8 -ErrorAction SilentlyContinue }
+    Write-Log ("{0} photo(s) remise(s) en place, {1} non remise(s)." -f $ok.Count, $ko.Count) $(if ($ko.Count -eq 0) { 'OK' } else { 'WARN' })
+    Set-SyncResult @{ Ok = @($ok); Bad = @($ko); Reboot = $false }
 }
 
 # ---------------------------------------------------------------- Imprimantes : blocages à l'ouverture de Word/Excel et à l'impression

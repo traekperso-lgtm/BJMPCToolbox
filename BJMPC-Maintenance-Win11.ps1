@@ -34,7 +34,7 @@ $Host.UI.RawUI.WindowTitle = "BJMPC Informatique - Maintenance Windows v$Version
 function Write-Log {
     param([string]$Message, [string]$Level = 'INFO')
     $line = "[{0}] [{1}] {2}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Level, $Message
-    Add-Content -Path $Script:LogFile -Value $line -Encoding UTF8
+    try { Add-Content -Path $Script:LogFile -Value $line -Encoding UTF8 -ErrorAction Stop } catch {}
     switch ($Level) {
         'OK'    { Write-Host "  [OK]  $Message" -ForegroundColor Green }
         'WARN'  { Write-Host "  [!]   $Message" -ForegroundColor Yellow }

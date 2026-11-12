@@ -25,6 +25,22 @@ NOUVEAUTES 2.1.1
       * Limite : impossible de comparer "tout le registre" (Microsoft ne publie pas de liste des valeurs par defaut,
         et le registre contient les reglages propres au materiel et aux logiciels). Les cles HKCU sont celles du
         compte qui lance la Toolbox.
+  - Reparer > Nettoyage et depannage > Doublons de photos : deux photos ne sont regroupees que si leur CONTENU est
+    identique (meme taille, meme SHA-256, puis comparaison octet par octet). Meme taille et meme date ne suffisent
+    jamais. Option "meme image, metadonnees differentes" : pixels decodes compares un a un (JPEG, PNG, BMP, GIF,
+    TIFF), groupes jamais coches d'office. Les photos OneDrive "en ligne uniquement" ne sont pas telechargees.
+    Rien n'est supprime : les doublons coches sont deplaces dans <disque>\BJMPC-Doublons\<date>, chaque paire est
+    reverifiee juste avant, au moins une photo par groupe doit rester, et "Remettre les photos en place" annule.
+  - Sauvegarde des fichiers : nouveau mode "Miroir complet du dossier utilisateur" (robocopy /MIR, meme tache
+    planifiee, meme disque reconnu par son identifiant). Exclus : AppData, OneDrive, iCloud, dossiers systeme du
+    profil, NTUSER.DAT. Un fichier supprime du PC quitte le miroir mais reste 30 jours dans "Miroir-Corbeille".
+    Si un passage devait retirer plus de 500 fichiers et plus d'un quart du miroir, il est suspendu et la page
+    demande "Confirmer et mettre le miroir a jour". Le mode "Dossiers choisis" ne change pas.
+  - Revue complete : PSScriptAnalyzer (syntaxe et commandes Windows PowerShell 5.1), controle de chaque bouton
+    (commande presente dans le bon moteur, parametres existants), chargement des 5 moteurs, 368 messages formates,
+    variables, pages et onglets. Corrige : comparaisons avec $null, journal de Maintenance, corbeille du miroir.
+    Verif.bat teste en plus, sur des fichiers d'essai effaces ensuite : doublons de photos (octets et pixels) et
+    miroir reel avec robocopy (copie, exclusions, corbeille).
 
 NOUVEAUTES 2.1
   1. REPARATION AUTOMATIQUE D'APRES L'OBSERVATEUR D'EVENEMENTS (Reparer > Reparation automatique)

@@ -18,6 +18,13 @@
     "BJMPC Sauvegarde automatique" lance ce script avec -Run. La Toolbox peut donc être sur une clé USB.
     Le disque de destination est retrouvé par son identifiant de volume, même si sa lettre change.
 
+    Deux modes :
+      - « Dossiers choisis » : copie incrémentale, rien n'est jamais supprimé dans la sauvegarde.
+      - « Miroir » : copie exacte du dossier utilisateur (hors AppData, OneDrive et dossiers système) dans ...\Miroir.
+        Un fichier supprimé du PC quitte le miroir, mais il est d'abord déplacé dans ...\Miroir-Corbeille et gardé
+        30 jours. Si un passage devait retirer une grande partie du miroir (dossier déplacé, disque différent,
+        logiciel malveillant), il est suspendu et la Toolbox demande confirmation.
+
     Journaux et dernier résultat : C:\BJMPC-Logs\Sauvegarde.
 .PARAMETER Run
     Lance la sauvegarde configurée, sans interface (utilisé par la tâche planifiée).
@@ -25,7 +32,7 @@
 param([switch]$Run)
 
 $ErrorActionPreference = 'Continue'
-$Script:BackupVersion = '1.0'
+$Script:BackupVersion = '1.1'
 $Script:LogDir      = Join-Path $env:SystemDrive 'BJMPC-Logs'
 $Script:LogFile     = Join-Path $Script:LogDir ("Sauvegarde_{0}_{1}.log" -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd_HHmmss'))
 $Script:BakHome     = Join-Path $env:ProgramFiles 'BJMPC\Sauvegarde'
@@ -37,6 +44,15 @@ $Script:BakTaskName = 'BJMPC Sauvegarde automatique'
 $Script:BakTaskPath = '\BJMPC\'
 $Script:BakRootName = 'BJMPC-Sauvegarde'
 $Script:BakAutoOk   = $false
+$Script:BakMirrorDir   = 'Miroir'
+$Script:BakTrashDir    = 'Miroir-Corbeille'
+$Script:BakTrashDays   = 30
+$Script:BakSuspectMin  = 500     # au-delà de ce nombre de fichiers retirés...
+$Script:BakSuspectRate = 0.25    # ...et de cette part du miroir, le passage est suspendu
+# Miroir : dossiers du profil jamais copiés (données d'applications, raccourcis système, nuage)
+$Script:BakMirrorSkipDirs = @('AppData', 'Local Settings', 'Application Data', 'Cookies', 'NetHood', 'PrintHood', 'Recent', 'SendTo',
+    'Start Menu', 'Templates', 'My Documents', 'IntelGraphicsProfiles', 'MicrosoftEdgeBackups', 'iCloudDrive', '$RECYCLE.BIN', 'System Volume Information')
+$Script:BakMirrorSkipFiles = @('NTUSER.DAT*', 'ntuser.ini', 'ntuser.pol', 'UsrClass.dat*', 'desktop.ini', 'Thumbs.db', '*.tmp', '~$*')
 
 # Dossiers personnels proposés (données pures : l'interface en tire ses cases à cocher).
 # Reg = nom de la valeur dans "User Shell Folders", Def = nom du dossier par défaut dans le profil.
@@ -185,8 +201,9 @@ function Set-BackupConfig {
     # (session ouverte), pour que la tâche planifiée n'ait rien à deviner.
     param(
         [string]$ProfilePath, [string]$Sid, [string[]]$Folders, [bool]$Browsers = $true, [string]$Destination,
-        [string]$Frequency = 'daily', [string]$Time = '12:30', [string]$Day = 'Monday'
+        [string]$Frequency = 'daily', [string]$Time = '12:30', [string]$Day = 'Monday', [string]$Mode = 'folders'
     )
+    if ($Mode -ne 'mirror') { $Mode = 'folders' }
     if (-not $ProfilePath -or -not (Test-Path -LiteralPath $ProfilePath)) { Write-Log "Profil introuvable : $ProfilePath" 'ERROR'; return $false }
     $dest = ([string]$Destination).Trim().Trim('"')
     if (-not $dest) { Write-Log 'Choisissez un disque ou un dossier de destination.' 'ERROR'; return $false }
@@ -198,6 +215,10 @@ function Set-BackupConfig {
         Write-Log 'La destination est dans le profil à sauvegarder : choisissez un autre disque.' 'ERROR'; return $false
     }
     $sources = @()
+    if ($Mode -eq 'mirror') {
+        $sources = @([pscustomobject]@{ Id = 'Profile'; Label = 'Dossier utilisateur (miroir)'; Path = $prof })
+        $Folders = @()
+    }
     foreach ($d in $Script:BakFolders) {
         if (@($Folders) -notcontains [string]$d.Id) { continue }
         $fp = Resolve-ProfileFolder $prof $Sid $d
@@ -223,7 +244,7 @@ function Set-BackupConfig {
         }
     }
     $cfg = [ordered]@{
-        Version = 1; Computer = $env:COMPUTERNAME; User = (Split-Path $prof -Leaf); Profile = $prof; Sid = $Sid
+        Version = 1; Mode = $Mode; Computer = $env:COMPUTERNAME; User = (Split-Path $prof -Leaf); Profile = $prof; Sid = $Sid
         Sources = @($sources); Browsers = [bool]$Browsers
         DestRoot = $full; DestVolume = $vol; DestSub = $sub
         Frequency = $Frequency; Time = $Time; Day = $Day
@@ -237,7 +258,7 @@ function Set-BackupConfig {
         }
         Set-Content -LiteralPath $Script:BakConfig -Value (ConvertTo-Json -InputObject $cfg -Depth 5) -Encoding UTF8 -ErrorAction Stop
     } catch { Write-Log "Enregistrement de la configuration impossible : $($_.Exception.Message)" 'ERROR'; return $false }
-    Write-Log ("Sauvegarde configurée : {0} -> {1}" -f (Split-Path $prof -Leaf), $full) 'OK'
+    Write-Log ("Sauvegarde configurée ({0}) : {1} -> {2}" -f $(if ($Mode -eq 'mirror') { 'miroir du dossier utilisateur' } else { 'dossiers choisis' }), (Split-Path $prof -Leaf), $full) 'OK'
     return $true
 }
 
@@ -335,9 +356,144 @@ function Copy-BrowserBookmarks {
     return $n
 }
 
+# ---------------------------------------------------------------- Miroir
+function Get-BakLongPath {
+    # Préfixe \\?\ : chemins de plus de 260 caractères (fréquents dans un dossier utilisateur).
+    param([string]$Path)
+    if ($Path.StartsWith('\\?\')) { return $Path }
+    if ($Path.StartsWith('\\')) { return '\\?\UNC\' + $Path.Substring(2) }
+    return '\\?\' + $Path
+}
+
+function Get-MirrorSkipDirs {
+    # Chemins complets exclus du miroir pour ce profil (OneDrive peut s'appeler « OneDrive - Entreprise »).
+    param([string]$ProfilePath)
+    $dirs = @()
+    foreach ($n in $Script:BakMirrorSkipDirs) { $dirs += (Join-Path $ProfilePath $n) }
+    try { foreach ($d in @(Get-ChildItem -LiteralPath $ProfilePath -Directory -Force -Filter 'OneDrive*' -ErrorAction Stop)) { $dirs += $d.FullName } } catch {}
+    return $dirs
+}
+
+function Get-MirrorBytes {
+    # Taille de ce que le miroir copiera (le profil sans les dossiers exclus ni les jonctions).
+    param([string]$ProfilePath)
+    $skip = @(Get-MirrorSkipDirs $ProfilePath | ForEach-Object { $_.TrimEnd('\').ToLowerInvariant() })
+    $total = [long]0
+    try {
+        $di = New-Object IO.DirectoryInfo $ProfilePath
+        foreach ($f in $di.GetFiles()) { if ($f.Name -notlike 'ntuser*' -and $f.Name -notlike 'UsrClass*') { $total += $f.Length } }
+        foreach ($d in $di.GetDirectories()) {
+            if ($d.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
+            if ($skip -contains $d.FullName.TrimEnd('\').ToLowerInvariant()) { continue }
+            $total += (Get-TreeBytes $d.FullName)
+        }
+    } catch {}
+    return $total
+}
+
+function Get-MirrorExtras {
+    # Ce qui est dans le miroir mais plus sur le PC. Rend @{ Items = @(@{ Rel; IsDir; Files }); ExtraFiles; Total }.
+    param([string]$Source, [string]$Target)
+    $items = New-Object System.Collections.ArrayList
+    $extraFiles = 0; $total = 0
+    $stack = New-Object 'System.Collections.Generic.Stack[string]'
+    $stack.Push('')
+    while ($stack.Count -gt 0) {
+        $rel = $stack.Pop()
+        $td = Get-BakLongPath ($(if ($rel) { Join-Path $Target $rel } else { $Target }))
+        $sd = Get-BakLongPath ($(if ($rel) { Join-Path $Source $rel } else { $Source }))
+        try {
+            foreach ($f in [IO.Directory]::GetFiles($td)) {
+                $total++
+                $name = [IO.Path]::GetFileName($f)
+                if (-not [IO.File]::Exists((Join-Path $sd $name))) {
+                    [void]$items.Add(@{ Rel = $(if ($rel) { Join-Path $rel $name } else { $name }); IsDir = $false; Files = 1 }); $extraFiles++
+                }
+            }
+            foreach ($d in [IO.Directory]::GetDirectories($td)) {
+                $name = [IO.Path]::GetFileName($d)
+                $r2 = $(if ($rel) { Join-Path $rel $name } else { $name })
+                if ([IO.Directory]::Exists((Join-Path $sd $name))) { $stack.Push($r2); continue }
+                $n = 0
+                try { $n = @([IO.Directory]::GetFiles($d, '*', [IO.SearchOption]::AllDirectories)).Count } catch { $n = 1 }
+                $total += $n; $extraFiles += $n
+                [void]$items.Add(@{ Rel = $r2; IsDir = $true; Files = $n })
+            }
+        } catch { Write-Log ("Miroir : dossier illisible ({0})" -f $_.Exception.Message) 'WARN' }
+    }
+    return @{ Items = @($items); ExtraFiles = $extraFiles; Total = $total }
+}
+
+function Clear-MirrorTrash {
+    # Vide les passages de la corbeille du miroir plus vieux que $Script:BakTrashDays jours.
+    param([string]$Trash)
+    if (-not (Test-Path -LiteralPath $Trash)) { return }
+    $limit = (Get-Date).AddDays(-$Script:BakTrashDays)
+    foreach ($d in @(Get-ChildItem -LiteralPath $Trash -Directory -ErrorAction SilentlyContinue)) {
+        $dt = $null
+        if ($d.Name -notmatch '^(\d{4}-\d{2}-\d{2}_\d{6})(-\d+)?$') { continue }
+        try { $dt = [datetime]::ParseExact($Matches[1], 'yyyy-MM-dd_HHmmss', [Globalization.CultureInfo]::InvariantCulture) } catch { continue }
+        if ($dt -lt $limit) {
+            try { Remove-Item -LiteralPath $d.FullName -Recurse -Force -ErrorAction Stop; Write-Log ("Corbeille du miroir : passage du {0:dd/MM/yyyy} vidé (plus de {1} jours)." -f $dt, $Script:BakTrashDays) }
+            catch { Write-Log ("Corbeille du miroir : {0} non vidé ({1})" -f $d.Name, $_.Exception.Message) 'WARN' }
+        }
+    }
+}
+
+function Invoke-MirrorCopy {
+    # Miroir du dossier utilisateur. Rend @{ Files; Code; Moved; Suspect; ExtraFiles; Total }.
+    param([string]$Source, [string]$Target, [string]$Trash, [string]$RoboLog, [switch]$AcceptDeletions)
+    $res = @{ Files = 0; Code = 0; Moved = 0; Suspect = $false; ExtraFiles = 0; Total = 0 }
+    $purge = $true
+    if (Test-Path -LiteralPath $Target) {
+        $ex = Get-MirrorExtras $Source $Target
+        $res.ExtraFiles = $ex.ExtraFiles; $res.Total = $ex.Total
+        if (-not $AcceptDeletions -and $ex.ExtraFiles -gt $Script:BakSuspectMin -and $ex.ExtraFiles -gt ($Script:BakSuspectRate * [math]::Max(1, $ex.Total))) {
+            $res.Suspect = $true
+            Write-Log ("Miroir suspendu : ce passage retirerait {0} fichier(s) sur {1} ({2:P0}). Si c'est voulu, confirmez depuis la Toolbox." -f $ex.ExtraFiles, $ex.Total, ($ex.ExtraFiles / [math]::Max(1, $ex.Total))) 'ERROR'
+            return $res
+        }
+        if (@($ex.Items).Count -gt 0) {
+            # Un dossier de corbeille par passage, jamais réutilisé (deux passages dans la même seconde : suffixe -2, -3…)
+            $stamp = Get-Date -Format 'yyyy-MM-dd_HHmmss'
+            $bin = Join-Path $Trash $stamp; $k = 2
+            while (Test-Path -LiteralPath $bin) { $bin = Join-Path $Trash ("{0}-{1}" -f $stamp, $k); $k++ }
+            foreach ($it in @($ex.Items)) {
+                try {
+                    $from = Get-BakLongPath (Join-Path $Target ([string]$it.Rel))
+                    $to = Get-BakLongPath (Join-Path $bin ([string]$it.Rel))
+                    [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($to))
+                    if ($it.IsDir) { [IO.Directory]::Move($from, $to) } else { [IO.File]::Move($from, $to) }
+                    $res.Moved += [int]$it.Files
+                } catch { $purge = $false; Write-Log ("Miroir : « {0} » non déplacé dans la corbeille ({1})" -f $it.Rel, $_.Exception.Message) 'WARN' }
+            }
+            Write-Log ("Miroir : {0} fichier(s) supprimé(s) du PC depuis le dernier passage, gardés {1} jours dans {2}." -f $res.Moved, $Script:BakTrashDays, $bin) 'OK'
+        }
+    }
+    $ra = @($Source.TrimEnd('\'), $Target.TrimEnd('\'))
+    # Si un élément n'a pas pu aller dans la corbeille, ce passage ne supprime rien (copie seule).
+    if ($purge) { $ra += '/MIR' } else { $ra += '/E'; Write-Log 'Miroir : ce passage copie sans rien retirer ; le ménage se fera au prochain.' 'WARN' }
+    $ra += @('/XJ', '/R:1', '/W:1', '/MT:8', '/COPY:DAT', '/DCOPY:DAT', '/FFT', '/XA:O',
+        '/NP', '/NJH', '/NJS', '/NDL', '/NC', '/NS', '/FP', '/TEE', "/UNILOG+:$RoboLog")
+    $ra += '/XF'; $ra += $Script:BakMirrorSkipFiles
+    $ra += '/XD'; $ra += @(Get-MirrorSkipDirs $Source)
+    $n = 0
+    & robocopy.exe @ra 2>$null | ForEach-Object {
+        if ([string]$_ -match '^\t.*\t(?:[A-Za-z]:\\|\\\\)') {
+            $n++
+            if (($n % 500) -eq 0) { Write-Host ("  [..]  {0} fichiers copiés…" -f $n) -ForegroundColor DarkGray }
+        }
+    }
+    $res.Files = $n; $res.Code = [int]$LASTEXITCODE
+    Clear-MirrorTrash $Trash
+    return $res
+}
+
 function Invoke-FileBackup {
     # Lance la sauvegarde configurée. Rend 0 (tout copié), 1 (quelques fichiers ignorés), 2 (non configurée),
-    # 3 (disque absent), 4 (place insuffisante) ou 5 (échec).
+    # 3 (disque absent), 4 (place insuffisante), 5 (échec) ou 6 (miroir suspendu : trop de fichiers à retirer).
+    # -AcceptDeletions : confirme un passage de miroir suspendu (choix fait dans la Toolbox).
+    param([switch]$AcceptDeletions)
     $cfg = Get-BackupConfig
     if (-not $cfg) { Write-Log 'Aucune sauvegarde configurée.' 'WARN'; return 2 }
     $started = Get-Date
@@ -364,7 +520,9 @@ function Invoke-FileBackup {
     if ($first -and $root -notmatch '^\\\\') {
         Write-Log 'Première sauvegarde : calcul de la place nécessaire…'
         $need = [long]0
-        foreach ($s in $sources) { $need += (Get-TreeBytes ([string]$s.Path)) }
+        foreach ($s in $sources) {
+            if ([string]$cfg.Mode -eq 'mirror') { $need += (Get-MirrorBytes ([string]$s.Path)) } else { $need += (Get-TreeBytes ([string]$s.Path)) }
+        }
         $free = [long]0
         try { $free = (New-Object IO.DriveInfo ($root.Substring(0, 1))).AvailableFreeSpace } catch {}
         Write-Log ("À copier : {0}. Place libre sur la destination : {1}." -f (Format-BackupSize $need), (Format-BackupSize $free))
@@ -386,9 +544,22 @@ function Invoke-FileBackup {
     $robolog = Join-Path $Script:BakLogDir ("Fichiers_{0}.log" -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
 
     $total = 0; $skipped = $false; $fatal = $false; $done = @()
+    $mirror = ([string]$cfg.Mode -eq 'mirror')
     foreach ($s in $sources) {
         Write-Log ("Copie de « {0} »…" -f $s.Label)
-        $r = Copy-BackupTree ([string]$s.Path) (Join-Path $dest ([string]$s.Label)) $robolog
+        if ($mirror) {
+            $r = Invoke-MirrorCopy ([string]$s.Path) (Join-Path $dest $Script:BakMirrorDir) (Join-Path $dest $Script:BakTrashDir) $robolog -AcceptDeletions:$AcceptDeletions
+            if ($r.Suspect) {
+                $state.Result = 'suspect'
+                $state.Message = ("Miroir suspendu : {0} fichier(s) sur {1} auraient quitté la sauvegarde. Vérifiez le PC ; si c'est voulu, cliquez sur « Confirmer et mettre le miroir à jour »." -f $r.ExtraFiles, $r.Total)
+                try { $old = Get-Content -LiteralPath $Script:BakState -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json; if ($old.LastSuccess) { $state.LastSuccess = [string]$old.LastSuccess } } catch {}
+                Save-BackupState $state
+                Set-BackupResult @{ Ok = @(); Bad = @('miroir suspendu'); Reboot = $false }
+                return 6
+            }
+        } else {
+            $r = Copy-BackupTree ([string]$s.Path) (Join-Path $dest ([string]$s.Label)) $robolog
+        }
         $total += [int]$r.Files
         if ($r.Code -ge 16) { $fatal = $true; Write-Log ("{0} : copie interrompue (code {1})." -f $s.Label, $r.Code) 'ERROR' }
         elseif ($r.Code -band 8) { $skipped = $true; $done += [string]$s.Label; Write-Log ("{0} : {1} fichier(s) copié(s), certains n'ont pas pu l'être (ouverts ou protégés)." -f $s.Label, $r.Files) 'WARN' }
@@ -422,6 +593,7 @@ function Invoke-FileBackup {
     try {
         $note = @("Sauvegarde BJMPC du {0}" -f (Get-Date -Format 'dd/MM/yyyy HH:mm'), "Ordinateur : $($cfg.Computer)", "Utilisateur : $($cfg.User)",
             ("Contenu : " + ($done -join ', ')), '', 'Pour récupérer un fichier : ouvrez le dossier correspondant et copiez-le où vous voulez.')
+        if ($mirror) { $note += @('', ("Miroir : copie exacte du dossier utilisateur. Un fichier supprimé du PC est gardé {0} jours dans « {1} »." -f $Script:BakTrashDays, $Script:BakTrashDir)) }
         Set-Content -LiteralPath (Join-Path $dest 'LISEZMOI-Sauvegarde.txt') -Value $note -Encoding UTF8 -ErrorAction Stop
     } catch {}
     Write-Log ("Sauvegarde terminée en {0} s : {1} fichier(s) copié(s) dans {2}" -f $secs, $total, $dest) 'OK'
@@ -445,7 +617,7 @@ function Restore-FileBackup {
     $robolog = Join-Path $Script:BakLogDir ("Restauration_{0}.log" -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
     $total = 0; $done = @()
     foreach ($s in @($cfg.Sources)) {
-        $from = Join-Path $dest ([string]$s.Label)
+        $from = $(if ([string]$cfg.Mode -eq 'mirror') { Join-Path $dest $Script:BakMirrorDir } else { Join-Path $dest ([string]$s.Label) })
         if (-not (Test-Path -LiteralPath $from)) { continue }
         Write-Log ("Restauration de « {0} »…" -f $s.Label)
         $r = Copy-BackupTree $from ([string]$s.Path) $robolog -OnlyMissing

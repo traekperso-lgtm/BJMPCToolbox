@@ -604,6 +604,18 @@ function New-Check {
     return $c
 }
 
+function New-Radio {
+    param([string]$Text, [string]$Group, [bool]$Checked = $false)
+    $r = New-Object Windows.Controls.RadioButton
+    $r.Content = $Text
+    $r.GroupName = $Group
+    $r.IsChecked = $Checked
+    $r.Foreground = (Br '#ECEDEF')
+    $r.Margin = '0,6,0,0'
+    $r.FontSize = 14
+    return $r
+}
+
 function New-Page {
     param([string]$Key, [string]$Title, [string]$Sub)
     $sv = New-Object Windows.Controls.ScrollViewer
@@ -1326,6 +1338,97 @@ function Build-Maintenance {
     [void]$abr.Children.Add((New-Btn 'Rétablir la lecture automatique' $ar2 -Primary))
     [void]$ac.Body.Children.Add($abr)
     [void]$p.Children.Add($ac.Card)
+
+    # Doublons de photos : contenu identique (octet par octet), ou en option même image (pixels identiques)
+    $dc2 = New-Card 'Doublons de photos' 'Deux photos ne sont regroupées que si leur contenu est identique : même empreinte SHA-256 puis comparaison octet par octet. Le nom, la date ou la taille ne suffisent jamais : deux photos de même taille et de même date mais différentes ne sont pas confondues. Rien n''est supprimé : les doublons choisis sont déplacés dans un dossier « BJMPC-Doublons » sur le même disque, et l''opération s''annule.' 'Modifie les fichiers' 'w'
+    [void]$dc2.Body.Children.Add((New-Text 'Où chercher (dossiers de la personne connectée)' 13 '#C5C9D0' 'Normal'))
+    $dw = New-Object Windows.Controls.WrapPanel
+    $dw.Margin = '0,2,0,4'
+    $Script:DupKnown = @()
+    foreach ($kd in @(@('Pictures', 'Images', $true), @('Desktop', 'Bureau', $false), @('Documents', 'Documents', $false), @('Downloads', 'Téléchargements', $false))) {
+        $cb = New-Check ([string]$kd[1]) ([bool]$kd[2])
+        $cb.Tag = [string]$kd[0]; $cb.Margin = '0,6,24,0'
+        [void]$dw.Children.Add($cb)
+        $Script:DupKnown += $cb
+    }
+    [void]$dc2.Body.Children.Add($dw)
+    $Script:DupExtra = New-Object 'System.Collections.Generic.List[string]'
+    $Script:DupExtraText = New-Text 'Autres dossiers : aucun' 12.5 '#9298A3' 'Normal' -Wrap
+    [void]$dc2.Body.Children.Add($Script:DupExtraText)
+    $dxr = New-Object Windows.Controls.WrapPanel
+    $dxr.Margin = '0,4,0,0'
+    [void]$dxr.Children.Add((New-Btn 'Ajouter un dossier…' @{ Fn = {
+                try {
+                    Add-Type -AssemblyName System.Windows.Forms
+                    $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
+                    $dlg.Description = 'Dossier où chercher des photos en double (disque externe, autre dossier…)'
+                    if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK -and $dlg.SelectedPath) {
+                        if (-not $Script:DupExtra.Contains([string]$dlg.SelectedPath)) { $Script:DupExtra.Add([string]$dlg.SelectedPath) }
+                        $Script:DupExtraText.Text = 'Autres dossiers : ' + ($Script:DupExtra -join '  ·  ')
+                    }
+                } catch { Add-Console ('  [!]   ' + $_.Exception.Message) 'Yellow' }
+            } }))
+    [void]$dxr.Children.Add((New-Btn 'Vider la liste' @{ Fn = { $Script:DupExtra.Clear(); $Script:DupExtraText.Text = 'Autres dossiers : aucun' } }))
+    [void]$dc2.Body.Children.Add($dxr)
+    $Script:DupPixels = New-Check 'Chercher aussi la même image avec des métadonnées différentes (date, GPS, logiciel) : pixels comparés un à un, plus lent' $false
+    [void]$dc2.Body.Children.Add($Script:DupPixels)
+    $dsa = New-Spec 'tools' '' 'Recherche des doublons de photos' @{} '' { param($r) Show-DuplicatePhotos $r }
+    $dsa.CodeFn = {
+        $k = @($Script:DupKnown | Where-Object { $_.IsChecked } | ForEach-Object { "'" + ([string]$_.Tag -replace '[^A-Za-z]', '') + "'" })
+        $f = @($Script:DupExtra | ForEach-Object { ConvertTo-PsLiteral ([string]$_) })
+        if (($k.Count + $f.Count) -eq 0) { Add-Console 'Doublons : cochez au moins un dossier ou ajoutez-en un.' 'Yellow'; return '' }
+        return ('Find-DuplicatePhotos -Known @(' + ($k -join ',') + ') -Folders @(' + ($f -join ',') + ') -Pixels $' + ([bool]$Script:DupPixels.IsChecked).ToString().ToLower())
+    }
+    $dsm = New-Spec 'tools' '' 'Mise de côté des doublons de photos'
+    $dsm.CodeFn = {
+        $pairs = @(); $bad = 0
+        foreach ($grp in @($Script:DupChecks | Group-Object { $_.Group })) {
+            $keep = @($grp.Group | Where-Object { -not $_.Check.IsChecked }) | Select-Object -First 1
+            $dups = @($grp.Group | Where-Object { $_.Check.IsChecked })
+            if ($dups.Count -eq 0) { continue }
+            if (-not $keep) { $bad++; continue }
+            foreach ($d in $dups) { $pairs += (ConvertTo-PsLiteral ('{0}|{1}|{2}' -f $d.Kind, $d.Path, $keep.Path)) }
+        }
+        if ($bad -gt 0) { Add-Console ("Doublons : {0} groupe(s) entièrement coché(s). Laissez au moins une photo non cochée par groupe." -f $bad) 'Yellow'; return '' }
+        if ($pairs.Count -eq 0) { Add-Console 'Doublons : aucune photo cochée.' 'Yellow'; return '' }
+        return ('Move-DuplicatePhotos -Pairs @(' + ($pairs -join ',') + ')')
+    }
+    $dsm.ConfirmFn = { "Mettre de côté {0} photo(s) en double ? Elles sont déplacées dans « BJMPC-Doublons » sur leur disque (rien n'est supprimé). Chaque photo est revérifiée juste avant ; l'opération s'annule avec « Remettre les photos en place »." -f @($Script:DupChecks | Where-Object { $_.Check.IsChecked }).Count }
+    $dsm.OnDone = { param($r) $Script:DupPanel.Children.Clear(); $Script:DupChecks.Clear(); $Script:DupNote.Text = 'Terminé. Relancez la recherche pour actualiser.'; try { Refresh-DuplicateSessions } catch {} }
+    $dbar2 = New-Object Windows.Controls.WrapPanel
+    $dbar2.Margin = '0,14,0,8'
+    $d1 = New-Btn 'Chercher les doublons' $dsa -Primary; $d1.Margin = '0,4,0,4'
+    [void]$dbar2.Children.Add($d1)
+    [void]$dbar2.Children.Add((New-Btn 'Mettre de côté la sélection' $dsm -Primary))
+    [void]$dbar2.Children.Add((New-Btn 'Tout décocher' @{ Fn = { foreach ($x in @($Script:DupChecks)) { $x.Check.IsChecked = $false } } }))
+    [void]$dc2.Body.Children.Add($dbar2)
+    $Script:DupNote = New-Text '' 13 '#C9A227' 'Normal' -Wrap
+    $Script:DupNote.Margin = '0,0,0,8'
+    [void]$dc2.Body.Children.Add($Script:DupNote)
+    $dh = New-TableRow $Script:DupCols @('Photo (double-clic pour l''ouvrir)', 'Modifiée le', 'Taille') -Header
+    $dh.Margin = '0,0,18,0'
+    [void]$dc2.Body.Children.Add($dh)
+    $Script:DupPanel = New-Object Windows.Controls.StackPanel
+    [void]$dc2.Body.Children.Add((New-ScrollList $Script:DupPanel 420))
+    $Script:DupSessionBox = New-Object Windows.Controls.ComboBox
+    $Script:DupSessionBox.MinWidth = 340; $Script:DupSessionBox.Padding = '8,4'; $Script:DupSessionBox.Margin = '0,0,8,0'
+    $dsr = New-Spec 'tools' '' 'Remise en place des photos'
+    $dsr.CodeFn = {
+        $i = $Script:DupSessionBox.SelectedItem
+        if (-not $i -or -not $i.Tag) { Add-Console 'Aucune mise de côté sélectionnée.' 'Yellow'; return '' }
+        $n = [string]$i.Tag
+        if ($n -notmatch '^\d{8}_\d{6}$') { return '' }
+        return ("Restore-DuplicatePhotos -Session '" + $n + "'")
+    }
+    $dsr.ConfirmFn = { 'Remettre à leur place les photos de cette mise de côté ? Une photo revenue entre-temps au même endroit n''est jamais écrasée.' }
+    $dsr.OnDone = { param($r) try { Refresh-DuplicateSessions } catch {} }
+    $drow2 = New-Object Windows.Controls.StackPanel
+    $drow2.Orientation = 'Horizontal'; $drow2.Margin = '0,12,0,0'
+    [void]$drow2.Children.Add($Script:DupSessionBox)
+    [void]$drow2.Children.Add((New-Btn 'Remettre les photos en place' $dsr))
+    [void]$dc2.Body.Children.Add($drow2)
+    Refresh-DuplicateSessions
+    [void]$p.Children.Add($dc2.Card)
 
     $ent = New-Card 'Entretien'
     Add-Row $ent.Body 'Nettoyage' 'Fichiers temporaires, corbeille, magasin de composants.' '' 'n' @((New-Btn 'Nettoyer' (New-Spec 'maint' 'Invoke-Cleanup' 'Nettoyage')))
@@ -2213,6 +2316,7 @@ function Update-BackupForm {
         $ids = @(@($cfg.Sources) | ForEach-Object { [string]$_.Id })
         foreach ($cb in $b.Folders) { $cb.IsChecked = ($ids -contains [string]$cb.Tag) }
         $b.Browsers.IsChecked = [bool]$cfg.Browsers
+        if ([string]$cfg.Mode -eq 'mirror') { $b.ModeMirror.IsChecked = $true } else { $b.ModeFolders.IsChecked = $true }
         [void](Select-ComboTag $b.Freq ([string]$cfg.Frequency))
         [void](Select-ComboTag $b.Day ([string]$cfg.Day))
         if (-not (Select-ComboTag $b.Time ([string]$cfg.Time))) {
@@ -2257,6 +2361,12 @@ function Show-BackupStatus {
             Line 'Dernière sauvegarde' ("{0}  ·  {1}" -f $last, $age) $(if ($days -le 7) { '#62D98B' } else { '#F5B94A' })
         } else { Line 'Dernière sauvegarde' 'Aucune pour l''instant' '#F5B94A' }
         if ($st -and [string]$st.Result -notin 'ok', '' -and $st.Message) { Line 'Dernier essai' ([string]$st.Message) $(if ([string]$st.Result -eq 'partiel') { '#F5B94A' } else { '#FF7B7B' }) }
+        if ($st -and [string]$st.Result -eq 'suspect') {
+            $cs = New-Spec 'bak' '[void](Invoke-FileBackup -AcceptDeletions)' 'Sauvegarde des fichiers' @{} 'Mettre le miroir à jour malgré le grand nombre de fichiers qui ne sont plus sur le PC ? Ils ne sont pas effacés tout de suite : ils restent 30 jours dans « Miroir-Corbeille » sur le disque de sauvegarde.' { param($r) Refresh-BackupStatus }
+            $cb = New-Btn 'Confirmer et mettre le miroir à jour' $cs
+            $cb.HorizontalAlignment = 'Left'; $cb.Margin = '0,10,0,0'
+            [void]$pn.Children.Add($cb)
+        }
         $what = @(@($cfg.Sources) | ForEach-Object { [string]$_.Label })
         if ($cfg.Browsers) { $what += 'favoris des navigateurs' }
         Line 'Contenu' ("{0}  ·  {1}" -f [string]$cfg.User, ($what -join ', '))
@@ -2288,19 +2398,21 @@ function Get-BakConfigCode {
     $prof = $b.Profiles[[int]$pi.Tag]
     $ids = @($b.Folders | Where-Object { $_.IsChecked } | ForEach-Object { "'" + ([string]$_.Tag -replace '[^A-Za-z]', '') + "'" })
     $br = [bool]$b.Browsers.IsChecked
-    if ($ids.Count -eq 0 -and -not $br) { Add-Console 'Sauvegarde : cochez au moins un dossier.' 'Yellow'; return '' }
+    $mode = $(if ($b.ModeMirror -and $b.ModeMirror.IsChecked) { 'mirror' } else { 'folders' })
+    if ($mode -eq 'mirror') { $ids = @() }
+    elseif ($ids.Count -eq 0 -and -not $br) { Add-Console 'Sauvegarde : cochez au moins un dossier.' 'Yellow'; return '' }
     $dest = Get-BakDestination
     if (-not $dest) { Add-Console 'Sauvegarde : choisissez le disque ou le dossier de destination.' 'Yellow'; return '' }
     $freq = [string]$b.Freq.SelectedItem.Tag -replace '[^a-z]', ''
     $day = [string]$b.Day.SelectedItem.Tag -replace '[^A-Za-z]', ''
     $time = [string]$b.Time.SelectedItem.Tag -replace '[^0-9:]', ''
-    return ('Set-BackupConfig -ProfilePath {0} -Sid {1} -Folders @({2}) -Browsers ${3} -Destination {4} -Frequency {5} -Time {6} -Day {7}' -f
+    return ('Set-BackupConfig -ProfilePath {0} -Sid {1} -Folders @({2}) -Browsers ${3} -Destination {4} -Frequency {5} -Time {6} -Day {7} -Mode {8}' -f
         (ConvertTo-PsLiteral ([string]$prof.Path)), (ConvertTo-PsLiteral ([string]$prof.Sid)), ($ids -join ','), $br.ToString().ToLower(),
-        (ConvertTo-PsLiteral $dest), $freq, (ConvertTo-PsLiteral $time), $day)
+        (ConvertTo-PsLiteral $dest), $freq, (ConvertTo-PsLiteral $time), $day, $mode)
 }
 
 function Build-Backup {
-    $p = New-Page 'files' 'Sauvegarde des fichiers' 'Une copie des dossiers personnels sur un autre disque, refaite automatiquement. Seuls les fichiers nouveaux ou modifiés sont copiés, et rien n''est jamais effacé dans la sauvegarde.'
+    $p = New-Page 'files' 'Sauvegarde des fichiers' 'Une copie des fichiers personnels sur un autre disque, refaite automatiquement : dossiers choisis (rien n''est jamais effacé dans la sauvegarde) ou miroir complet du dossier utilisateur. Seuls les fichiers nouveaux ou modifiés sont copiés.'
     if ($Script:EngineError) {
         [void]$p.Children.Add((New-Text ("Moteur de sauvegarde indisponible : " + $Script:EngineError) 13 '#FF7B7B' 'Normal' -Wrap))
         return
@@ -2341,8 +2453,16 @@ function Build-Backup {
     $b.Profile.MinWidth = 300; $b.Profile.Padding = '8,4'; $b.Profile.VerticalAlignment = 'Center'
     $b.Profile.Add_SelectionChanged({ try { Update-BackupFolderHints } catch {} })
     [void]$c.Body.Children.Add((New-OptionPair 'Fichiers de' $b.Profile))
+    $b.ModeFolders = New-Radio 'Dossiers choisis : rien n''est jamais effacé dans la sauvegarde' 'bakmode' $true
+    $b.ModeMirror = New-Radio 'Miroir complet du dossier utilisateur : copie exacte, hors AppData, OneDrive et dossiers système' 'bakmode' $false
+    [void]$c.Body.Children.Add($b.ModeFolders)
+    [void]$c.Body.Children.Add($b.ModeMirror)
     $fw = New-Object Windows.Controls.WrapPanel
-    $fw.Margin = '0,4,0,0'
+    $fw.Margin = '4,4,0,0'
+    $b.FolderPanel = $fw
+    $modeChanged = { try { $Script:Bak.FolderPanel.IsEnabled = -not [bool]$Script:Bak.ModeMirror.IsChecked; $Script:Bak.MirrorHint.Visibility = $(if ($Script:Bak.ModeMirror.IsChecked) { 'Visible' } else { 'Collapsed' }) } catch {} }
+    $b.ModeFolders.Add_Checked($modeChanged)
+    $b.ModeMirror.Add_Checked($modeChanged)
     $defs = @()
     try { $defs = Import-Catalog 'BJMPC-Sauvegarde-Win11.ps1' 'BakFolders' } catch { Write-Crash ("Sauvegarde (dossiers) : " + $_.Exception.Message) }
     $b.Folders = @()
@@ -2357,6 +2477,9 @@ function Build-Backup {
     $b.Browsers.FontSize = 14
     [void]$c.Body.Children.Add($b.Browsers)
     [void]$c.Body.Children.Add((Hint 'Survolez un dossier pour voir son emplacement réel (il peut être dans OneDrive). Les mots de passe des navigateurs ne sont pas copiés : Windows les chiffre et ils ne serviraient à rien ailleurs.'))
+    $b.MirrorHint = Hint 'Miroir : tout le dossier utilisateur est recopié à l''identique (sauf AppData, OneDrive, iCloud et les dossiers système). Un fichier supprimé du PC quitte le miroir mais reste 30 jours dans « Miroir-Corbeille ». Si un passage devait retirer une grande partie du miroir (dossier déplacé, disque différent, logiciel malveillant), il est suspendu et la Toolbox demande confirmation.'
+    $b.MirrorHint.Visibility = 'Collapsed'
+    [void]$c.Body.Children.Add($b.MirrorHint)
 
     [void]$c.Body.Children.Add((Step '2 · Où'))
     $b.Dest = New-Object Windows.Controls.ComboBox
@@ -2420,7 +2543,7 @@ function Build-Backup {
     foreach ($line in @(
             'Ce sont les fichiers personnels qui sont sauvegardés, pas Windows ni les logiciels : en cas de panne du disque, on réinstalle Windows puis on récupère les fichiers.',
             'Un fichier ouvert au moment de la sauvegarde (une boîte Outlook, par exemple) peut être sauté ; il est repris à la sauvegarde suivante.',
-            'Un fichier supprimé du PC reste dans la sauvegarde. Pour récupérer un seul fichier : « Ouvrir la sauvegarde » et copiez-le.',
+            'Mode « Dossiers choisis » : un fichier supprimé du PC reste dans la sauvegarde. Mode « Miroir » : il quitte le miroir mais reste 30 jours dans « Miroir-Corbeille ». Pour récupérer un seul fichier : « Ouvrir la sauvegarde » et copiez-le.',
             'La sauvegarde automatique ne dépend pas de la Toolbox : elle est installée dans C:\Program Files\BJMPC\Sauvegarde. Journaux : C:\BJMPC-Logs\Sauvegarde.')) {
         $t = New-Text ('•  ' + $line) 13 '#C5C9D0' 'Normal' -Wrap
         $t.Margin = '0,8,0,0'
@@ -2754,6 +2877,9 @@ $Script:StoreCols = @(1.2, 1.8, 1.1, 2.4, 1.5, 1.0, 0.8, 1.5)
 $Script:GhostCols = @(3.2, 1.2, 1.6, 1.2)
 $Script:PrnChecks = New-Object 'System.Collections.Generic.List[object]'
 $Script:PrnCols = @(3.0, 1.1, 2.6, 1.8)
+$Script:DupChecks = New-Object 'System.Collections.Generic.List[object]'
+$Script:DupCols = @(5.0, 1.4, 1.0)
+$Script:DupMaxShown = 400
 
 function New-Combo {
     # Liste déroulante à choix fixes (aucune saisie) : $Items = @(@('libellé', 'valeur'), …)
@@ -3118,6 +3244,65 @@ function Show-DiscAutoplay {
     }
 }
 
+function Show-DuplicatePhotos {
+    param($Res)
+    $Script:DupPanel.Children.Clear(); $Script:DupChecks.Clear()
+    if (-not $Res) { $Script:DupNote.Text = 'Recherche impossible.'; return }
+    $groups = @($Res.Groups)
+    $nbin = @($groups | Where-Object { $_.Kind -eq 'bin' }).Count
+    $sz = [double]$Res.Wasted
+    $szt = $(if ($sz -ge 1GB) { '{0:N1} Go' -f ($sz / 1GB) } elseif ($sz -ge 1MB) { '{0:N0} Mo' -f ($sz / 1MB) } else { '{0:N0} Ko' -f ($sz / 1KB) })
+    $note = ('{0} photo(s) analysée(s) : {1} groupe(s) de doublons exacts ({2} récupérables)' -f [int]$Res.Scanned, $nbin, $szt)
+    if (($groups.Count - $nbin) -gt 0) { $note += (', {0} groupe(s) « même image, métadonnées différentes » (non cochés : à vous de choisir)' -f ($groups.Count - $nbin)) }
+    if ([int]$Res.Online -gt 0) { $note += ('. {0} photo(s) seulement dans le nuage, non comparées' -f [int]$Res.Online) }
+    if ($groups.Count -gt $Script:DupMaxShown) { $note += ('. Seuls les {0} plus gros groupes sont affichés : relancez après traitement' -f $Script:DupMaxShown) }
+    $Script:DupNote.Text = $note + '.'
+    if ($groups.Count -eq 0) { [void]$Script:DupPanel.Children.Add((New-Text 'Aucun doublon trouvé.' 13 '#7CE3A1' 'Normal' -Wrap)); return }
+    $gi = 0
+    foreach ($g in ($groups | Select-Object -First $Script:DupMaxShown)) {
+        $gi++
+        $files = @($g.Files)
+        $lbl = $(if ($g.Kind -eq 'pix') { 'même image, métadonnées différentes' } else { 'identiques octet par octet' })
+        $head = New-TableRow $Script:DupCols @(@{ T = ('Groupe {0} · {1} · {2} photos' -f $gi, $lbl, $files.Count); C = '#5AD1FF'; W = 'SemiBold' }, '', '')
+        $head.Margin = '0,8,0,0'
+        [void]$Script:DupPanel.Children.Add($head)
+        foreach ($f in $files) {
+            $cb = New-Check '' ([bool](-not $f.Keep -and $g.Kind -eq 'bin'))
+            $cb.ToolTip = 'Coché = mis de côté. Au moins une photo par groupe doit rester décochée.'
+            $len = [double]$f.Size
+            $st = $(if ($len -ge 1MB) { '{0:N1} Mo' -f ($len / 1MB) } else { '{0:N0} Ko' -f ($len / 1KB) })
+            $dt = ''; try { $dt = ([datetime]$f.Date).ToString('dd/MM/yyyy HH:mm') } catch {}
+            $name = [string]$f.Path + $(if ($f.Keep) { '   (proposée à garder)' } else { '' })
+            $row = New-TableRow $Script:DupCols @(@{ T = $name; C = $(if ($f.Keep) { '#7CE3A1' } else { '#ECEDEF' }); Tip = [string]$f.Path }, $dt, $st) $cb
+            $row.Tag = [string]$f.Path
+            $row.Add_MouseLeftButtonDown({ param($s, $e) try { if ($e.ClickCount -eq 2 -and (Test-Path -LiteralPath ([string]$s.Tag))) { Start-Process -FilePath ([string]$s.Tag) } } catch {} })
+            [void]$Script:DupPanel.Children.Add($row)
+            [void]$Script:DupChecks.Add([pscustomobject]@{ Check = $cb; Group = $gi; Path = [string]$f.Path; Kind = [string]$g.Kind })
+        }
+    }
+}
+
+function Refresh-DuplicateSessions {
+    $cb = $Script:DupSessionBox
+    if (-not $cb) { return }
+    $cb.Items.Clear()
+    try {
+        $root = Join-Path $Script:LogDir 'Doublons'
+        if (Test-Path -LiteralPath $root) {
+            foreach ($f in @(Get-ChildItem -LiteralPath $root -Filter 'Doublons_*.json' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)) {
+                $sess = $f.BaseName -replace '^Doublons_', ''
+                if ($sess -notmatch '^\d{8}_\d{6}$') { continue }
+                $n = 0; try { $n = @((Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8 | ConvertFrom-Json).Items).Count } catch {}
+                $it = New-Object Windows.Controls.ComboBoxItem
+                $it.Content = ('Mise de côté du {0:dd/MM/yyyy HH:mm}  ·  {1} photo(s)' -f [datetime]::ParseExact($sess, 'yyyyMMdd_HHmmss', [Globalization.CultureInfo]::InvariantCulture), $n)
+                $it.Tag = $sess
+                [void]$cb.Items.Add($it)
+            }
+        }
+    } catch {}
+    if ($cb.Items.Count -gt 0) { $cb.SelectedIndex = 0 }
+}
+
 function Refresh-PrinterBackups {
     $cb = $Script:PrnBackupBox
     if (-not $cb) { return }
@@ -3444,6 +3629,9 @@ $Script:PlainMap = @(
     @{ K = '^Restart-AudioServices|¦Services audio'; C = 'repar'; T = 'Nous avons relancé le son de votre ordinateur.' }
     @{ K = '^Get-PrinterDiagnostic'; C = 'skip'; T = '' }
     @{ K = '^Get-DiscAutoplayState'; C = 'skip'; T = '' }
+    @{ K = '^Find-DuplicatePhotos|¦Recherche des doublons de photos'; C = 'skip'; T = '' }
+    @{ K = '^Move-DuplicatePhotos|¦Mise de côté des doublons de photos'; C = 'repar'; T = 'Nous avons mis de côté les photos en double (copies strictement identiques), sans rien supprimer : elles sont rangées dans un dossier « BJMPC-Doublons » et peuvent être remises en place.' }
+    @{ K = '^Restore-DuplicatePhotos|¦Remise en place des photos'; C = 'repar'; T = 'Nous avons remis vos photos à leur place.' }
     @{ K = '^Restore-DiscAutoplay|¦Lecture automatique des CD'; C = 'repar'; T = 'Nous avons rétabli l''ouverture automatique des CD audio et des DVD quand vous insérez un disque.' }
     @{ K = '^Remove-DeadPrinters|¦Nettoyage des imprimantes'; C = 'repar'; T = 'Nous avons retiré les imprimantes qui n''existaient plus, ce qui évite que Word, Excel ou l''impression restent bloqués à attendre une imprimante absente.' }
     @{ K = '^Restore-PrintersBackup|¦Restauration des imprimantes'; C = 'repar'; T = 'Nous avons remis vos imprimantes comme avant le nettoyage.' }
@@ -4636,6 +4824,64 @@ if ($env:BJMPC_SELFTEST -and $env:BJMPC_SELFTEST -ne 'PREVIEW') {
         $Script:Sync.Result = $null
         Start-Run -Engine 'tools' -Code 'Get-PrinterDiagnostic' -Title '' -OnDone { param($r) Show-PrinterList $r }
         T 'Imprimantes (analyse + liste)' (Wait-Run 120) ("lignes={0}" -f $Script:PrnChecks.Count)
+        # Doublons de photos : vraies images créées dans le dossier temporaire puis effacées (aucun fichier du client touché)
+        $photoTest = @'
+$t = Join-Path $env:TEMP ('BJMPC-Test-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+$res = @{ Err = '' }
+try {
+    New-Item -ItemType Directory -Path $t -Force | Out-Null
+    Add-Type -AssemblyName System.Drawing
+    $bmp = New-Object Drawing.Bitmap 40, 30
+    for ($x = 0; $x -lt 40; $x++) { for ($y = 0; $y -lt 30; $y++) { $bmp.SetPixel($x, $y, [Drawing.Color]::FromArgb(255, ($x * 6) % 256, ($y * 8) % 256, 90)) } }
+    $bmp.Save((Join-Path $t 'a.png'), [Drawing.Imaging.ImageFormat]::Png)
+    Copy-Item (Join-Path $t 'a.png') (Join-Path $t 'b.png')
+    $bmp.Save((Join-Path $t 'c.bmp'), [Drawing.Imaging.ImageFormat]::Bmp)
+    $bmp.SetPixel(5, 5, [Drawing.Color]::Black); $bmp.Save((Join-Path $t 'd.bmp'), [Drawing.Imaging.ImageFormat]::Bmp)
+    $bmp.SetPixel(6, 6, [Drawing.Color]::Black); $bmp.Save((Join-Path $t 'e.bmp'), [Drawing.Imaging.ImageFormat]::Bmp)
+    $bmp.Dispose()
+    $when = (Get-Item (Join-Path $t 'd.bmp')).LastWriteTime
+    (Get-Item (Join-Path $t 'e.bmp')).LastWriteTime = $when
+    Find-DuplicatePhotos -Known @() -Folders @($t) -Pixels $false
+    $r1 = $Sync.Result
+    Find-DuplicatePhotos -Known @() -Folders @($t) -Pixels $true
+    $r2 = $Sync.Result
+    $res.Bin = @($r1.Groups | ForEach-Object { '{0}:{1}' -f $_.Kind, @($_.Files).Count }) -join ','
+    $res.Pix = @($r2.Groups | ForEach-Object { '{0}:{1}' -f $_.Kind, @($_.Files).Count }) -join ','
+    $res.Fast = [bool]('BJ.FileCompare' -as [type]); $res.Pixels = [bool]('BJ.PixelTools' -as [type])
+} catch { $res.Err = $_.Exception.Message } finally { Remove-Item -LiteralPath $t -Recurse -Force -ErrorAction SilentlyContinue }
+Set-SyncResult $res
+'@
+        $Script:SelfPhoto = $null
+        Start-Run -Engine 'tools' -Code $photoTest -Title '' -OnDone { param($r) $Script:SelfPhoto = $r }
+        $pOk = Wait-Run 120
+        $sp = $Script:SelfPhoto
+        T 'Doublons de photos : identiques octet par octet (2 PNG), piège même taille/date écarté' ($pOk -and $sp -and -not $sp.Err -and $sp.Bin -eq 'bin:2') ("{0} rapide={1} {2}" -f $sp.Bin, $sp.Fast, $sp.Err)
+        T 'Doublons de photos : même image PNG/BMP (pixels)' ($pOk -and $sp -and $sp.Pixels -and $sp.Pix -eq 'pix:3') ("{0} pixels={1}" -f $sp.Pix, $sp.Pixels)
+        # Sauvegarde miroir : vraie commande robocopy sur des dossiers d'essai (exclusions, corbeille), puis effacés
+        $mirTest = @'
+$t = Join-Path $env:TEMP ('BJMPC-Test-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+$res = @{ Err = '' }
+try {
+    $s = Join-Path $t 'src'; $d = Join-Path $t 'dst\Miroir'; $tr = Join-Path $t 'dst\Miroir-Corbeille'
+    New-Item -ItemType Directory -Force -Path (Join-Path $s 'Docs'), (Join-Path $s 'AppData\Local'), (Join-Path $s 'OneDrive - Test'), $d | Out-Null
+    Set-Content -LiteralPath (Join-Path $s 'Docs\a.txt') -Value 'a'
+    Set-Content -LiteralPath (Join-Path $s 'AppData\Local\x.txt') -Value 'x'
+    Set-Content -LiteralPath (Join-Path $s 'OneDrive - Test\o.txt') -Value 'o'
+    Set-Content -LiteralPath (Join-Path $s 'NTUSER.DAT') -Value 'n'
+    Set-Content -LiteralPath (Join-Path $d 'ancien.txt') -Value 'old'
+    $r = Invoke-MirrorCopy $s $d $tr (Join-Path $t 'robo.log')
+    $res.Code = [int]$r.Code
+    $res.Copied = Test-Path -LiteralPath (Join-Path $d 'Docs\a.txt')
+    $res.Excluded = -not (Test-Path -LiteralPath (Join-Path $d 'AppData')) -and -not (Test-Path -LiteralPath (Join-Path $d 'OneDrive - Test')) -and -not (Test-Path -LiteralPath (Join-Path $d 'NTUSER.DAT'))
+    $res.Trashed = [bool](Get-ChildItem -LiteralPath $tr -Recurse -Filter 'ancien.txt' -ErrorAction SilentlyContinue) -and -not (Test-Path -LiteralPath (Join-Path $d 'ancien.txt'))
+} catch { $res.Err = $_.Exception.Message } finally { Remove-Item -LiteralPath $t -Recurse -Force -ErrorAction SilentlyContinue }
+Set-BackupResult $res
+'@
+        $Script:SelfMirror = $null
+        Start-Run -Engine 'bak' -Code $mirTest -Title '' -OnDone { param($r) $Script:SelfMirror = $r }
+        $mOk = Wait-Run 120
+        $sm = $Script:SelfMirror
+        T 'Sauvegarde miroir : copie, exclusions (AppData, OneDrive, NTUSER), corbeille' ($mOk -and $sm -and -not $sm.Err -and $sm.Code -lt 8 -and $sm.Copied -and $sm.Excluded -and $sm.Trashed) ("code={0} copié={1} exclusions={2} corbeille={3} {4}" -f $sm.Code, $sm.Copied, $sm.Excluded, $sm.Trashed, $sm.Err)
         $Script:Sync.Result = $null
         Start-Run -Engine 'tools' -Code 'Get-GhostDevices' -Title '' -OnDone { param($r) Show-GhostList $r }
         T 'Appareils fantômes (analyse + liste)' (Wait-Run 120) ("fantômes={0}" -f $Script:GhostChecks.Count)
