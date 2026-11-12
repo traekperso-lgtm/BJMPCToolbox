@@ -41,6 +41,19 @@ NOUVEAUTES 2.1.1
     variables, pages et onglets. Corrige : comparaisons avec $null, journal de Maintenance, corbeille du miroir.
     Verif.bat teste en plus, sur des fichiers d'essai effaces ensuite : doublons de photos (octets et pixels) et
     miroir reel avec robocopy (copie, exclusions, corbeille).
+  - Pilotes, refonte de l'onglet "Mises a jour" : la recherche par lecture du site du catalogue Microsoft (source
+    des erreurs) est retiree. Nouvelle analyse de TOUS les appareils, comparee a ce que Windows Update propose pour
+    ce materiel exact (pilotes signes, classes par Windows). Regles :
+      * jamais un pilote plus ancien que celui en place (date, puis version) ;
+      * pilote fourni par Windows (in-box, .sys de Windows) plus recent : on le garde, pas de pilote constructeur ;
+      * carte graphique : pas de Windows Update, dernier pilote par l'outil officiel (NVIDIA App, AMD Software,
+        Intel Driver & Support Assistant) ;
+      * appareil sans pilote (SMBus, Serial IO...) : paquet chipset signe Intel ou AMD (INF seul = "null driver").
+        Jamais de pilote non signe : Windows 11 le refuse et le forcer affaiblirait la securite du PC.
+    Installation : regles reverifiees juste avant, point de restauration, sauvegarde du pilote en place, puis
+    verification de l'appareil et retrait de l'ancienne version du magasin si elle ne sert plus (apres redemarrage
+    si Windows en demande un : onglet "Pilotes installes"). Retour arriere : onglet "Sauvegardes".
+    Outil du fabricant du PC propose selon la marque : Dell Command | Update, Lenovo System Update, HP.
 
 NOUVEAUTES 2.1
   1. REPARATION AUTOMATIQUE D'APRES L'OBSERVATEUR D'EVENEMENTS (Reparer > Reparation automatique)

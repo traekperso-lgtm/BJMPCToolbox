@@ -27,7 +27,7 @@ Le détail, version par version, est dans [`LISEZMOI.txt`](LISEZMOI.txt).
 ### ⚠️ Statut : mature mais expérimental
 
 - **Mature** : l'outil est utilisé en conditions réelles, chaque fonction est contrôlée (autotest, points de restauration, sauvegardes avant modification, journal).
-- **Expérimental** : il agit sur le système (services, registre, pilotes, stratégies). Windows évolue, les configurations matérielles sont infinies, et certaines fonctions (recherche de pilotes sur le Microsoft Update Catalog, valeurs par défaut de Windows 11) reposent sur des sources ou des valeurs qui peuvent varier selon l'édition, la version ou le moment.
+- **Expérimental** : il agit sur le système (services, registre, pilotes, stratégies). Windows évolue, les configurations matérielles sont infinies, et certaines fonctions (recherche de pilotes sur le Windows Update, valeurs par défaut de Windows 11) reposent sur des sources ou des valeurs qui peuvent varier selon l'édition, la version ou le moment.
 - **Nouveautés 2.x encore peu éprouvées sur le terrain** : la tâche planifiée de sauvegarde automatique, la mise à jour puis la restauration d'un pilote, et les réparations lancées depuis l'Observateur d'événements ont été testées hors ligne ou en simulation, pas encore sur un grand nombre de PC. Essayez-les d'abord sur une machine non critique.
 - **Utilisez-le en connaissance de cause** : créez un point de restauration (l'outil le fait pour vous avant les opérations sensibles) et relisez les listes avant de cliquer. Aucune garantie n'est fournie ; vous restez responsable de vos machines.
 
@@ -76,7 +76,7 @@ Prérequis : Windows 11, droits administrateur, Windows PowerShell 5.1 (inclus d
 - **Optimiser** : réglages de jeu de Windows, **HAGS** (carte dédiée : état, activer, désactiver), mode d'alimentation, cartes réseau, DNS chiffré, SSD et démarrage, échelle d'affichage, protection OLED.
 - **Confidentialité et réglages** : catalogue de réglages Windows à cocher.
 - **Applications** : catalogue de logiciels (winget), mises à jour, inventaire, retrait des applications préinstallées.
-- **Pilotes** : cinq onglets (mises à jour depuis le Microsoft Update Catalog, pilotes installés, ajouter un pilote, appareils absents, sauvegardes).
+- **Pilotes** : analyse de tous les appareils, comparée à ce que Windows Update propose pour ce matériel exact. Jamais un pilote plus ancien que celui en place, et le pilote fourni par Windows est gardé s'il est plus récent que celui du constructeur. Carte graphique : dernier pilote par l'outil officiel (NVIDIA, AMD, Intel). Appareils sans pilote : paquet chipset signé, jamais de pilote non signé. Point de restauration et sauvegarde avant, vérification de l'appareil et retrait de l'ancienne version après. Autres onglets : pilotes installés (anciennes versions), ajouter un pilote, appareils absents, sauvegardes.
 - **Sauvegarde des fichiers** : deux modes. *Dossiers choisis* : dossiers personnels et favoris copiés vers un autre disque, seuls les fichiers nouveaux ou modifiés, rien n'est jamais supprimé dans la sauvegarde. *Miroir* : copie exacte du dossier utilisateur (hors AppData, OneDrive et dossiers système) ; un fichier supprimé du PC reste 30 jours dans `Miroir-Corbeille`, et un passage qui retirerait une grande partie du miroir est suspendu jusqu'à confirmation. Tâche planifiée quotidienne ou hebdomadaire, indépendante de la Toolbox.
 - **Restauration** : journal des modifications (annuler tout ou une catégorie) et points de restauration.
 
@@ -93,7 +93,7 @@ Prérequis : Windows 11, droits administrateur, Windows PowerShell 5.1 (inclus d
 
 - **Sauvegarde des fichiers** : ce sont les fichiers personnels, pas Windows ni les logiciels ; une seule version de chaque fichier est gardée ; un fichier ouvert pendant la copie est repris la fois suivante ; les mots de passe des navigateurs ne sont pas copiés.
 - **Réparation automatique** : 33 règles couvrent les erreurs courantes ; le reste est montré sans réparation inventée.
-- Le Microsoft Update Catalog est approximatif et peut limiter les requêtes : un résultat anormal est signalé « Erreur », jamais pris pour « aucun pilote ».
+- Le Windows Update est approximatif et peut limiter les requêtes : un résultat anormal est signalé « Erreur », jamais pris pour « aucun pilote ».
 - La suppression « forcée » de pilotes (DriverStore Explorer) n'est volontairement pas reprise.
 - Les valeurs « par défaut de Windows 11 » peuvent varier selon l'édition et la version : comparez avant d'appliquer.
 
@@ -124,7 +124,7 @@ The version-by-version detail is in [`LISEZMOI.txt`](LISEZMOI.txt) (French).
 ### ⚠️ Status: mature but experimental
 
 - **Mature**: the tool is used in real-world conditions; each feature is checked (self-test, restore points, backups before changes, logs).
-- **Experimental**: it changes the system (services, registry, drivers, policies). Windows keeps evolving, hardware setups are endless, and some features (driver search on the Microsoft Update Catalog, Windows 11 default values) rely on sources or values that can vary with the edition, build or time.
+- **Experimental**: it changes the system (services, registry, drivers, policies). Windows keeps evolving, hardware setups are endless, and some features (driver search on the Windows Update, Windows 11 default values) rely on sources or values that can vary with the edition, build or time.
 - **2.x features with little field time yet**: the scheduled backup task, updating then restoring a driver, and repairs launched from the Event Viewer were tested offline or in simulation, not yet on many PCs. Try them on a non-critical machine first.
 - **Use it knowingly**: create a restore point (the tool does it for you before sensitive operations) and review the lists before clicking. No warranty is provided; you remain responsible for your machines.
 
@@ -173,7 +173,7 @@ Requirements: Windows 11, administrator rights, Windows PowerShell 5.1 (built in
 - **Optimise**: Windows gaming settings, **HAGS** (dedicated card: state, enable, disable), power mode, network adapters, encrypted DNS, SSD and startup, display scaling, OLED care.
 - **Privacy & settings**: a catalogue of Windows tweaks to tick.
 - **Applications**: software catalogue (winget), updates, inventory, removal of preinstalled apps.
-- **Drivers**: five tabs (updates from the Microsoft Update Catalog, installed drivers, add a driver, absent devices, backups).
+- **Drivers**: every device is checked against what Windows Update offers for that exact hardware. Never a driver older than the installed one, and the Windows in-box driver is kept when it is newer than the vendor's. Graphics card: latest driver through the official vendor tool (NVIDIA, AMD, Intel). Devices without a driver: signed chipset package, never an unsigned driver. Restore point and backup before, device check and removal of the old version after. Other tabs: installed drivers (old versions), add a driver, absent devices, backups.
 - **File backup**: two modes. *Chosen folders*: personal folders and bookmarks copied to another disk, only new or changed files, nothing is ever deleted from the backup. *Mirror*: exact copy of the user folder (except AppData, OneDrive and system folders); a file deleted from the PC is kept 30 days in `Miroir-Corbeille`, and a run that would remove a large part of the mirror is suspended until confirmed. Daily or weekly scheduled task, independent of the Toolbox.
 - **Restore**: change journal (undo everything or one category) and restore points.
 
@@ -190,7 +190,7 @@ Requirements: Windows 11, administrator rights, Windows PowerShell 5.1 (built in
 
 - **File backup**: personal files only, not Windows or installed software; a single version of each file is kept; a file open during the copy is picked up next time; browser passwords are not copied.
 - **Automatic repair**: 33 rules cover common errors; the rest is shown without an invented fix.
-- The Microsoft Update Catalog is fuzzy and may rate-limit: an abnormal response is reported as "Error", never mistaken for "no driver".
+- The Windows Update is fuzzy and may rate-limit: an abnormal response is reported as "Error", never mistaken for "no driver".
 - "Forced" driver deletion (as in DriverStore Explorer) is intentionally not implemented.
 - "Windows 11 default" values may vary with the edition and build: compare before applying.
 

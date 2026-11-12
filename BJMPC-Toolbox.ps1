@@ -2872,7 +2872,16 @@ $Script:DrvRows = New-Object 'System.Collections.Generic.List[object]'
 $Script:DrvInfo = @{}
 $Script:GhostChecks = New-Object 'System.Collections.Generic.List[object]'
 $Script:DrvTabs = @{}
-$Script:UpCols = @(3.2, 1.1, 1.5, 1.7, 1.0, 0.8, 1.0)
+$Script:UpCols = @(2.6, 0.9, 2.0, 2.0, 2.8)
+$Script:DrvVendors = @{
+    nvidia  = @{ Name = 'NVIDIA App'; Winget = ''; Url = 'https://www.nvidia.com/fr-fr/software/nvidia-app/' }
+    amd     = @{ Name = 'AMD Software : Adrenalin Edition'; Winget = ''; Url = 'https://www.amd.com/fr/support/download/drivers.html' }
+    intel   = @{ Name = 'Intel Driver & Support Assistant'; Winget = 'Intel.IntelDriverAndSupportAssistant'; Url = 'https://www.intel.fr/content/www/fr/fr/support/detect.html' }
+    amdchip = @{ Name = 'AMD Chipset Software'; Winget = ''; Url = 'https://www.amd.com/fr/support/download/drivers.html' }
+    dell    = @{ Name = 'Dell Command | Update'; Winget = 'Dell.CommandUpdate.Universal'; Url = 'https://www.dell.com/support/home/fr-fr' }
+    lenovo  = @{ Name = 'Lenovo System Update'; Winget = 'Lenovo.SystemUpdate'; Url = 'https://pcsupport.lenovo.com/fr/fr' }
+    hp      = @{ Name = 'HP Support Assistant'; Winget = ''; Url = 'https://support.hp.com/fr-fr/drivers' }
+}
 $Script:StoreCols = @(1.2, 1.8, 1.1, 2.4, 1.5, 1.0, 0.8, 1.5)
 $Script:GhostCols = @(3.2, 1.2, 1.6, 1.2)
 $Script:PrnChecks = New-Object 'System.Collections.Generic.List[object]'
@@ -2996,57 +3005,54 @@ function Set-UpChecks {
     foreach ($cb in $Script:UpChecks) { if ($cb.IsEnabled) { $cb.IsChecked = $Value } }
 }
 
-function Show-UpdateResults {
+function Show-DriverAnalysis {
     param($Res)
-    $Script:UpPanel.Children.Clear(); $Script:UpChecks.Clear()
-    $rows = @($Res | Where-Object { $_ })
-    if ($rows.Count -eq 0) {
-        $Script:UpSummary.Text = 'Aucun résultat : recherche interrompue ou aucun appareil à analyser avec ce choix.'
-        return
-    }
-    $upd = @($rows | Where-Object { $_.Status -eq 'found' } | Sort-Object Level, Class, Name)
-    $oth = @($rows | Where-Object { $_.Status -ne 'found' } | Sort-Object @{ Expression = { switch ([string]$_.State) { 'error' { 0 } 'none' { 1 } 'nomatch' { 1 } default { 2 } } } }, Name)
-    $nCur = @($oth | Where-Object { $_.State -eq 'current' }).Count
-    $nNone = @($oth | Where-Object { $_.State -eq 'none' -or $_.State -eq 'nomatch' }).Count
-    $nErr = @($oth | Where-Object { $_.State -eq 'error' }).Count
-    $s = ("{0} appareil(s) analysé(s) · {1} mise(s) à jour disponible(s) · {2} déjà à jour · {3} sans pilote trouvé" -f $rows.Count, $upd.Count, $nCur, $nNone)
-    if ($nErr -gt 0) { $s += (" · {0} en erreur de connexion" -f $nErr) }
+    $Script:UpPanel.Children.Clear(); $Script:UpChecks.Clear(); $Script:DrvVendorPanel.Children.Clear()
+    if (-not $Res -or $Res.Error) { $Script:UpSummary.Text = 'Analyse impossible : ' + $(if ($Res) { [string]$Res.Error } else { 'aucun résultat' }); return }
+    $rows = @($Res.Rows | Where-Object { $_ })
+    $nInst = @($rows | Where-Object { $_.Install }).Count
+    $s = ('{0} appareil(s) analysé(s) · {1} à jour · {2} mise(s) à jour proposée(s) · {3} autre(s) point(s)' -f [int]$Res.Total, [int]$Res.UpToDate, $nInst, ($rows.Count - $nInst))
+    if ($Res.WuError) { $s += ' · Windows Update injoignable : ' + [string]$Res.WuError }
     $Script:UpSummary.Text = $s
-    foreach ($r in $upd) {
-        $ext = ([int]$r.Level -ge 2)
-        $cb = New-Check '' (-not $ext)
-        $cb.Tag = ([string]$r.Id + '|' + $(if ($r.Alts) { [string]$r.Alts } else { [string]$r.Guid }) + '|' + [string]$(if ($ext) { 2 } else { 1 }))
-        $nameClr = '#ECEDEF'; if ($ext) { $nameClr = '#C9A227' }
+    foreach ($r in $rows) {
+        $cb = $null
+        if ($r.Install) { $cb = New-Check '' $true; $cb.Tag = [string]$r.UpdateId }
+        $clr = switch ([string]$r.Code) { 'install' { '#7CE3A1' } 'chipset' { '#F5B94A' } 'missing' { '#F5B94A' } 'gpu' { '#5AD1FF' } default { '#9298A3' } }
         $cells = @(
-            @{ T = [string]$r.Name; C = $nameClr; W = 'Medium'; Tip = ([string]$r.Title + "`nIdentifiant : " + [string]$r.HwId + $(if ($r.Note) { "`n" + [string]$r.Note } else { '' })) },
+            @{ T = [string]$r.Name; C = $(if ($r.Install) { '#ECEDEF' } else { '#C5C9D0' }); W = 'Medium'; Tip = [string]$r.Device },
             [string]$r.Class,
-            $(if ($r.Installed) { 'v' + [string]$r.Installed } else { 'aucun pilote' }),
-            @{ T = ('v' + [string]$r.Version); C = '#7CE3A1'; W = 'SemiBold'; Tip = $(if ($r.Verified) { 'Paquet contrôlé : son INF déclare bien cet appareil' } else { 'Paquet volumineux : contrôlé au moment de l''installation' }) },
-            [string]$r.Date,
-            ('{0} Mo' -f $r.SizeMB),
-            $(if ($ext) { @{ T = 'Élargie'; C = '#C9A227'; Tip = [string]$r.Note } } else { @{ T = 'Stricte'; C = '#7CE3A1' } })
+            [string]$r.Current,
+            @{ T = [string]$r.Proposed; C = $(if ($r.Install) { '#7CE3A1' } else { '#9298A3' }); Tip = $(if ($r.SizeMB) { '{0} Mo' -f $r.SizeMB } else { '' }) },
+            @{ T = [string]$r.Decision; C = $clr; Tip = [string]$r.Decision }
         )
         $row = New-TableRow $Script:UpCols $cells $cb
-        Add-DeviceMenu $row ([string]$r.Id)
+        Add-DeviceMenu $row ([string]$r.Device)
         [void]$Script:UpPanel.Children.Add($row)
-        [void]$Script:UpChecks.Add($cb)
+        if ($cb) { [void]$Script:UpChecks.Add($cb) }
     }
-    foreach ($r in $oth) {
-        $st = 'Introuvable'; $clr = '#9298A3'
-        if ($r.State -eq 'current') { $st = 'À jour'; $clr = '#7CE3A1' }
-        elseif ($r.State -eq 'error') { $st = 'Erreur'; $clr = '#FF8A80' }
-        elseif ($r.State -eq 'nomatch') { $st = 'Aucun paquet adapté'; $clr = '#C9A227' }
-        $cells = @(
-            @{ T = [string]$r.Name; C = '#9298A3'; Tip = [string]$r.Note },
-            @{ T = [string]$r.Class; C = '#9298A3' },
-            @{ T = $(if ($r.Installed) { 'v' + [string]$r.Installed } else { 'aucun pilote' }); C = '#9298A3' },
-            @{ T = $st; C = $clr; Tip = [string]$r.Note },
-            '', '', ''
-        )
-        $row = New-TableRow $Script:UpCols $cells
-        Add-DeviceMenu $row ([string]$r.Id)
-        [void]$Script:UpPanel.Children.Add($row)
+    # Outils officiels : carte graphique (dernier pilote), fabricant du PC, chipset (« null driver » signé)
+    $shown = @{}
+    $addVendor = {
+        param([string]$Key, [string]$Title, [string]$Desc)
+        if ($shown.ContainsKey($Key) -or -not $Script:DrvVendors.ContainsKey($Key)) { return }
+        $shown[$Key] = $true
+        $v = $Script:DrvVendors[$Key]
+        $btns = @()
+        if ($v.Winget) { $btns += (New-Btn ('Installer ' + $v.Name) (New-Spec 'tools' ("Install-WingetApps -Ids @('" + $v.Winget + "')") 'Installation de l''outil du fabricant' @{} ('Installer ' + $v.Name + ' (outil officiel, via winget) ?'))) }
+        $btns += (New-Btn 'Site officiel' @{ Fn = [scriptblock]::Create("try { Start-Process '" + $v.Url + "' } catch {}") })
+        Add-Row $Script:DrvVendorPanel $Title $Desc '' 'n' $btns
     }
+    foreach ($g in @($Res.Gpus)) {
+        $vn = [string]$g.Vendor
+        $cur = $(if ($g.Inbox) { 'pilote générique de Windows' } else { ('pilote {0} du {1}' -f $g.Version, $g.Date) })
+        & $addVendor $vn ('Carte graphique : ' + [string]$g.Name) ('Actuellement : ' + $cur + '. Le dernier pilote s''installe avec l''outil officiel ' + $Script:DrvVendors[$vn].Name + ' (une étape se fait dans cette application).')
+    }
+    if ($Res.Maker) { & $addVendor ([string]$Res.Maker) ('Outil du fabricant de ce PC : ' + $Script:DrvVendors[[string]$Res.Maker].Name) 'Pilotes, BIOS et micrologiciels propres à ce modèle, quand Windows Update ne les propose pas.' }
+    if (@($rows | Where-Object { $_.Code -eq 'chipset' }).Count -gt 0) {
+        if ([string]$Res.Cpu -eq 'amd') { & $addVendor 'amdchip' 'Appareils sans pilote : AMD Chipset Software' 'Paquet signé d''AMD qui donne un pilote (ou un « null driver ») aux appareils du chipset.' }
+        else { & $addVendor 'intel' 'Appareils sans pilote : paquet chipset Intel' 'Intel Driver & Support Assistant installe le paquet chipset signé (INF seul, sert de « null driver ») pour SMBus, Serial IO…' }
+    }
+    if ($Script:DrvVendorPanel.Children.Count -eq 0) { [void]$Script:DrvVendorPanel.Children.Add((New-Text 'Aucun outil de fabricant nécessaire pour ce PC.' 13 '#9298A3' 'Normal' -Wrap)) }
 }
 
 # ---------------------------------------------------------------- Onglet « Pilotes installés » (magasin)
@@ -3338,7 +3344,7 @@ function New-ToggleButton {
 }
 
 function Build-Drivers {
-    $p = New-Page 'drivers' 'Pilotes' 'Mettez à jour les pilotes avec le catalogue officiel de Microsoft, faites le ménage dans le magasin de pilotes et sauvegardez : tout est contrôlé avant installation et sauvegardé avant suppression.'
+    $p = New-Page 'drivers' 'Pilotes' 'Analyse de tous les pilotes, mise à jour par Windows Update avec des règles strictes (jamais plus ancien, pilote de Windows gardé s''il est plus récent), outils officiels pour la carte graphique et le fabricant, ménage des anciennes versions : tout est sauvegardé avant.'
 
     # --- Barre d'onglets
     $tabs = @(@('upd', 'Mises à jour'), @('store', 'Pilotes installés'), @('add', 'Ajouter un pilote'), @('ghost', 'Appareils absents'), @('bak', 'Sauvegardes'))
@@ -3356,54 +3362,42 @@ function Build-Drivers {
     [void]$p.Children.Add($tb)
 
     # =============== Mises à jour
-    $u = New-Card 'Mises à jour des pilotes' 'Pour chaque appareil, cherche sur le catalogue officiel de Microsoft (cartes graphiques NVIDIA / AMD / Intel comprises) un pilote plus récent. Rien ne s''installe sans votre accord : chaque pilote est contrôlé (signature WHQL Microsoft, identifiant, architecture, classe, version), un point de restauration et une copie de l''ancien pilote sont créés avant.' 'Contrôle WHQL' 'g'
-    $Script:CmbScope = New-Combo @(@('Appareils principaux (graphique, réseau, son, Bluetooth, stockage, caméra…)', 'Main'), @('Appareils sans pilote seulement', 'Missing'), @('Tous les appareils (plus long)', 'All')) 430
-    $Script:CmbLevel = New-Combo @(@('Stricte : identifiant exact (recommandée)', 'strict'), @('Élargie : si rien en strict, essayer la puce, les identifiants compatibles et le nom', 'ext')) 430
-    [void]$u.Body.Children.Add((New-OptionPair 'Appareils :' $Script:CmbScope))
-    [void]$u.Body.Children.Add((New-OptionPair 'Analyse :' $Script:CmbLevel))
-    $cs = New-Spec 'tools' '' 'Recherche des pilotes (Catalog)'
-    $cs.CodeFn = {
-        $sc = 'Main'; $ex = ''
-        try { $sc = [string]$Script:CmbScope.SelectedItem.Tag; if ([string]$Script:CmbLevel.SelectedItem.Tag -eq 'ext') { $ex = ' -Extended' } } catch {}
-        if ($sc -notmatch '^(Main|Missing|All)$') { $sc = 'Main' }
-        return ('Find-DriverCatalog -Scope ' + $sc + $ex)
-    }
-    $cs.ConfirmFn = { try { if ([string]$Script:CmbScope.SelectedItem.Tag -eq 'All') { return 'Analyser tous les appareils peut durer plusieurs minutes (une recherche par appareil). Continuer ?' } } catch {}; return '' }
-    $cs.OnDone = { param($r) Show-UpdateResults $r }
-    $ci = New-Spec 'tools' '' 'Installation des pilotes (Catalog)'
+    $u = New-Card 'Analyse et mise à jour des pilotes' 'Vérifie tous les appareils du PC et compare chaque pilote à ce que Windows Update propose pour ce matériel exact (pilotes signés, classés par Windows). Règles : jamais un pilote plus ancien que celui en place, jamais à la place d''un pilote de Windows plus récent ; carte graphique : dernier pilote par l''outil officiel du fabricant. Avant installation : point de restauration et sauvegarde du pilote en place ; après : vérification de l''appareil, puis retrait de l''ancienne version si elle ne sert plus.'
+    $cs = New-Spec 'tools' 'Get-DriverAnalysis' 'Analyse des pilotes' @{} '' { param($r) Show-DriverAnalysis $r }
+    $ci = New-Spec 'tools' '' 'Installation des pilotes'
     $ci.CodeFn = {
-        $it = @($Script:UpChecks | Where-Object { $_.IsChecked } | ForEach-Object { "'" + ([string]$_.Tag -replace '[^A-Za-z0-9_\\&\.\-\{\}#|~]', '') + "'" })
-        if ($it.Count -eq 0) { return '' }
-        return ('Install-CatalogDrivers -Items @(' + ($it -join ',') + ')')
+        $it = @($Script:UpChecks | Where-Object { $_.IsChecked -and ([string]$_.Tag) -match '^[0-9a-fA-F-]{36}$' } | ForEach-Object { "'" + [string]$_.Tag + "'" } | Sort-Object -Unique)
+        if ($it.Count -eq 0) { Add-Console 'Pilotes : aucune mise à jour cochée.' 'Yellow'; return '' }
+        return ('Install-DriverSelection -Ids @(' + ($it -join ',') + ')')
     }
-    $ci.ConfirmFn = {
-        $n = @($Script:UpChecks | Where-Object { $_.IsChecked }).Count
-        $ne = @($Script:UpChecks | Where-Object { $_.IsChecked -and ([string]$_.Tag).EndsWith('|2') }).Count
-        $warn = ''; if ($ne -gt 0) { $warn = " ATTENTION : $ne de ces pilotes viennent de l'analyse élargie (identifiant de puce ou compatible, SUBSYS non exigé) : signature WHQL Microsoft, architecture, classe et version restent vérifiées, et Windows décide en dernier s'il applique le pilote." }
-        "Télécharger depuis Microsoft et installer $n pilote(s) ? Chaque pilote est d'abord contrôlé et refusé au moindre doute. Un point de restauration et une copie de l'ancien pilote sont créés avant. L'écran peut clignoter (pilote graphique) et un redémarrage peut être demandé. La taille de chaque téléchargement est indiquée dans la liste." + $warn
-    }
-    $ci.OnDone = { param($r) $Script:UpPanel.Children.Clear(); $Script:UpChecks.Clear(); $Script:UpSummary.Text = 'Terminé. Relancez la recherche pour vérifier ce qui reste.' }
+    $ci.ConfirmFn = { "Installer {0} pilote(s) depuis Windows Update ? Un point de restauration et une copie des pilotes en place sont faits avant ; chaque pilote est revérifié juste avant l'installation. L'écran peut clignoter et un redémarrage peut être demandé." -f @($Script:UpChecks | Where-Object { $_.IsChecked }).Count }
+    $ci.OnDone = { param($r) $Script:UpPanel.Children.Clear(); $Script:UpChecks.Clear(); $Script:UpSummary.Text = 'Terminé. Relancez l''analyse pour vérifier ce qui reste (après redémarrage si Windows le demande).'; try { Refresh-DriverBackups } catch {} }
     $ub = New-Object Windows.Controls.WrapPanel
     $ub.Margin = '0,14,0,0'
-    $b1 = New-Btn 'Rechercher les mises à jour' $cs -Primary; $b1.Margin = '0,4,0,4'
+    $b1 = New-Btn 'Analyser les pilotes' $cs -Primary; $b1.Margin = '0,4,0,4'
     [void]$ub.Children.Add($b1)
     [void]$ub.Children.Add((New-Btn 'Installer les mises à jour cochées' $ci -Primary))
     [void]$ub.Children.Add((New-ToggleButton 'Tout cocher' 'up' $true))
     [void]$ub.Children.Add((New-ToggleButton 'Tout décocher' 'up' $false))
     [void]$ub.Children.Add((New-Btn 'Gestionnaire de périphériques' @{ Fn = { try { Start-Process 'devmgmt.msc' } catch {} } }))
-    [void]$ub.Children.Add((New-Btn 'Windows Update' @{ Fn = { try { Start-Process 'ms-settings:windowsupdate' } catch {} } }))
     [void]$u.Body.Children.Add($ub)
-    $Script:UpSummary = New-Text 'Cliquez sur « Rechercher les mises à jour » : la recherche ne modifie rien.' 13 '#5AD1FF' 'Medium' -Wrap
+    $Script:UpSummary = New-Text 'Cliquez sur « Analyser les pilotes » : l''analyse ne modifie rien (1 à 3 minutes, Windows Update est interrogé).' 13 '#5AD1FF' 'Medium' -Wrap
     $Script:UpSummary.Margin = '0,12,0,8'
     [void]$u.Body.Children.Add($Script:UpSummary)
-    $uh = New-TableRow $Script:UpCols @('Appareil', 'Classe', 'Installé', 'Proposé', 'Date', 'Taille', 'Analyse') -Header
+    $uh = New-TableRow $Script:UpCols @('Appareil', 'Classe', 'Pilote en place', 'Proposé (Windows Update)', 'Décision') -Header
     $uh.Margin = '0,0,18,0'
     [void]$u.Body.Children.Add($uh)
     $Script:UpPanel = New-Object Windows.Controls.StackPanel
     [void]$u.Body.Children.Add((New-ScrollList $Script:UpPanel 380))
-    [void]$u.Body.Children.Add((New-Text 'Les résultats « Élargie » (en orange) ne sont pas cochés : à vérifier avant d''installer. Clic droit sur un appareil : ses propriétés Windows.' 12 '#C9A227' 'Normal' -Wrap))
+    [void]$u.Body.Children.Add((New-Text 'Seuls les appareils à traiter sont listés ; les autres sont à jour. Clic droit sur un appareil : ses propriétés Windows.' 12 '#9298A3' 'Normal' -Wrap))
     $u.Body.Children[$u.Body.Children.Count - 1].Margin = '0,8,0,0'
     [void]$Script:DrvTabs['upd'].Panel.Children.Add($u.Card)
+
+    $vc = New-Card 'Outils officiels des fabricants' 'Carte graphique : c''est le dernier pilote du fabricant qui compte, pas celui de Windows Update. Fabricant du PC : pilotes et BIOS propres au modèle. Appareils sans pilote (SMBus, Serial IO…) : paquet chipset signé, qui sert de « null driver » ; la Toolbox n''installe jamais de pilote non signé. La liste se remplit après l''analyse.'
+    $Script:DrvVendorPanel = New-Object Windows.Controls.StackPanel
+    [void]$Script:DrvVendorPanel.Children.Add((New-Text 'Lancez l''analyse pour voir les outils utiles à ce PC.' 13 '#9298A3' 'Normal' -Wrap))
+    [void]$vc.Body.Children.Add($Script:DrvVendorPanel)
+    [void]$Script:DrvTabs['upd'].Panel.Children.Add($vc.Card)
 
     # =============== Pilotes installés (magasin)
     $c = New-Card 'Pilotes installés (magasin de pilotes)' 'Les pilotes tiers conservés par Windows, comme dans DriverStore Explorer. Les anciennes versions (une plus récente existe) peuvent être supprimées pour gagner de la place. Une copie de chaque pilote supprimé est d''abord enregistrée dans C:\BJMPC-Logs\Pilotes ; un pilote utilisé par un appareil est refusé par Windows, ceux nécessaires au démarrage sont protégés.' 'Sauvegarde automatique' 'g'
@@ -3707,6 +3701,7 @@ $Script:PlainMap = @(
             if ($names.Count -gt 0) { $s += ' Par exemple : ' + (Join-French @($names | Select-Object -First 4)) + '.' }
             return @($s, 'Vous pouvez les récupérer à tout moment depuis la boutique de Windows.')
         } }
+    @{ K = '¦Installation de l.outil du fabricant'; C = 'logi'; T = 'Nous avons installé l''outil officiel du fabricant qui tient à jour les pilotes de votre matériel.' }
     @{ K = '^Install-WingetApps|¦Installation des applications|¦Installation par identifiant'; C = 'logi'; T = {
             param($e)
             $names = @(@($e.Ok) | ForEach-Object { $x = Get-AppDisplayName ([string]$_); if ($x) { $x } else { [string]$_ } })
@@ -3715,19 +3710,13 @@ $Script:PlainMap = @(
         } }
     @{ K = '^Update-WingetApps|¦Mise à jour des applications'; C = 'logi'; T = 'Nous avons mis à jour vos logiciels pour qu''ils soient plus sûrs et plus récents.' }
     @{ K = '^Export-InstalledSoftware|¦Inventaire des logiciels'; C = 'logi'; T = 'Nous avons dressé la liste de tous les logiciels installés sur votre ordinateur.' }
-    @{ K = '^Get-DriverDevices|¦Liste des appareils'; C = 'skip'; T = '' }
-    @{ K = '^Find-DriverCatalog|¦Recherche des pilotes \(Catalog\)'; C = 'verif'; T = 'Nous avons cherché, sur le site officiel de Microsoft, des versions plus récentes des petits programmes qui font fonctionner chaque composant de votre ordinateur.' }
-    @{ K = '^Install-CatalogDrivers|¦Installation des pilotes \(Catalog\)'; C = 'logi'; T = {
+    @{ K = '^Get-DriverAnalysis|¦Analyse des pilotes'; C = 'verif'; T = 'Nous avons vérifié les petits programmes (pilotes) qui font fonctionner chaque composant de votre ordinateur, et cherché auprès de Windows Update des versions plus récentes et certifiées.' }
+    @{ K = '^Install-DriverSelection|¦Installation des pilotes'; C = 'logi'; T = {
             param($e)
             $n = @($e.Ok).Count
-            $r = @()
-            if ($n -gt 0) {
-                $r += $(if ($n -eq 1) { 'Nous avons mis à jour un composant de votre ordinateur avec un programme officiel Microsoft, vérifié et certifié.' } else { "Nous avons mis à jour $n composants de votre ordinateur avec des programmes officiels Microsoft, vérifiés et certifiés." })
-                $r += 'L''ancienne version a été gardée de côté, au cas où.'
-            }
-            if (@($e.Bad).Count -gt 0) { $r += 'Quelques mises à jour n''ont pas passé notre contrôle de sécurité : nous ne les avons pas installées, par prudence.' }
-            if ($e.Reboot -and $n -gt 0) { $r += 'Un redémarrage sera nécessaire pour terminer.' }
-            return $r
+            if ($n -eq 0) { return @() }
+            $s = if ($n -eq 1) { 'Nous avons mis à jour un des petits programmes (pilotes) qui font fonctionner les composants de votre ordinateur, avec une version officielle et certifiée.' } else { "Nous avons mis à jour $n des petits programmes (pilotes) qui font fonctionner les composants de votre ordinateur, avec des versions officielles et certifiées." }
+            return @($s, 'L''ancienne version a été sauvegardée avant : on peut revenir en arrière.')
         } }
     @{ K = '^Add-DriverFromFolder|¦Ajout de pilote'; C = 'logi'; T = {
             param($e)
@@ -3742,16 +3731,6 @@ $Script:PlainMap = @(
             if ($n -eq 0) { return @() }
             $s = if ($n -eq 1) { 'Nous avons effacé la trace d''un appareil qui n''est plus branché depuis longtemps.' } else { "Nous avons effacé la trace de $n appareils qui ne sont plus branchés depuis longtemps." }
             return @($s, 'S''ils sont rebranchés un jour, Windows les reconnaîtra tout seul.')
-        } }
-    @{ K = '^Get-DriverUpdates|¦Recherche des pilotes'; C = 'verif'; T = 'Nous avons cherché si Windows proposait des versions plus récentes des petits programmes qui font fonctionner les composants de votre ordinateur.' }
-    @{ K = '^Install-DriverUpdates|¦Installation des pilotes'; C = 'logi'; T = {
-            param($e)
-            $n = @($e.Ok).Count
-            if ($n -eq 0) { return @() }
-            $s = if ($n -eq 1) { 'Nous avons mis à jour un des petits programmes qui font fonctionner les composants de votre ordinateur.' } else { "Nous avons mis à jour $n des petits programmes qui font fonctionner les composants de votre ordinateur." }
-            $r = @($s, 'Cela améliore la stabilité et la compatibilité.')
-            if ($e.Reboot) { $r += 'Un redémarrage sera nécessaire pour terminer la mise à jour.' }
-            return $r
         } }
     @{ K = '^Remove-DriverPackages|¦Suppression de pilotes'; C = 'menage'; T = {
             param($e)
@@ -4814,8 +4793,10 @@ if ($env:BJMPC_SELFTEST -and $env:BJMPC_SELFTEST -ne 'PREVIEW') {
         $Script:Sync.Result = $null
         Start-Run -Engine 'tools' -Code 'Get-DriverStoreList' -Title '' -OnDone { param($r) Show-DriverList $r }
         T 'Magasin de pilotes (analyse + liste)' (Wait-Run 180) ("pilotes={0}" -f $Script:DrvChecks.Count)
-        Start-Run -Engine 'tools' -Code 'Find-DriverCatalog -Scope Missing' -Title '' -OnDone { param($r) Show-UpdateResults $r }
-        T 'Recherche de pilotes (Catalog, appareils sans pilote)' (Wait-Run 300) ("lignes={0}, cases={1}" -f @($Script:UpPanel.Children).Count, $Script:UpChecks.Count)
+        $Script:SelfDrv = $null
+        Start-Run -Engine 'tools' -Code 'Get-DriverAnalysis' -Title '' -OnDone { param($r) $Script:SelfDrv = $r; Show-DriverAnalysis $r }
+        $dOk = Wait-Run 300
+        T 'Pilotes : analyse complète (appareils + Windows Update + règles)' ($dOk -and $Script:SelfDrv -and -not $Script:SelfDrv.Error -and [int]$Script:SelfDrv.Total -gt 0) ("appareils={0}, à jour={1}, lignes={2}, cases={3}, outils={4} {5}" -f [int]$Script:SelfDrv.Total, [int]$Script:SelfDrv.UpToDate, @($Script:UpPanel.Children).Count, $Script:UpChecks.Count, @($Script:DrvVendorPanel.Children).Count, [string]$Script:SelfDrv.WuError)
         Start-Run -Engine 'tools' -Code 'Get-Win11DefaultsState' -Title '' -OnDone { param($r) Show-DefaultsRows $r }
         T 'Comparaison avec Windows 11 (analyse + liste)' (Wait-Run 120) ("écarts={0}, lignes={1}" -f $Script:DefChecks.Count, @($Script:DefPanel.Children).Count)
         $Script:Sync.Result = $null

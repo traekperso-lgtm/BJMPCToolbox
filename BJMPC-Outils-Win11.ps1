@@ -540,79 +540,10 @@ function Get-InfDeviceMatches {
     return @($hit.Keys)
 }
 
-# ---------------------------------------------------------------- Pilotes proposés par Windows Update
-function Get-DriverUpdates {
-    # Lecture seule : demande à Windows Update quels pilotes il propose pour cet ordinateur.
-    Write-Log '=== Pilotes proposés par Windows Update (recherche, 1 à 2 minutes) ==='
-    try {
-        $session = New-Object -ComObject Microsoft.Update.Session
-        $searcher = $session.CreateUpdateSearcher()
-        $res = $searcher.Search("IsInstalled=0 and IsHidden=0 and Type='Driver'")
-        $rows = New-Object System.Collections.ArrayList
-        foreach ($u in $res.Updates) {
-            $dt = ''; try { $dt = ([datetime]$u.DriverVerDate).ToString('yyyy-MM-dd') } catch {}
-            $mb = 0; try { $mb = [math]::Round([double]$u.MaxDownloadSize / 1MB, 1) } catch {}
-            [void]$rows.Add([pscustomobject]@{
-                Id = [string]$u.Identity.UpdateID; Title = [string]$u.Title; Maker = [string]$u.DriverManufacturer
-                Model = [string]$u.DriverModel; Class = [string]$u.DriverClass; Date = $dt; SizeMB = $mb
-            })
-        }
-        if ($rows.Count -eq 0) { Write-Log 'Windows Update ne propose aucun pilote : les pilotes sont à jour selon Microsoft.' 'OK' }
-        else { Write-Log ("{0} pilote(s) proposé(s) par Windows Update." -f $rows.Count) 'WARN' }
-        Set-SyncResult @($rows)
-    } catch { Write-Log ("Recherche impossible : " + $_.Exception.Message) 'WARN' }
-}
-
-function Install-DriverUpdates {
-    # Télécharge et installe les pilotes choisis (identifiants Windows Update). Windows garde l'ancien pilote :
-    # retour possible depuis le Gestionnaire de périphériques (Propriétés > Pilote > Restaurer le pilote).
-    param([string[]]$Ids)
-    $ids = @($Ids | Where-Object { $_ -match '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$' } | ForEach-Object { $_.ToLower() })
-    if ($ids.Count -eq 0) { Write-Log 'Aucun pilote valide à installer.' 'WARN'; return }
-    Write-Log ("=== Installation de {0} pilote(s) via Windows Update ===" -f $ids.Count)
-    $okT = @(); $koT = @()
-    try {
-        $session = New-Object -ComObject Microsoft.Update.Session
-        $res = $session.CreateUpdateSearcher().Search("IsInstalled=0 and IsHidden=0 and Type='Driver'")
-        $coll = New-Object -ComObject Microsoft.Update.UpdateColl
-        foreach ($u in $res.Updates) {
-            if ($ids -contains ([string]$u.Identity.UpdateID).ToLower()) {
-                try { if (-not $u.EulaAccepted) { $u.AcceptEula() } } catch {}
-                [void]$coll.Add($u)
-            }
-        }
-        if ($coll.Count -eq 0) { Write-Log "Ces pilotes ne sont plus proposés par Windows Update." 'WARN'; Set-SyncResult @{ Ok = @(); Bad = @(); Reboot = $false }; return }
-        Write-Log ("Téléchargement de {0} pilote(s)…" -f $coll.Count)
-        $dl = $session.CreateUpdateDownloader(); $dl.Updates = $coll
-        $dr = $dl.Download()
-        if ($dr.ResultCode -ne 2 -and $dr.ResultCode -ne 3) { Write-Log ("Téléchargement incomplet (code {0})." -f $dr.ResultCode) 'WARN' }
-        Write-Log 'Installation… (l''écran peut clignoter)'
-        $inst = $session.CreateUpdateInstaller(); $inst.Updates = $coll
-        $ir = $inst.Install()
-        for ($i = 0; $i -lt $coll.Count; $i++) {
-            $t = [string]$coll.Item($i).Title
-            $rc = [int]$ir.GetUpdateResult($i).ResultCode
-            if ($rc -eq 2) { Write-Log "Installé : $t" 'OK'; $okT += $t }
-            else { Write-Log ("Échec (code {0}) : {1}" -f $rc, $t) 'WARN'; $koT += $t }
-        }
-        $reb = [bool]$ir.RebootRequired
-        if ($reb) { $Script:RebootNeeded = $true; Write-Log 'Un redémarrage est nécessaire pour terminer.' 'WARN' }
-        Set-SyncResult @{ Ok = @($okT); Bad = @($koT); Reboot = $reb }
-    } catch {
-        Write-Log ("Installation impossible : " + $_.Exception.Message) 'ERROR'
-        Set-SyncResult @{ Ok = @($okT); Bad = @($ids); Reboot = $false }
-    }
-}
-
-# ---------------------------------------------------------------- Recherche de pilotes (Microsoft Update Catalog) avec contrôle WHQL strict
-# Principe : on ne fait confiance ni au site, ni au transport (HTTP) : seule compte la signature Microsoft
-# (« Microsoft Windows Hardware Compatibility Publisher ») du fichier .cat, vérifiée ici AVANT toute installation,
-# puis revérifiée par Windows lui-même à l'installation (pnputil, sans /force).
-# Dossier de travail des pilotes : sous C:\BJMPC-Logs, que la Toolbox réserve en écriture aux administrateurs
-# (un dossier temporaire d'utilisateur pourrait être modifié entre le contrôle d'un pilote et son installation).
+# ---------------------------------------------------------------- Contrôle des paquets de pilotes (ajout depuis un dossier, restauration)
+# Seule compte la signature Microsoft du fichier .cat, vérifiée ici AVANT toute installation, puis revérifiée par
+# Windows lui-même (pnputil, sans /force). Dossier de travail sous C:\BJMPC-Logs, réservé aux administrateurs.
 $Script:DrvTmp = Join-Path (Join-Path $env:SystemDrive 'BJMPC-Logs') 'Travail\pilotes'
-$Script:CatalogBase = 'https://www.catalog.update.microsoft.com'
-$Script:DrvClasses = @('Display', 'Net', 'MEDIA', 'Bluetooth', 'System', 'HDC', 'SCSIAdapter', 'Image', 'Camera', 'Biometric', 'USB', 'Sensor', 'Firmwares', 'SmartCardReader', 'AudioEndpoint', 'Processor', 'Printer', 'Ports')
 
 function New-DriverRestorePoint {
     # Rend $true seulement si un point de restauration de moins de 10 minutes existe réellement après l'appel :
@@ -633,181 +564,6 @@ function ConvertTo-SafeVersion {
     $v = $null
     if ($Text -and [version]::TryParse(($Text.Trim()), [ref]$v)) { return $v }
     return $null
-}
-
-function Get-DriverDevices {
-    # Lecture seule : appareils branchés avec leur pilote actuel (liste complète pour l'interface).
-    $l = @(Get-DriverDeviceRows)
-    Set-SyncResult $l
-}
-
-function Get-DriverDeviceRows {
-    # Lecture seule : appareils branchés pour lesquels un pilote plus récent peut exister, avec leur pilote actuel.
-    Write-Log '=== Appareils et pilotes installés ==='
-    $rows = New-Object System.Collections.ArrayList
-    try {
-        $sd = @(Get-CimInstance Win32_PnPSignedDriver -ErrorAction Stop | Where-Object { $_.DeviceID -and $_.DeviceName -and $Script:DrvClasses -contains [string]$_.DeviceClass })
-        $present = @{}
-        foreach ($d in @(Get-PnpDevice -PresentOnly -ErrorAction Stop)) { $present[[string]$d.InstanceId] = 1 }
-        foreach ($d in $sd) {
-            if (-not $present.ContainsKey([string]$d.DeviceID)) { continue }
-            if (([string]$d.DeviceID) -match '^(ROOT|SWD|HTREE)\\') { continue }
-            $dt = ''; try { $dt = ([datetime]$d.DriverDate).ToString('yyyy-MM-dd') } catch {}
-            [void]$rows.Add([pscustomobject]@{
-                Id = [string]$d.DeviceID; Name = [string]$d.DeviceName; Class = [string]$d.DeviceClass; Maker = [string]$d.Manufacturer
-                Version = [string]$d.DriverVersion; Date = $dt; Inf = [string]$d.InfName; ClassGuid = [string]$d.ClassGuid; Problem = 0
-            })
-        }
-    } catch { Write-Log ("Lecture impossible : " + $_.Exception.Message) 'WARN'; return }
-    # Appareils présents sans pilote ou en erreur (« Autres périphériques », « Périphérique PCI »…)
-    try {
-        $have = @{}; foreach ($r in $rows) { $have[[string]$r.Id] = 1 }
-        foreach ($d in @(Get-CimInstance Win32_PnPEntity -ErrorAction Stop | Where-Object { $_.ConfigManagerErrorCode -ne 0 -and $_.ConfigManagerErrorCode -ne 22 -and $_.ConfigManagerErrorCode -ne 45 })) {
-            $id = [string]$d.DeviceID
-            if (-not $id -or $have.ContainsKey($id) -or $id -match '^(ROOT|SWD|HTREE)\\') { continue }
-            $cls = if ($d.PNPClass) { [string]$d.PNPClass } else { 'Autres' }
-            [void]$rows.Add([pscustomobject]@{
-                Id = $id; Name = $(if ($d.Name) { [string]$d.Name } else { $id }); Class = $cls; Maker = [string]$d.Manufacturer
-                Version = ''; Date = ''; Inf = ''; ClassGuid = ''; Problem = [int]$d.ConfigManagerErrorCode
-            })
-        }
-    } catch { Write-Log ("Appareils sans pilote : lecture impossible : " + $_.Exception.Message) 'WARN' }
-    $list = @($rows | Sort-Object @{ Expression = { [int]($_.Problem -gt 0) }; Descending = $true }, Class, Name)
-    Write-Log ("{0} appareil(s) analysable(s), dont {1} sans pilote ou en erreur." -f $list.Count, @($list | Where-Object { $_.Problem -gt 0 }).Count) 'OK'
-    return $list
-}
-
-function Get-DeviceInfo {
-    # Nom, classe, pilote actuel d'un appareil (avec ou sans pilote installé).
-    param([string]$InstanceId, $SignedMap)
-    $d = $null; if ($SignedMap) { $d = $SignedMap[$InstanceId] }
-    if (-not $d) { try { $d = Get-CimInstance Win32_PnPSignedDriver -ErrorAction Stop | Where-Object { [string]$_.DeviceID -eq $InstanceId } | Select-Object -First 1 } catch {} }
-    if ($d) {
-        # Date du pilote installé : Windows classe les pilotes par date avant de regarder le numéro de version.
-        $dt = $null; try { if ($d.DriverDate) { $dt = [datetime]$d.DriverDate } } catch {}
-        return [pscustomobject]@{ Name = [string]$d.DeviceName; Class = [string]$d.DeviceClass; Version = [string]$d.DriverVersion; ClassGuid = [string]$d.ClassGuid; Inf = [string]$d.InfName; Date = $dt }
-    }
-    $e = $null
-    try { $e = Get-CimInstance Win32_PnPEntity -ErrorAction Stop | Where-Object { [string]$_.DeviceID -eq $InstanceId } | Select-Object -First 1 } catch {}
-    if ($e) { return [pscustomobject]@{ Name = $(if ($e.Name) { [string]$e.Name } else { $InstanceId }); Class = [string]$e.PNPClass; Version = ''; ClassGuid = ''; Inf = ''; Date = $null } }
-    return $null
-}
-
-function Get-DeviceHardwareIds {
-    param([string]$InstanceId)
-    $ids = @()
-    try {
-        $p = Get-PnpDeviceProperty -InstanceId $InstanceId -KeyName 'DEVPKEY_Device_HardwareIds' -ErrorAction Stop
-        $ids = @($p.Data | Where-Object { $_ })
-    } catch {}
-    return $ids
-}
-
-function Get-DeviceCompatibleIds {
-    param([string]$InstanceId)
-    $ids = @()
-    try { $p = Get-PnpDeviceProperty -InstanceId $InstanceId -KeyName 'DEVPKEY_Device_CompatibleIds' -ErrorAction Stop; $ids = @($p.Data | Where-Object { $_ }) } catch {}
-    return $ids
-}
-
-function Invoke-CatalogWeb {
-    param([string]$Url, [string]$PostBody)
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    $req = [Net.HttpWebRequest]::Create($Url)
-    $req.Timeout = 30000; $req.ReadWriteTimeout = 30000
-    $req.UserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
-    $req.Accept = 'text/html,application/xhtml+xml,*/*;q=0.8'
-    if (-not $Script:CatCookies) { $Script:CatCookies = New-Object Net.CookieContainer }
-    $req.CookieContainer = $Script:CatCookies
-    if ($PostBody) {
-        $req.Method = 'POST'; $req.ContentType = 'application/x-www-form-urlencoded'
-        $bytes = [Text.Encoding]::UTF8.GetBytes($PostBody)
-        $req.ContentLength = $bytes.Length
-        $s = $req.GetRequestStream(); $s.Write($bytes, 0, $bytes.Length); $s.Close()
-    }
-    $resp = $req.GetResponse()
-    try { $sr = New-Object IO.StreamReader($resp.GetResponseStream(), [Text.Encoding]::UTF8); return $sr.ReadToEnd() } finally { $resp.Close() }
-}
-
-function ConvertFrom-CatalogHtml {
-    # Extrait les lignes du tableau de résultats du Catalog. Retourne @() si la page n'a pas la forme attendue.
-    param([string]$Html)
-    $out = New-Object System.Collections.ArrayList
-    foreach ($m in [regex]::Matches($Html, '(?is)<tr[^>]*\sid\s*=\s*"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})_R\d+"[^>]*>(.*?)</tr>')) {
-        $cells = @([regex]::Matches($m.Groups[2].Value, '(?is)<td[^>]*>(.*?)</td>') | ForEach-Object { ([regex]::Replace($_.Groups[1].Value, '(?is)<[^>]+>', ' ') -replace '&nbsp;', ' ' -replace '&amp;', '&' -replace '\s+', ' ').Trim() })
-        if ($cells.Count -lt 7) { continue }
-        $dt = [datetime]::MinValue
-        [void][datetime]::TryParseExact($cells[4], 'M/d/yyyy', [Globalization.CultureInfo]::InvariantCulture, 'None', [ref]$dt)
-        $mb = 0.0
-        if ($cells[6] -match '([\d\.,]+)\s*(KB|MB|GB)') {
-            $n = [double]($Matches[1] -replace ',', '.' -replace '[^\d\.]', '')
-            switch ($Matches[2]) { 'KB' { $mb = $n / 1024 } 'MB' { $mb = $n } 'GB' { $mb = $n * 1024 } }
-        }
-        [void]$out.Add([pscustomobject]@{ Guid = $m.Groups[1].Value.ToLower(); Title = $cells[1]; Products = $cells[2]; Classification = $cells[3]; Date = $dt; VersionText = $cells[5]; SizeMB = [math]::Round($mb, 1) })
-    }
-    return @($out)
-}
-
-function Get-CatalogCandidates {
-    # Résultats du Catalog pour un identifiant matériel, filtrés (pilotes Windows 10/11, bonne architecture, version lisible).
-    # -Pages : nombre de pages de résultats à lire (1 par défaut ; davantage quand rien d'adapté n'a été trouvé sur la première).
-    param([string]$HwId, [string]$Arch, $Cache, [int]$Pages = 1)
-    $ckey = $(if ($Pages -gt 1) { "$HwId|p$Pages" } else { $HwId })
-    if ($Cache.ContainsKey($ckey)) { return @($Cache[$ckey]) }
-    $url = $Script:CatalogBase + '/Search.aspx?q=' + [Uri]::EscapeDataString($HwId)
-    # Une page de résultats valide contient des lignes OU le message « aucun résultat ». Toute autre réponse (limite de
-    # requêtes, page d'erreur) n'est PAS « aucun pilote » : on réessaie, puis on signale l'erreur.
-    $rowsAll = @()
-    $ok = $false
-    $html = ''; $netErr = $null
-    foreach ($wait in @(0, 3, 8)) {
-        if ($wait -gt 0) { Start-Sleep -Seconds $wait }
-        # Un délai dépassé ou une erreur 5xx isolée ne doit pas condamner toute la recherche : on réessaie aussi.
-        try { $html = [string](Invoke-CatalogWeb $url); $netErr = $null }
-        catch { $netErr = $_; $html = ''; continue }
-        $rowsAll = @(ConvertFrom-CatalogHtml $html)
-        if ($rowsAll.Count -gt 0 -or $html -match '(?i)did not find any results|aucun r[ée]sultat|no results') { $ok = $true; break }
-    }
-    if (-not $ok -and $netErr) { throw ('Catalog injoignable après 3 essais : ' + $netErr.Exception.Message) }
-    if (-not $ok) {
-        # Garde la réponse brute pour diagnostic (C:\BJMPC-Logs\Pilotes\catalog_reponse.html) et un extrait dans le journal.
-        try {
-            $dd = Join-Path $Script:LogDir 'Pilotes'; New-Item -ItemType Directory -Path $dd -Force -ErrorAction Stop | Out-Null
-            [IO.File]::WriteAllText((Join-Path $dd 'catalog_reponse.html'), ('<!-- ' + $HwId + ' -->' + "`n" + [string]$html).Substring(0, [Math]::Min(200000, ([string]$html).Length + $HwId.Length + 10)))
-            $txt = ([regex]::Replace([string]$html, '(?is)<script.*?</script>|<style.*?</style>|<[^>]+>', ' ') -replace '\s+', ' ').Trim()
-            Write-Log ('Réponse du Catalog (extrait) : ' + $txt.Substring(0, [Math]::Min(220, $txt.Length))) 'WARN'
-        } catch {}
-        throw 'Réponse inattendue du Catalog (trop de requêtes ?)'
-    }
-    # Pages suivantes, à la demande : 25 lignes par page, adresse « &p=<numéro de page à partir de 0> » (vérifié sur
-    # le Catalog en 11/2026). Un échec ici n'annule pas la première page.
-    $page = $html
-    for ($p = 2; $p -le $Pages; $p++) {
-        try {
-            if ($page -match '(?i)\(page\s+(\d+)\s+of\s+(\d+)\)' -and [int]$Matches[1] -ge [int]$Matches[2]) { break }
-            Start-Sleep -Milliseconds 700
-            $page = [string](Invoke-CatalogWeb ($url + '&p=' + ($p - 1)))
-            $more = @(ConvertFrom-CatalogHtml $page)
-            $known = @{}; foreach ($r in $rowsAll) { $known[[string]$r.Guid] = 1 }
-            $fresh = @($more | Where-Object { -not $known.ContainsKey([string]$_.Guid) })
-            if ($fresh.Count -eq 0) { break }
-            $rowsAll += $fresh
-        } catch { Write-Log ("Catalog, page {0} : {1}" -f $p, $_.Exception.Message) 'WARN'; break }
-    }
-    $out = New-Object System.Collections.ArrayList
-    foreach ($r in $rowsAll) {
-        if ($r.Classification -notmatch 'Driver') { continue }
-        if ($r.Products -notmatch 'Windows (10|11)') { continue }
-        if ($Arch -eq 'x64' -and ($r.Title -match 'ARM64' -or $r.Products -match 'ARM64')) { continue }
-        if ($Arch -eq 'ARM64' -and $r.Title -notmatch 'ARM64' -and $r.Products -notmatch 'ARM64') { continue }
-        $v = ConvertTo-SafeVersion $r.VersionText
-        if (-not $v -and $r.Title -match '(\d+(\.\d+){2,3})\s*$') { $v = ConvertTo-SafeVersion $Matches[1] }
-        if (-not $v) { continue }
-        [void]$out.Add(@{ V = $v; R = $r; H = $HwId })
-    }
-    $Cache[$ckey] = @($out)
-    Start-Sleep -Milliseconds 700
-    return @($out)
 }
 
 function Test-CandidateNewer {
@@ -849,160 +605,6 @@ function Get-CandidateGuids {
         if ($g.Count -ge $Max) { break }
     }
     return @($g)
-}
-
-function Find-DriverCatalog {
-    # Lecture seule : pour chaque appareil choisi, cherche dans le Microsoft Update Catalog un pilote signé plus récent.
-    # On cherche d'abord SANS le SUBSYS/REV (identifiant de la puce : VEN_xxxx&DEV_xxxx), car le Catalog est bien mieux
-    # fourni ainsi. Le SUBSYS (variante d'un fabricant de PC) n'est utilisé qu'en cas de doute : plusieurs éditeurs pour
-    # la même puce, ou aucun résultat sans lui. Le contrôle strict de l'INF reste fait avant toute installation.
-    param([string[]]$Instances, [switch]$Extended, [string]$Scope = '')
-    Write-Log ('=== Recherche dans le Microsoft Update Catalog (identifiants matériel' + $(if ($Extended) { ', niveau élargi pour les introuvables' } else { ', niveau strict' }) + ') ===')
-    if ($Scope) {
-        # Périmètre choisi dans l'interface : Main (appareils principaux + sans pilote), Missing (sans pilote), All.
-        $main = @('Display', 'Net', 'MEDIA', 'Bluetooth', 'Image', 'Camera', 'HDC', 'SCSIAdapter', 'Biometric', 'SmartCardReader', 'Sensor')
-        $dev = @(Get-DriverDeviceRows)
-        $sel = @()
-        if ($Scope -eq 'All') { $sel = $dev }
-        elseif ($Scope -eq 'Missing') { $sel = @($dev | Where-Object { $_.Problem -gt 0 }) }
-        else { $sel = @($dev | Where-Object { $_.Problem -gt 0 -or $main -contains [string]$_.Class }) }
-        $Instances = @($sel | ForEach-Object { [string]$_.Id })
-        Write-Log ("{0} appareil(s) à analyser." -f $Instances.Count)
-    }
-    $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'ARM64' } else { 'x64' }
-    $sd = @{}
-    try { foreach ($d in @(Get-CimInstance Win32_PnPSignedDriver -ErrorAction Stop)) { if ($d.DeviceID) { $sd[[string]$d.DeviceID] = $d } } } catch {}
-    $rows = New-Object System.Collections.ArrayList
-    $net = $true
-    $badRun = 0
-    $cache = @{}
-    $total = @($Instances | Where-Object { $_ }).Count; $k = 0
-    foreach ($inst in @($Instances | Where-Object { $_ })) {
-        $k++
-        $d = Get-DeviceInfo $inst $sd
-        $name = if ($d) { [string]$d.Name } else { $inst }
-        $instV = if ($d) { ConvertTo-SafeVersion ([string]$d.Version) } else { $null }
-        $instD = if ($d) { $d.Date } else { $null }
-        Write-Host ("  [{0}/{1}] {2}" -f $k, $total, $name) -ForegroundColor DarkGray
-        $row = [pscustomobject]@{ Id = $inst; Name = $name; Class = $(if ($d) { [string]$d.Class } else { '' }); Installed = $(if ($d) { [string]$d.Version } else { '' }); Status = 'none'; State = 'none'; Alts = ''; Verified = $false; Note = ''; Guid = ''; Title = ''; Version = ''; Date = ''; SizeMB = 0.0; HwId = ''; Doubt = $false; Level = 1 }
-        if (-not $net) { $row.Status = 'error'; $row.State = 'error'; $row.Note = 'Recherche interrompue (Catalog injoignable ou trop sollicité)'; [void]$rows.Add($row); continue }
-        $hw = @(Get-DeviceHardwareIds $inst | Select-Object -First 8)
-        if ($hw.Count -eq 0) { $row.Note = 'Aucun identifiant matériel lisible'; [void]$rows.Add($row); continue }
-        # Les variantes de classe (&CC_xxxx) ne désignent aucun pilote précis : elles ne sont pas interrogées.
-        $base = @($hw | Where-Object { ([string]$_) -notmatch '(?i)&CC_' } | ForEach-Object { ([string]$_) -replace '&(SUBSYS|REV)_[0-9A-Fa-f]+', '' } | Select-Object -Unique | Select-Object -First 3)
-        if ($base.Count -eq 0) { $base = @($hw | ForEach-Object { ([string]$_) -replace '&(SUBSYS|REV|CC)_[0-9A-Fa-f]+', '' } | Select-Object -Unique | Select-Object -First 1) }
-        $spec = @($hw | Where-Object { ([string]$_) -match 'SUBSYS_' } | Select-Object -First 2)
-        $row.HwId = [string]$base[0]
-        $best = $null; $nres = 0; $doubt = $false; $refined = $false; $why = ''; $pool = @()
-        try {
-            $seen = @()
-            foreach ($h in $base) {
-                $cands = @(Get-CatalogCandidates $h $arch $cache)
-                $nres += $cands.Count
-                $best = Select-BestCandidate $cands $instV $instD
-                if ($best) { $seen = $cands; $pool = $cands; break }
-            }
-            if ($best) {
-                $vendors = @($seen | ForEach-Object { (([string]$_.R.Title) -split ' - ')[0].Trim().ToLower() } | Select-Object -Unique)
-                if ($vendors.Count -ge 2) { $doubt = $true }
-            }
-            $why = $(if ($doubt) { 'plusieurs éditeurs pour cette puce' } else { 'introuvable sans le SUBSYS' })
-            if (($doubt -or $nres -eq 0) -and $spec.Count -gt 0) {
-                foreach ($h in $spec) {
-                    $cands2 = @(Get-CatalogCandidates $h $arch $cache)
-                    $nres += $cands2.Count
-                    $b2 = Select-BestCandidate $cands2 $instV $instD
-                    if ($b2) { $best = $b2; $pool = $cands2; $refined = $true; $doubt = $false; break }
-                }
-            }
-        } catch {
-            Write-Log ("Catalog : " + $_.Exception.Message) 'WARN'
-            $row.Status = 'error'; $row.State = 'error'
-            if ($_.Exception.Message -like 'Réponse inattendue*') {
-                $badRun++
-                $row.Note = 'Réponse inattendue du Catalog : relancez la recherche dans quelques minutes'
-                if ($badRun -ge 2) { $net = $false; Write-Log 'Le Catalog ne répond pas normalement (limite de requêtes ?) : recherche interrompue. Réessayez dans quelques minutes.' 'WARN' }
-            }
-            else { $net = $false; $row.Note = 'Catalog injoignable' }
-            [void]$rows.Add($row); continue
-        }
-        if (-not $best -and $Extended -and $nres -eq 0) {
-            # Niveau 2 : identifiants de puce sans préfixe de bus, identifiants compatibles, puis nom du produit.
-            $q = New-Object System.Collections.ArrayList
-            foreach ($b in $base) { $t = ([string]$b) -replace '^[A-Za-z]+\\', ''; if ($t -and $t -ne $b) { [void]$q.Add($t) } }
-            # Les identifiants de CLASSE (CC_xxxx, Class_xx) ne désignent aucun pilote précis : jamais cherchés.
-            foreach ($c in @(Get-DeviceCompatibleIds $inst | Where-Object { ([string]$_) -notmatch '(?i)[&\\]CC_|Class_|^[A-Za-z]+\\VEN_[0-9A-F]{4}$' } | Select-Object -First 2)) { [void]$q.Add([string]$c) }
-            if ($name -notmatch '^(Périphérique|Contrôleur de bus|Unknown|Autre)' -and $name.Length -ge 6) { [void]$q.Add(([string]$name -replace '\(R\)|\(TM\)|\(C\)|[®™]', '' -replace '\s+', ' ').Trim()) }
-            try {
-                foreach ($h in @($q | Select-Object -Unique)) {
-                    $cands3 = @(Get-CatalogCandidates $h $arch $cache)
-                    $b3 = Select-BestCandidate $cands3 $instV $instD
-                    if ($b3) { $best = $b3; $pool = $cands3; $row.Level = 2; $refined = $false; $row.Note = 'ÉLARGI : trouvé par « ' + $h + ' » (le contrôle de l''INF décidera à l''installation)'; break }
-                }
-            } catch {
-                # Une erreur ici n'est pas « aucun pilote » : la ligne est marquée en erreur, pas « introuvable ».
-                Write-Log ("Catalog injoignable : " + $_.Exception.Message) 'WARN'; $net = $false
-                if (-not $best) { $row.Status = 'error'; $row.State = 'error'; $row.Note = 'Catalog injoignable pendant l''analyse élargie'; [void]$rows.Add($row); continue }
-            }
-        }
-        if ($best) {
-            $badRun = 0
-            $row.Status = 'found'; $row.State = 'update'; $row.Guid = $best.R.Guid; $row.Title = $best.R.Title; $row.Version = $best.R.VersionText
-            $row.Alts = (@(Get-CandidateGuids $pool $instV 6 $instD) -join '~'); if (-not $row.Alts) { $row.Alts = [string]$best.R.Guid }
-            $shown = $best
-            # Le Catalog trouve par mots-clés (résultats approximatifs) : un paquet « proposé » peut ne pas contenir cet appareil.
-            # Les paquets légers sont donc téléchargés et contrôlés dès la recherche ; les gros (pilotes graphiques) le sont à l'installation.
-            if ($d -and [double]$best.R.SizeMB -le 60) {
-                Write-Host '      contrôle du paquet…' -ForegroundColor DarkGray
-                $chk = $null; $tried = @(); $nIds = 0
-                foreach ($pass in 1, 2) {
-                    $ids = @($row.Alts -split '~' | Where-Object { $_ })
-                    if ($pass -eq 2) {
-                        # Rien d'adapté parmi les 25 résultats les plus récents : le Catalog en a souvent d'autres pages
-                        # (chaque version y est répétée pour chaque édition de Windows).
-                        $pool2 = @()
-                        try { $pool2 = @(Get-CatalogCandidates ([string]$best.H) $arch $cache 3) } catch { Write-Log ("Catalog (pages suivantes) : " + $_.Exception.Message) 'WARN'; break }
-                        $ids = @(Get-CandidateGuids @($pool2 | Where-Object { $tried -notcontains [string]$_.R.Guid }) $instV 6 $instD)
-                        if ($ids.Count -eq 0) { break }
-                        Write-Host '      autres pages de résultats du Catalog…' -ForegroundColor DarkGray
-                        $pool = $pool2
-                    }
-                    $tried += $ids; $nIds = $ids.Count
-                    $chk = $null
-                    try { $chk = Resolve-CatalogPackage -Ids $ids -Device $d -HwIds $hw -CompatIds @(Get-DeviceCompatibleIds $inst) -Level $row.Level } catch { Write-Log ("Contrôle impossible : " + $_.Exception.Message) 'WARN' }
-                    # On ne lit les pages suivantes que si les paquets ont bien été téléchargés et tous refusés.
-                    if (-not $chk -or $chk.Ok -or $chk.Errors -ge $nIds) { break }
-                }
-                if ($chk -and $chk.Ok) {
-                    $row.Alts = $chk.Guid; $row.Verified = $true
-                    # On affiche le paquet réellement retenu (le premier essayé a pu être refusé), avec la version lue dans son INF.
-                    $row.Guid = [string]$chk.Guid
-                    if ($chk.Test.Version) { $row.Version = [string]$chk.Test.Version }
-                    $kept = @($pool | Where-Object { [string]$_.R.Guid -eq [string]$chk.Guid }) | Select-Object -First 1
-                    if ($kept) { $shown = $kept; $row.Title = [string]$kept.R.Title }
-                    try { Remove-Item -LiteralPath $chk.Work -Recurse -Force -ErrorAction SilentlyContinue } catch {}
-                } elseif ($chk -and $chk.Errors -lt $nIds) {
-                    $row.Status = 'none'; $row.State = 'nomatch'; $row.Alts = ''
-                    $row.Note = 'Le Catalog propose des paquets pour cette puce, mais aucun ne déclare cet appareil'
-                    Write-Log ("{0} : paquets du Catalog sans rapport avec cet appareil (écartés)." -f $name) 'WARN'
-                    [void]$rows.Add($row); continue
-                }
-            }
-            $row.Date = $(if ($shown.R.Date -gt [datetime]'1990-01-01') { $shown.R.Date.ToString('yyyy-MM-dd') } else { '' }); $row.SizeMB = $shown.R.SizeMB; $row.HwId = $best.H; $row.Doubt = $doubt
-            if ($row.Level -ge 2) { }
-            elseif ($refined) { $row.Note = 'affiné avec le SUBSYS (' + $why + ')' }
-            elseif ($doubt) { $row.Note = 'plusieurs éditeurs pour cette puce : le contrôle strict décidera' }
-            Write-Log ("{0} : v{1} proposée ({2}) - {3}{4}" -f $name, $row.Version, $row.Date, $(if ($row.Installed) { 'installé : v' + $row.Installed } else { 'aucun pilote installé' }), $(if ($row.Note) { ' [' + $row.Note + ']' } else { '' })) 'WARN'
-        } else {
-            if ($nres -gt 0) { $row.State = 'current' }
-            $row.Note = $(if ($nres -gt 0) { 'Le Catalog ne propose rien de plus récent que l''installé' } else { 'Aucun pilote correspondant sur le Catalog Microsoft' })
-            Write-Log ("{0} : aucun pilote plus récent dans le Catalog." -f $name) 'OK'
-        }
-        [void]$rows.Add($row)
-    }
-    $nf = @($rows | Where-Object { $_.Status -eq 'found' }).Count
-    Write-Log ("{0} pilote(s) plus récent(s) trouvé(s) sur {1} appareil(s)." -f $nf, $rows.Count) $(if ($nf -gt 0) { 'WARN' } else { 'OK' })
-    Set-SyncResult @($rows)
 }
 
 function Test-DriverPackage {
@@ -1098,169 +700,237 @@ function Test-DriverPackage {
     return $result
 }
 
-function Get-CatalogPackage {
-    # Télécharge le(s) .cab d'une mise à jour du Catalog (liens Microsoft uniquement) et les extrait.
-    # Retourne la liste des dossiers extraits.
-    param([string]$UpdateId, [string]$Work)
-    $body = 'updateIDs=' + [Uri]::EscapeDataString('[{"size":0,"languages":"","uidInfo":"' + $UpdateId + '","updateID":"' + $UpdateId + '"}]')
-    $html = Invoke-CatalogWeb ($Script:CatalogBase + '/DownloadDialog.aspx') $body
-    # Chaque fichier est annoncé avec son adresse et son empreinte SHA-256 (en base64).
-    $files = [ordered]@{}
-    foreach ($m in [regex]::Matches($html, "(?i)downloadInformation\[(\d+)\]\.files\[(\d+)\]\.(url|sha256)\s*=\s*'([^']*)'")) {
-        $k = $m.Groups[1].Value + '.' + $m.Groups[2].Value
-        if (-not $files.Contains($k)) { $files[$k] = @{} }
-        $files[$k][$m.Groups[3].Value.ToLower()] = $m.Groups[4].Value
-    }
-    $dirs = @()
-    foreach ($f in @($files.Values)) {
-        $u = [string]$f.url
-        if ($u -notmatch '^https?://[A-Za-z0-9\.\-]+\.(microsoft\.com|windowsupdate\.com)/[^\s]+\.cab$') { continue }
-        $cab = Join-Path $Work ([IO.Path]::GetFileName(([Uri]$u).AbsolutePath))
-        Write-Log ("Téléchargement : {0}" -f ([Uri]$u).Host)
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        $wc = New-Object Net.WebClient
-        $wc.DownloadFile($u, $cab)
-        # Contrôle d'intégrité : l'empreinte du fichier reçu doit être celle annoncée par le Catalog.
-        if ($f.sha256) {
-            $want = ''; try { $want = ([BitConverter]::ToString([Convert]::FromBase64String([string]$f.sha256)) -replace '-', '') } catch {}
-            if ($want) {
-                $got = [string](Get-FileHash -LiteralPath $cab -Algorithm SHA256).Hash
-                if ($got -ne $want) { throw 'le fichier téléchargé ne correspond pas à l''empreinte annoncée par le Catalog (téléchargement incomplet ou altéré)' }
-            }
-        }
-        $ex = Join-Path $Work ([IO.Path]::GetFileNameWithoutExtension($cab))
-        New-Item -ItemType Directory -Path $ex -Force | Out-Null
-        [void](Invoke-NativeLines 'expand.exe' ('-F:* "' + $cab + '" "' + $ex + '"'))
-        # Un .cab tronqué ou illisible ne doit pas passer pour « ce paquet ne concerne pas l'appareil ».
-        if ($LASTEXITCODE -ne 0) { throw ("extraction du paquet impossible (expand code {0}) : téléchargement incomplet ?" -f $LASTEXITCODE) }
-        $dirs += $ex
-    }
-    return @($dirs)
-}
-
-function Resolve-CatalogPackage {
-    # Télécharge, dans l'ordre, les paquets proposés et retourne le premier dont l'INF passe Test-DriverPackage.
-    # Retour : @{ Ok; Test; Work; Guid; Errors } (Errors = paquets impossibles à télécharger).
-    param([string[]]$Ids, $Device, [string[]]$HwIds, [string[]]$CompatIds, [int]$Level = 1)
-    $res = @{ Ok = $false; Test = $null; Work = ''; Guid = ''; Errors = 0 }
-    $n = 0
-    foreach ($uid in $Ids) {
-        $n++
-        $work = Join-Path $Script:DrvTmp $uid
-        try {
-            if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }
-            New-Item -ItemType Directory -Path $work -Force -ErrorAction Stop | Out-Null
-            if (@($Ids).Count -gt 1) { Write-Log ("Paquet {0}/{1} du Catalog" -f $n, @($Ids).Count) }
-            $dirs = @(Get-CatalogPackage $uid $work)
-            if ($dirs.Count -eq 0) { Write-Log 'Aucun lien de téléchargement Microsoft pour ce paquet.' 'WARN'; $res.Errors++ }
-            foreach ($ex in $dirs) {
-                $t = Test-DriverPackage -Dir $ex -HwIds $HwIds -InstalledVersion ([string]$Device.Version) -ClassGuid ([string]$Device.ClassGuid) -CompatIds $CompatIds -Level $Level -InstalledDate $Device.Date
-                if ($t.Ok) { $res.Ok = $true; $res.Test = $t; $res.Work = $work; $res.Guid = $uid; break }
-                foreach ($r in @($t.Reasons | Select-Object -First 2)) { Write-Log ("Paquet {0} refusé : {1}" -f $n, $r) 'WARN' }
-            }
-        } catch { Write-Log ("Paquet {0} : {1}" -f $n, $_.Exception.Message) 'WARN'; $res.Errors++ }
-        finally { if (-not $res.Ok) { try { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue } catch {} } }
-        if ($res.Ok) { break }
-    }
-    return $res
-}
-
-function Install-CatalogDriver {
-    # Essaie les paquets proposés par le Catalog (UpdateId = GUID, ou plusieurs séparés par ~, du meilleur au moins bon),
-    # garde le premier qui passe le contrôle (Test-DriverPackage), sauvegarde l'ancien pilote, installe, puis VÉRIFIE
-    # que Windows l'a vraiment appliqué à l'appareil.
-    param([string]$InstanceId, [string]$UpdateId, [int]$Level = 1)
-    if ($Level -lt 1 -or $Level -gt 2) { $Level = 1 }
-    $ids = @(([string]$UpdateId -split '~') | Where-Object { $_ -match '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$' } | Select-Object -First 6)
-    if ($ids.Count -eq 0) { Write-Log 'Identifiant de mise à jour refusé.' 'ERROR'; return }
-    $d = Get-DeviceInfo $InstanceId $null
-    if (-not $d) { Write-Log "Appareil introuvable : $InstanceId" 'ERROR'; $Script:DrvCatBad += $InstanceId; return }
-    $name = [string]$d.Name
-    Write-Log "--- $name ---"
-    $goodWork = ''
-    try {
-        $hw = @(Get-DeviceHardwareIds $InstanceId)
-        $cp = @(Get-DeviceCompatibleIds $InstanceId)
-        $r0 = Resolve-CatalogPackage -Ids $ids -Device $d -HwIds $hw -CompatIds $cp -Level $Level
-        if (-not $r0.Ok) { Write-Log "Aucun des $($ids.Count) paquet(s) proposé(s) ne passe le contrôle : rien n'est installé pour $name." 'WARN'; $Script:DrvCatBad += $name; return }
-        $good = $r0.Test; $goodWork = $r0.Work
-        foreach ($l in @($good.Report)) { Write-Log $l 'OK' }
-        # Sauvegarde du pilote actuel (si c'est un pilote tiers oemNN.inf)
-        $inf = ([string]$d.Inf).ToLower()
-        $top = Join-Path $Script:LogDir ("Pilotes\Avant_MAJ_{0}_{1}" -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd_HHmmss'))
-        if ($inf -match '^oem\d+\.inf$') {
-            $bk = Join-Path $top ($inf -replace '\.inf$', '')
-            New-Item -ItemType Directory -Path $bk -Force | Out-Null
-            [void](Invoke-NativeLines 'pnputil.exe' ('/export-driver ' + $inf + ' "' + $bk + '"'))
-            if (Get-ChildItem -LiteralPath $bk -Filter *.inf -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1) { Write-Log ("Ancien pilote sauvegardé : " + $bk) 'OK' }
-            else { Write-Log 'Sauvegarde de l''ancien pilote impossible : installation annulée pour cet appareil.' 'WARN'; $Script:DrvCatBad += $name; return }
-        }
-        $oemBefore = @(Get-ChildItem -LiteralPath (Join-Path $env:windir 'INF') -Filter 'oem*.inf' -ErrorAction SilentlyContinue | ForEach-Object { $_.Name.ToLower() })
-        $out = Invoke-NativeLines 'pnputil.exe' ('/add-driver "' + $good.Inf + '" /install')
-        $code = $LASTEXITCODE
-        foreach ($l in @($out | Select-Object -Last 3)) { Write-Host ("   " + $l) -ForegroundColor DarkGray }
-        # Vérification : Windows a-t-il réellement appliqué le pilote à cet appareil ?
-        # Code 0 ou 3010 (redémarrage) = ajouté ; 259 = ajouté au magasin mais Windows garde le pilote actuel, jugé au moins aussi bon.
-        $applied = $false
-        if ($code -eq 3010) { $applied = $true; $Script:RebootNeeded = $true; $Script:DrvCatReboot = $true }
-        elseif ($code -eq 0) {
-            $after = Get-DeviceInfo $InstanceId $null
-            $applied = -not ($after -and ([string]$after.Inf -eq [string]$d.Inf) -and ([string]$after.Version -eq [string]$d.Version))
-        }
-        if ($applied) {
-            Write-Log ("Installé : {0} → v{1}" -f $name, $good.Version) 'OK'; $Script:DrvCatOk += $name
-            # Pour le retour arrière : on note quel paquet vient d'entrer dans le magasin.
-            $oemAdded = @(Get-ChildItem -LiteralPath (Join-Path $env:windir 'INF') -Filter 'oem*.inf' -ErrorAction SilentlyContinue | ForEach-Object { $_.Name.ToLower() } | Where-Object { $oemBefore -notcontains $_ })
-            if ($oemAdded.Count -gt 0) {
-                Save-DriverUpdateRecord -Folder $top -Device $name -OldInf $inf -NewInfs $oemAdded
-                Write-Log ("Retour arrière possible : Pilotes > Sauvegardes > {0}" -f (Split-Path $top -Leaf))
-            }
-        }
-        else {
-            if ($code -eq 0 -or $code -eq 259) { Write-Log ("{0} : le pilote est valide mais Windows ne l'a pas appliqué à cet appareil (il ne correspond pas exactement, ou le pilote actuel est jugé au moins aussi bon)." -f $name) 'WARN' }
-            else { Write-Log ("Windows a refusé l'installation (code {0})." -f $code) 'WARN' }
-            # Dans tous les cas d'échec, le paquet ajouté pour rien est retiré du magasin de pilotes.
-            $oemNew = @(Get-ChildItem -LiteralPath (Join-Path $env:windir 'INF') -Filter 'oem*.inf' -ErrorAction SilentlyContinue | ForEach-Object { $_.Name.ToLower() } | Where-Object { $oemBefore -notcontains $_ })
-            foreach ($o in $oemNew) {
-                if ($o -notmatch '^oem\d+\.inf$') { continue }
-                [void](Invoke-NativeLines 'pnputil.exe' ('/delete-driver ' + $o))
-                if ($LASTEXITCODE -eq 0) { Write-Log ("Paquet inutilisé retiré du magasin : " + $o) 'OK' }
-                else { Write-Log ("Paquet {0} laissé dans le magasin (Windows l'utilise pour un autre appareil, code {1})." -f $o, $LASTEXITCODE) }
-            }
-            $Script:DrvCatBad += $name
-        }
-    } catch { Write-Log ("Échec pour {0} : {1}" -f $name, $_.Exception.Message) 'WARN'; $Script:DrvCatBad += $name }
-    finally { if ($goodWork) { try { Remove-Item -LiteralPath $goodWork -Recurse -Force -ErrorAction SilentlyContinue } catch {} } }
-}
-
-function Install-CatalogDrivers {
-    # Installe plusieurs pilotes du Catalog. Items = 'InstanceId|Guid1~Guid2~…|Niveau' (niveau 1 strict, 2 élargi).
-    param([string[]]$Items)
-    $Script:DrvCatOk = @(); $Script:DrvCatBad = @(); $Script:DrvCatReboot = $false
-    Write-Log ("=== Installation de {0} pilote(s) du Catalog (contrôle WHQL strict) ===" -f @($Items).Count)
-    if (-not (New-DriverRestorePoint)) {
-        # Sans point de restauration, on ne continue que sur accord explicite (l'ancien pilote reste copié avant chaque installation).
-        if (-not (Confirm-Action "Le point de restauration n'a pas pu être créé. Installer quand même les pilotes ? L'ancien pilote de chaque appareil sera tout de même copié dans C:\BJMPC-Logs\Pilotes.")) {
-            Write-Log 'Installation annulée : pas de point de restauration. Activez la protection du système (Sauvegarde et restauration > Restauration), puis relancez.' 'WARN'
-            Set-SyncResult @{ Ok = @(); Bad = @(); Reboot = $false }
-            return
-        }
-    }
-    foreach ($it in @($Items)) {
-        $p = ([string]$it) -split '\|'
-        if ($p.Count -lt 2) { continue }
-        $lv = 1; if ($p.Count -ge 3 -and $p[2] -eq '2') { $lv = 2 }
-        Install-CatalogDriver -InstanceId $p[0] -UpdateId $p[1] -Level $lv
-    }
-    Write-Log ("{0} installé(s), {1} refusé(s) ou en échec." -f @($Script:DrvCatOk).Count, @($Script:DrvCatBad).Count) $(if (@($Script:DrvCatBad).Count -eq 0) { 'OK' } else { 'WARN' })
-    Set-SyncResult @{ Ok = @($Script:DrvCatOk); Bad = @($Script:DrvCatBad); Reboot = [bool]$Script:DrvCatReboot }
-}
-
 function Get-DownloadsRoot {
     $p = ''
     try { $p = [string](New-Object -ComObject Shell.Application).NameSpace('shell:Downloads').Self.Path } catch {}
     if (-not $p -or -not (Test-Path -LiteralPath $p)) { $p = Join-Path $env:USERPROFILE 'Downloads' }
     return $p
+}
+
+# ---------------------------------------------------------------- Pilotes : analyse complète et mise à jour (Windows Update)
+# Source unique et sûre pour l'installation automatique : Windows Update, qui propose pour CE PC le meilleur pilote
+# signé selon l'identifiant exact du matériel (le même classement que Windows : correspondance, signature, date, version).
+# Règles ajoutées par la Toolbox :
+#   - un pilote proposé n'est jamais installé s'il est plus ancien que le pilote en place, et en particulier
+#     jamais à la place d'un pilote fourni par Windows (in-box) plus récent ;
+#   - carte graphique : pas de pilote Windows Update, c'est le dernier pilote du fabricant (outil officiel) qui compte ;
+#   - appareil sans pilote (SMBus, Serial IO…) : paquet chipset signé (Windows Update, Intel ou AMD), jamais de pilote non signé.
+# Après installation : l'ancien pilote est sauvegardé, puis retiré du magasin s'il ne sert plus et que l'appareil fonctionne.
+$Script:GpuVendors = @{ '10DE' = 'nvidia'; '1002' = 'amd'; '8086' = 'intel' }
+
+function Get-AllDeviceDrivers {
+    # Tous les appareils branchés avec leur pilote actuel (lecture seule). Inbox = pilote fourni par Windows (pas oemNN.inf).
+    $rows = New-Object System.Collections.ArrayList
+    $sd = @{}
+    foreach ($d in @(Get-CimInstance Win32_PnPSignedDriver -ErrorAction Stop)) { if ($d.DeviceID) { $sd[[string]$d.DeviceID] = $d } }
+    foreach ($e in @(Get-CimInstance Win32_PnPEntity -ErrorAction Stop)) {
+        $id = [string]$e.DeviceID
+        if (-not $id -or $e.Present -eq $false) { continue }
+        if ($id -match '^(ROOT|SWD|HTREE|UMB|STORAGE\\VOLUME|DISPLAY)\\') { continue }   # appareils logiciels, volumes, écrans
+        $d = $sd[$id]
+        $code = 0; try { $code = [int]$e.ConfigManagerErrorCode } catch {}
+        if (-not $d -and $code -eq 0) { continue }
+        $inf = ''; $ver = ''; $date = $null; $prov = ''
+        if ($d) {
+            $inf = ([string]$d.InfName).ToLower(); $ver = [string]$d.DriverVersion; $prov = [string]$d.DriverProviderName
+            try { if ($d.DriverDate) { $date = ([datetime]$d.DriverDate).Date } } catch {}
+        }
+        $ids = @(@($e.HardwareID) + @($e.CompatibleID) | Where-Object { $_ } | ForEach-Object { ([string]$_).ToUpper() })
+        $ven = ''; if ($id -match 'VEN_([0-9A-Fa-f]{4})') { $ven = $Matches[1].ToUpper() }
+        $name = [string]$e.Name; if (-not $name -and $d) { $name = [string]$d.DeviceName }; if (-not $name) { $name = $id }
+        [void]$rows.Add([pscustomobject]@{
+            Id = $id; Name = $name; Class = $(if ($e.PNPClass) { [string]$e.PNPClass } else { 'Autres' }); Inf = $inf; Version = $ver; Date = $date
+            Provider = $prov; Inbox = [bool]($inf -and $inf -notmatch '^oem\d+\.inf$'); Problem = $code; Ids = $ids; Ven = $ven
+        })
+    }
+    return @($rows)
+}
+
+function Get-WindowsUpdateDriverList {
+    # Pilotes que Windows Update propose pour ce PC. Rend @{ Session; Updates (objets COM); Rows }.
+    $session = New-Object -ComObject Microsoft.Update.Session
+    $res = $session.CreateUpdateSearcher().Search("IsInstalled=0 and IsHidden=0 and Type='Driver'")
+    $rows = New-Object System.Collections.ArrayList
+    foreach ($u in $res.Updates) {
+        $dt = $null; try { $dt = ([datetime]$u.DriverVerDate).Date } catch {}
+        $ver = ''; if ([string]$u.Title -match '(\d+(?:\.\d+){2,3})\s*$') { $ver = $Matches[1] }
+        $mb = 0; try { $mb = [math]::Round([double]$u.MaxDownloadSize / 1MB, 1) } catch {}
+        [void]$rows.Add([pscustomobject]@{
+            Id = ([string]$u.Identity.UpdateID).ToLower(); Title = [string]$u.Title; HwId = ([string]$u.DriverHardwareID).ToUpper()
+            Date = $dt; Version = $ver; Provider = [string]$u.DriverProvider; Class = [string]$u.DriverClass; SizeMB = $mb
+        })
+    }
+    return @{ Session = $session; Updates = $res.Updates; Rows = @($rows) }
+}
+
+function Compare-DriverAge {
+    # 1 si le pilote proposé est plus récent que le pilote en place, 0 si identique, -1 s'il est plus ancien.
+    # Comme Windows : la date d'abord, puis la version.
+    param($NewDate, [string]$NewVersion, $CurDate, [string]$CurVersion)
+    if ($null -eq $CurDate) { return 1 }
+    if ($null -eq $NewDate) { return -1 }
+    if ($NewDate -gt $CurDate) { return 1 }
+    if ($NewDate -lt $CurDate) { return -1 }
+    $a = ConvertTo-SafeVersion $NewVersion; $b = ConvertTo-SafeVersion $CurVersion
+    if ($a -and $b) { if ($a -gt $b) { return 1 } elseif ($a -lt $b) { return -1 } }
+    return 0
+}
+
+function Get-DriverDecision {
+    # Décision pour un appareil et le pilote proposé par Windows Update (ou $null). Rend @{ Code; Text; Install }.
+    param($Dev, $Cand)
+    $gpu = ($Dev.Class -eq 'Display' -and $Script:GpuVendors.ContainsKey([string]$Dev.Ven))
+    if ($gpu) { return @{ Code = 'gpu'; Text = 'Carte graphique : dernier pilote par l''outil officiel du fabricant (ci-dessous)'; Install = $false } }
+    if ($Cand) {
+        $cmp = Compare-DriverAge $Cand.Date $Cand.Version $Dev.Date $Dev.Version
+        if ($Dev.Problem -ne 0 -and -not $Dev.Inf) { return @{ Code = 'install'; Text = 'Installer : appareil sans pilote'; Install = $true } }
+        if ($cmp -gt 0) { return @{ Code = 'install'; Text = $(if ($Dev.Problem -ne 0) { 'Mettre à jour : l''appareil est en erreur' } else { 'Mettre à jour' }); Install = $true } }
+        if ($Dev.Inbox) { return @{ Code = 'keep-inbox'; Text = 'Gardé : le pilote fourni par Windows est plus récent que celui proposé'; Install = $false } }
+        if ($cmp -lt 0) { return @{ Code = 'keep-newer'; Text = 'Gardé : le pilote en place est plus récent que celui proposé'; Install = $false } }
+        return @{ Code = 'keep-same'; Text = 'Gardé : même version'; Install = $false }
+    }
+    if ($Dev.Problem -ne 0) {
+        if (@('8086', '1022') -contains [string]$Dev.Ven) {
+            $mk = $(if ($Dev.Ven -eq '8086') { 'Intel' } else { 'AMD' })
+            return @{ Code = 'chipset'; Text = ('Sans pilote : paquet chipset {0} signé requis (sert de « null driver ») : outil {0} ou du fabricant du PC, ci-dessous' -f $mk); Install = $false }
+        }
+        return @{ Code = 'missing'; Text = 'Sans pilote dans Windows Update : outil du fabricant du PC (ci-dessous)'; Install = $false }
+    }
+    return @{ Code = 'ok'; Text = 'À jour'; Install = $false }
+}
+
+function Get-DriverAnalysis {
+    # Lecture seule : chaque appareil, son pilote, ce que propose Windows Update et la décision de la Toolbox.
+    Write-Log '=== Analyse complète des pilotes (lecture seule) ==='
+    $devs = @()
+    try { $devs = @(Get-AllDeviceDrivers) } catch { Write-Log ("Lecture des appareils impossible : " + $_.Exception.Message) 'ERROR'; Set-SyncResult @{ Rows = @(); Error = $_.Exception.Message }; return }
+    Write-Log ("{0} appareil(s) analysé(s). Interrogation de Windows Update (1 à 3 minutes)…" -f $devs.Count)
+    $wuRows = @(); $wuErr = ''
+    try { $wuRows = @((Get-WindowsUpdateDriverList).Rows) }
+    catch { $wuErr = $_.Exception.Message; Write-Log ("Windows Update ne répond pas ({0}) : seules les vérifications locales sont faites." -f $wuErr) 'WARN' }
+    $idx = @{}
+    foreach ($u in $wuRows) { if ($u.HwId) { if (-not $idx.ContainsKey($u.HwId)) { $idx[$u.HwId] = New-Object System.Collections.ArrayList }; [void]$idx[$u.HwId].Add($u) } }
+    $rows = New-Object System.Collections.ArrayList
+    $okCount = 0; $gpus = @()
+    foreach ($d in $devs) {
+        $cand = $null
+        foreach ($h in $d.Ids) { if ($idx.ContainsKey($h)) { $cand = @($idx[$h] | Sort-Object Date -Descending)[0]; break } }
+        $dec = Get-DriverDecision $d $cand
+        if ($dec.Code -eq 'gpu') { $gpus += [pscustomobject]@{ Name = $d.Name; Vendor = $Script:GpuVendors[[string]$d.Ven]; Version = $d.Version; Date = $(if ($d.Date) { $d.Date.ToString('yyyy-MM-dd') } else { '' }); Inbox = $d.Inbox } }
+        if ($dec.Code -eq 'ok') { $okCount++; continue }
+        [void]$rows.Add([pscustomobject]@{
+            Device = $d.Id; Name = $d.Name; Class = $d.Class
+            Current = $(if ($d.Inf) { ('{0} · {1} · {2}' -f $(if ($d.Inbox) { 'Windows' } else { $d.Provider }), $d.Version, $(if ($d.Date) { $d.Date.ToString('yyyy-MM-dd') } else { '?' })) } else { 'aucun pilote' })
+            Proposed = $(if ($cand) { ('{0} · {1} · {2}' -f $cand.Provider, $(if ($cand.Version) { $cand.Version } else { '?' }), $(if ($cand.Date) { $cand.Date.ToString('yyyy-MM-dd') } else { '?' })) } else { '' })
+            UpdateId = $(if ($cand) { [string]$cand.Id } else { '' }); SizeMB = $(if ($cand) { $cand.SizeMB } else { 0 })
+            Code = $dec.Code; Decision = $dec.Text; Install = [bool]$dec.Install
+        })
+    }
+    $maker = ''
+    try {
+        $m = [string](Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).Manufacturer
+        if ($m -match 'Dell') { $maker = 'dell' } elseif ($m -match 'Lenovo') { $maker = 'lenovo' } elseif ($m -match 'HP|Hewlett') { $maker = 'hp' }
+    } catch {}
+    $cpu = ''
+    try { $c = [string](Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1).Manufacturer; if ($c -match 'Intel') { $cpu = 'intel' } elseif ($c -match 'AMD') { $cpu = 'amd' } } catch {}
+    $nInst = @($rows | Where-Object { $_.Install }).Count
+    Write-Log ("{0} appareil(s) à jour, {1} mise(s) à jour proposée(s), {2} autre(s) point(s) à voir." -f $okCount, $nInst, (@($rows).Count - $nInst)) $(if ($nInst -gt 0) { 'WARN' } else { 'OK' })
+    $order = @{ 'install' = 0; 'chipset' = 1; 'missing' = 2; 'gpu' = 3; 'keep-inbox' = 4; 'keep-newer' = 5; 'keep-same' = 6 }
+    Set-SyncResult @{
+        Rows = @($rows | Sort-Object @{ Expression = { $order[[string]$_.Code] } }, Class, Name); Total = $devs.Count; UpToDate = $okCount
+        WuError = $wuErr; Gpus = @($gpus); Maker = $maker; Cpu = $cpu
+    }
+}
+
+function Install-DriverSelection {
+    # Installe les pilotes Windows Update choisis, après point de restauration et sauvegarde des pilotes en place.
+    # Puis vérifie chaque appareil et retire l'ancienne version du magasin si elle ne sert plus (sauvegarde gardée).
+    param([string[]]$Ids)
+    $ids = @($Ids | Where-Object { $_ -match '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$' } | ForEach-Object { $_.ToLower() } | Sort-Object -Unique)
+    if ($ids.Count -eq 0) { Write-Log 'Aucun pilote valide à installer.' 'WARN'; Set-SyncResult @{ Ok = @(); Bad = @(); Reboot = $false }; return }
+    Write-Log ("=== Installation de {0} pilote(s) (Windows Update) ===" -f $ids.Count)
+    $okT = @(); $koT = @()
+    try {
+        $wu = Get-WindowsUpdateDriverList
+        $devs = @(Get-AllDeviceDrivers)
+        # 1. Garde-fou : chaque pilote choisi est revérifié contre le pilote en place, juste avant l'installation
+        $coll = New-Object -ComObject Microsoft.Update.UpdateColl
+        $before = @()
+        foreach ($u in $wu.Updates) {
+            $uid = ([string]$u.Identity.UpdateID).ToLower()
+            if ($ids -notcontains $uid) { continue }
+            $c = [pscustomobject]@{ HwId = ([string]$u.DriverHardwareID).ToUpper(); Date = $null; Version = '' }
+            try { $c.Date = ([datetime]$u.DriverVerDate).Date } catch {}
+            if ([string]$u.Title -match '(\d+(?:\.\d+){2,3})\s*$') { $c.Version = $Matches[1] }
+            $targets = @($devs | Where-Object { $_.Ids -contains $c.HwId })
+            if ($targets.Count -eq 0) { Write-Log ("Aucun appareil branché pour : {0}" -f $u.Title) 'WARN'; $koT += [string]$u.Title; continue }
+            $refuse = ''
+            foreach ($d in $targets) { $dec = Get-DriverDecision $d $c; if (-not $dec.Install) { $refuse = ('{0} : {1}' -f $d.Name, $dec.Text) } }
+            if ($refuse) { Write-Log ("Refusé : {0} ({1})" -f $u.Title, $refuse) 'WARN'; $koT += [string]$u.Title; continue }
+            try { if (-not $u.EulaAccepted) { $u.AcceptEula() } } catch {}
+            [void]$coll.Add($u)
+            foreach ($d in $targets) { $before += [pscustomobject]@{ Device = $d.Id; Name = $d.Name; OldInf = $d.Inf; Inbox = $d.Inbox; Title = [string]$u.Title } }
+        }
+        if ($coll.Count -eq 0) { Write-Log 'Rien à installer (pilotes plus proposés ou refusés par les règles).' 'WARN'; Set-SyncResult @{ Ok = @(); Bad = @($koT); Reboot = $false }; return }
+        # 2. Point de restauration et sauvegarde des pilotes tiers en place
+        [void](New-DriverRestorePoint)
+        $folder = Join-Path (Join-Path $Script:LogDir 'Pilotes') ("MAJ_{0}_{1}" -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd_HHmmss'))
+        New-Item -ItemType Directory -Path $folder -Force -ErrorAction Stop | Out-Null
+        $saved = @{}
+        foreach ($inf in @($before | Where-Object { -not $_.Inbox -and $_.OldInf -match '^oem\d+\.inf$' } | ForEach-Object { $_.OldInf } | Sort-Object -Unique)) {
+            $sub = Join-Path $folder ($inf -replace '\.inf$', '')
+            New-Item -ItemType Directory -Path $sub -Force | Out-Null
+            [void](Invoke-NativeLines 'pnputil.exe' ('/export-driver ' + $inf + ' "' + $sub + '"'))
+            if (Get-ChildItem -LiteralPath $sub -Filter *.inf -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1) { $saved[$inf] = $true; Write-Log "Pilote en place sauvegardé : $inf" 'OK' }
+            else { Write-Log "Sauvegarde de $inf impossible : il ne sera pas retiré après la mise à jour." 'WARN' }
+        }
+        # 3. Téléchargement et installation par Windows Update (signature et classement vérifiés par Windows)
+        $session = $wu.Session
+        Write-Log ("Téléchargement de {0} pilote(s)…" -f $coll.Count)
+        $dl = $session.CreateUpdateDownloader(); $dl.Updates = $coll
+        $dr = $dl.Download()
+        if ($dr.ResultCode -ne 2 -and $dr.ResultCode -ne 3) { Write-Log ("Téléchargement incomplet (code {0})." -f $dr.ResultCode) 'WARN' }
+        Write-Log 'Installation… (l''écran peut clignoter)'
+        $inst = $session.CreateUpdateInstaller(); $inst.Updates = $coll
+        $ir = $inst.Install()
+        for ($i = 0; $i -lt $coll.Count; $i++) {
+            $t = [string]$coll.Item($i).Title
+            $rc = [int]$ir.GetUpdateResult($i).ResultCode
+            if ($rc -eq 2 -or $rc -eq 3) { Write-Log "Installé : $t" 'OK'; $okT += $t } else { Write-Log ("Échec (code {0}) : {1}" -f $rc, $t) 'WARN'; $koT += $t }
+        }
+        $reb = [bool]$ir.RebootRequired
+        if ($reb) { $Script:RebootNeeded = $true; Write-Log 'Un redémarrage est nécessaire pour terminer.' 'WARN' }
+        # 4. Vérification des appareils et note pour la restauration
+        $after = @{}; foreach ($d in @(Get-AllDeviceDrivers)) { $after[$d.Id] = $d }
+        $inUse = @{}; foreach ($d in $after.Values) { if ($d.Inf) { $inUse[$d.Inf] = $true } }
+        $broken = @{}
+        foreach ($b in $before) {
+            $a = $after[$b.Device]
+            if (-not $a) { continue }
+            if ($a.Problem -ne 0 -and $a.Problem -ne 14) { $broken[$b.OldInf] = $true; Write-Log ("{0} : appareil en erreur après la mise à jour (code {1}). Revenir en arrière : Pilotes > Sauvegardes." -f $b.Name, $a.Problem) 'WARN' }
+            if ($a.Inf -and $a.Inf -ne $b.OldInf) {
+                Write-Log ("{0} : {1} -> {2} ({3})" -f $b.Name, $(if ($b.OldInf) { $b.OldInf } else { 'aucun' }), $a.Inf, $a.Version) 'OK'
+                Save-DriverUpdateRecord -Folder $folder -Device $b.Name -OldInf $b.OldInf -NewInfs @($a.Inf)
+            }
+        }
+        # 5. Retrait des anciennes versions : sauvegardées, plus utilisées, appareils sans erreur, pas de redémarrage en attente
+        if ($reb) { Write-Log 'Anciennes versions : retirables après le redémarrage (Pilotes > Pilotes installés > anciennes versions).' }
+        else {
+            foreach ($inf in @($saved.Keys)) {
+                if ($inUse.ContainsKey($inf)) { Write-Log "$inf sert encore à un appareil : conservé."; continue }
+                if ($broken.ContainsKey($inf)) { Write-Log "$inf conservé : l'appareil n'est pas en ordre avec le nouveau pilote."; continue }
+                [void](Invoke-NativeLines 'pnputil.exe' ('/delete-driver ' + $inf))
+                $c = $LASTEXITCODE
+                if ($c -eq 0 -or $c -eq 3010) { Write-Log ("Ancienne version retirée du magasin : {0} (copie dans {1})" -f $inf, $folder) 'OK' }
+                else { Write-Log ("Ancienne version {0} gardée par Windows (code {1})." -f $inf, $c) 'WARN' }
+            }
+        }
+        if (@(Get-ChildItem -LiteralPath $folder -Recurse -File -ErrorAction SilentlyContinue).Count -eq 0) { Remove-Item -LiteralPath $folder -Recurse -Force -ErrorAction SilentlyContinue }
+        Set-SyncResult @{ Ok = @($okT); Bad = @($koT); Reboot = $reb }
+    } catch {
+        Write-Log ("Installation impossible : " + $_.Exception.Message) 'ERROR'
+        Set-SyncResult @{ Ok = @($okT); Bad = @($ids); Reboot = $false }
+    }
 }
 
 function Find-DownloadedDrivers {
