@@ -1,4 +1,4 @@
-Required Notice: Copyright (c) 2026 BJMPC Informatique (https://github.com/traekperso-lgtm/bjmpctoolbox)
+Required Notice: Copyright (c) 2026 BJMPC Informatique (https://github.com/traekperso-lgtm/BJMPCToolbox)
 
 # PolyForm Noncommercial License 1.0.0
 

@@ -1217,7 +1217,7 @@ function Clear-PrintQueue {
 }
 
 # ---------------------------------------------------------------- Mise à jour de la Toolbox (dépôt GitHub)
-$Script:UpdRepo = 'traekperso-lgtm/bjmpctoolbox'
+$Script:UpdRepo = 'traekperso-lgtm/BJMPCToolbox'
 $Script:UpdBranch = 'main'
 $Script:UpdFiles = @('BJMPC-Toolbox.ps1', 'BJMPC-Optimisation-Win11.ps1', 'BJMPC-Reglages-Win11.ps1', 'BJMPC-Maintenance-Win11.ps1', 'BJMPC-Outils-Win11.ps1',
     'BJMPC-Sauvegarde-Win11.ps1', 'BJMPC-Evenements-Win11.ps1', 'BJMPC-Toolbox.bat', 'Verif.bat', 'Apercu.bat', 'LISEZMOI.txt', 'LICENSE.md')
