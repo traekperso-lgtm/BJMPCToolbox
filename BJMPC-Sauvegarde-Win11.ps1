@@ -392,36 +392,37 @@ function Get-MirrorBytes {
 }
 
 function Get-MirrorExtras {
-    # Ce qui est dans le miroir mais plus sur le PC. Rend @{ Items = @(@{ Rel; IsDir; Files }); ExtraFiles; Total }.
+    # Ce qui est dans le miroir mais plus sur le PC. Rend @{ Items = @(@{ Rel; IsDir; Files }); ExtraFiles; Total; Error }.
+    # Chemins assemblés avec [IO.Path]::Combine : la commande de jonction de PowerShell 5.1 refuse le préfixe \\?\.
     param([string]$Source, [string]$Target)
     $items = New-Object System.Collections.ArrayList
-    $extraFiles = 0; $total = 0
+    $extraFiles = 0; $total = 0; $err = ''
     $stack = New-Object 'System.Collections.Generic.Stack[string]'
     $stack.Push('')
     while ($stack.Count -gt 0) {
         $rel = $stack.Pop()
-        $td = Get-BakLongPath ($(if ($rel) { Join-Path $Target $rel } else { $Target }))
-        $sd = Get-BakLongPath ($(if ($rel) { Join-Path $Source $rel } else { $Source }))
+        $td = Get-BakLongPath ($(if ($rel) { [IO.Path]::Combine($Target, $rel) } else { $Target }))
+        $sd = Get-BakLongPath ($(if ($rel) { [IO.Path]::Combine($Source, $rel) } else { $Source }))
         try {
             foreach ($f in [IO.Directory]::GetFiles($td)) {
                 $total++
                 $name = [IO.Path]::GetFileName($f)
-                if (-not [IO.File]::Exists((Join-Path $sd $name))) {
-                    [void]$items.Add(@{ Rel = $(if ($rel) { Join-Path $rel $name } else { $name }); IsDir = $false; Files = 1 }); $extraFiles++
+                if (-not [IO.File]::Exists([IO.Path]::Combine($sd, $name))) {
+                    [void]$items.Add(@{ Rel = $(if ($rel) { [IO.Path]::Combine($rel, $name) } else { $name }); IsDir = $false; Files = 1 }); $extraFiles++
                 }
             }
             foreach ($d in [IO.Directory]::GetDirectories($td)) {
                 $name = [IO.Path]::GetFileName($d)
-                $r2 = $(if ($rel) { Join-Path $rel $name } else { $name })
-                if ([IO.Directory]::Exists((Join-Path $sd $name))) { $stack.Push($r2); continue }
+                $r2 = $(if ($rel) { [IO.Path]::Combine($rel, $name) } else { $name })
+                if ([IO.Directory]::Exists([IO.Path]::Combine($sd, $name))) { $stack.Push($r2); continue }
                 $n = 0
                 try { $n = @([IO.Directory]::GetFiles($d, '*', [IO.SearchOption]::AllDirectories)).Count } catch { $n = 1 }
                 $total += $n; $extraFiles += $n
                 [void]$items.Add(@{ Rel = $r2; IsDir = $true; Files = $n })
             }
-        } catch { Write-Log ("Miroir : dossier illisible ({0})" -f $_.Exception.Message) 'WARN' }
+        } catch { $err = $_.Exception.Message; Write-Log ("Miroir : dossier illisible ({0})" -f $err) 'WARN' }
     }
-    return @{ Items = @($items); ExtraFiles = $extraFiles; Total = $total }
+    return @{ Items = @($items); ExtraFiles = $extraFiles; Total = $total; Error = $err }
 }
 
 function Clear-MirrorTrash {
@@ -448,6 +449,8 @@ function Invoke-MirrorCopy {
     if (Test-Path -LiteralPath $Target) {
         $ex = Get-MirrorExtras $Source $Target
         $res.ExtraFiles = $ex.ExtraFiles; $res.Total = $ex.Total
+        # Liste incomplète : on ne sait pas ce que /MIR effacerait sans corbeille, donc ce passage ne retire rien.
+        if ($ex.Error) { $purge = $false }
         if (-not $AcceptDeletions -and $ex.ExtraFiles -gt $Script:BakSuspectMin -and $ex.ExtraFiles -gt ($Script:BakSuspectRate * [math]::Max(1, $ex.Total))) {
             $res.Suspect = $true
             Write-Log ("Miroir suspendu : ce passage retirerait {0} fichier(s) sur {1} ({2:P0}). Si c'est voulu, confirmez depuis la Toolbox." -f $ex.ExtraFiles, $ex.Total, ($ex.ExtraFiles / [math]::Max(1, $ex.Total))) 'ERROR'
@@ -460,8 +463,8 @@ function Invoke-MirrorCopy {
             while (Test-Path -LiteralPath $bin) { $bin = Join-Path $Trash ("{0}-{1}" -f $stamp, $k); $k++ }
             foreach ($it in @($ex.Items)) {
                 try {
-                    $from = Get-BakLongPath (Join-Path $Target ([string]$it.Rel))
-                    $to = Get-BakLongPath (Join-Path $bin ([string]$it.Rel))
+                    $from = Get-BakLongPath ([IO.Path]::Combine($Target, [string]$it.Rel))
+                    $to = Get-BakLongPath ([IO.Path]::Combine($bin, [string]$it.Rel))
                     [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($to))
                     if ($it.IsDir) { [IO.Directory]::Move($from, $to) } else { [IO.File]::Move($from, $to) }
                     $res.Moved += [int]$it.Files

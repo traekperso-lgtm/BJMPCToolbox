@@ -61,7 +61,7 @@ Describe 'Pilotes : règles de décision' {
     ) {
         $dev = "[pscustomobject]@{ Class = '$Cls'; Ven = '$Ven'; Inf = '$Inf'; Inbox = `$$Inbox; Problem = $P; Version = '$V'; Date = $(if ($D) { "[datetime]'$D'" } else { '$null' }) }"
         $cand = $(if ($CD) { "[pscustomobject]@{ Date = [datetime]'$CD'; Version = '$CV' }" } else { '$null' })
-        $r = Invoke-Engine 'tools' ("(Get-DriverDecision $dev $cand).Code")
+        $r = Invoke-Engine 'tools' ("(Get-DriverDecision ($dev) ($cand)).Code")
         $r.Out | Should -Contain $Expect
     }
 }
@@ -110,7 +110,8 @@ try {
 Describe 'Sauvegarde miroir' {
     It 'Copie, exclut AppData / OneDrive / NTUSER, met les fichiers retirés en corbeille, suspend une suppression massive' {
         $code = @'
-$t = Join-Path $env:TEMP ('BJMPC-Test-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+# Dossier temporaire en chemin long : $env:TEMP peut être un nom court 8.3 (RUNNER~1), que robocopy ne rapproche pas des exclusions.
+$t = Join-Path (Join-Path $env:LOCALAPPDATA 'Temp') ('BJMPC-Test-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 try {
     $s = Join-Path $t 'src'; $d = Join-Path $t 'dst\Miroir'; $tr = Join-Path $t 'dst\Miroir-Corbeille'
     New-Item -ItemType Directory -Force -Path (Join-Path $s 'Docs'), (Join-Path $s 'AppData\Local'), (Join-Path $s 'OneDrive - Test'), $d | Out-Null

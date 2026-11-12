@@ -5052,7 +5052,7 @@ Set-SyncResult $res
         T 'Doublons de photos : même image PNG/BMP (pixels)' ($pOk -and $sp -and $sp.Pixels -and $sp.Pix -eq 'pix:3') ("{0} pixels={1}" -f $sp.Pix, $sp.Pixels)
         # Sauvegarde miroir : vraie commande robocopy sur des dossiers d'essai (exclusions, corbeille), puis effacés
         $mirTest = @'
-$t = Join-Path $env:TEMP ('BJMPC-Test-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+$t = Join-Path (Join-Path $env:LOCALAPPDATA 'Temp') ('BJMPC-Test-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 $res = @{ Err = '' }
 try {
     $s = Join-Path $t 'src'; $d = Join-Path $t 'dst\Miroir'; $tr = Join-Path $t 'dst\Miroir-Corbeille'
