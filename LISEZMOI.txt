@@ -1,5 +1,19 @@
-﻿BJMPC Toolbox 2.2 - interface graphique (Windows 11)
+﻿BJMPC Toolbox 2.3 - interface graphique (Windows 11)
 =====================================================
+
+NOUVEAUTES 2.3
+  - Lancement : BJMPC-Toolbox.bat ne demande plus qu'une seule confirmation administrateur (lancement direct de
+    l'interface). Les fichiers telecharges sont debloques au demarrage (plus d'avertissement "fichier d'Internet").
+  - Fenetre adaptee a l'ecran : jamais plus grande que la zone utile (barre des taches exclue), centree, ouverte en
+    plein ecran si l'ecran est petit ; la barre de titre (reduire, agrandir, fermer) ne peut plus sortir de l'ecran.
+  - Nouvelle section "Personnalisation et divers" :
+       Demarrage | Doublons de photos | Affichage et OLED | Confidentialite | Interface et Explorateur |
+       Mises a jour et securite
+    "Demarrage" regroupe le demarrage rapide / hibernation et l'ancienne carte "Demarrage et diagnostic".
+    "Optimiser > Disque" ne garde que le SSD (ReTrim). La section "Confidentialite et reglages" disparait.
+  - Doublons de photos : apercus des photos cote a cote pour chaque groupe (nom, dossier, date, taille), sur toute
+    la largeur de la page, 8 groupes par page. Case "Mettre de cote" par photo, lien "Garder celle-ci" (les autres
+    photos du groupe sont cochees), double-clic pour ouvrir la photo. Toujours deplacees, jamais supprimees.
 
 NOUVEAUTES 2.2
   Version 2.1 conservee : branche "archive/v2.1" du depot GitHub (et zip BJMPC-Toolbox-2.1).

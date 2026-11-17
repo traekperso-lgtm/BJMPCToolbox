@@ -100,7 +100,7 @@ $Script:EvtRules = @(
     @{ Id = 'fast_boot'; P = 'Kernel-Boot$'; Ids = @(29); Kind = 'advice'; Sev = 1
        Title = 'Le démarrage rapide de Windows a échoué'
        Why = 'Windows n''a pas pu reprendre à partir de son image de démarrage rapide et a fait un démarrage complet à la place. Fréquent après un arrêt brutal.'
-       Advice = 'Si cela se répète : Optimiser > Disque et démarrage > « Désactiver le démarrage rapide seulement ».' }
+       Advice = 'Si cela se répète : Personnalisation et divers > Démarrage > « Désactiver le démarrage rapide seulement ».' }
     @{ Id = 'cpu_throttle'; P = 'Kernel-Processor-Power'; Ids = @(37); W = $true; Kind = 'advice'; Sev = 2
        Title = 'Le processeur est bridé par le matériel'
        Why = 'Le firmware limite la vitesse du processeur, le plus souvent à cause de la chaleur ou d''un chargeur trop faible.'
