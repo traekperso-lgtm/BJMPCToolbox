@@ -5053,6 +5053,8 @@ if ($Script:EngineError) {
 }
 
 $startKey = 'dash'
+# Taille et position adaptées à l'écran (avant l'autotest, qui le vérifie)
+Set-WindowToScreen $Script:Window
 if ($env:BJMPC_SELFTEST -eq 'PREVIEW' -and $env:BJMPC_PAGE -and $Script:NavItems.ContainsKey($env:BJMPC_PAGE)) { $startKey = $env:BJMPC_PAGE }
 Open-Page $startKey
 if ($env:BJMPC_SELFTEST -eq 'PREVIEW' -and $env:BJMPC_DEMO) {
@@ -5324,7 +5326,6 @@ Set-BackupResult $res
 }
 
 try {
-    Set-WindowToScreen $Script:Window
     [void]$Script:Window.ShowDialog()
 } catch {
     Show-Fatal "Erreur : $($_.Exception.Message)"
