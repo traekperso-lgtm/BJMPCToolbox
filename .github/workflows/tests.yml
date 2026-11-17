@@ -33,3 +33,19 @@ jobs:
         with:
           name: resultats-tests
           path: resultats-tests.xml
+      - name: Autotest de l'interface (Verif, lecture seule)
+        if: always()
+        continue-on-error: true
+        shell: powershell
+        timeout-minutes: 15
+        run: |
+          $env:BJMPC_SELFTEST = Join-Path $PWD 'Verif_resultat.txt'
+          $p = Start-Process powershell -ArgumentList '-NoProfile -ExecutionPolicy Bypass -STA -File BJMPC-Toolbox.ps1' -PassThru
+          if (-not $p.WaitForExit(600000)) { $p.Kill(); Write-Output '::warning::Autotest interrompu après 10 minutes' }
+          if (Test-Path $env:BJMPC_SELFTEST) {
+            $l = Get-Content $env:BJMPC_SELFTEST -Encoding UTF8
+            $l
+            $ok = @($l | Where-Object { $_ -like 'OK *' }).Count; $ko = @($l | Where-Object { $_ -like 'ECHEC *' })
+            Write-Output ("::notice::Autotest interface : {0} OK, {1} ECHEC" -f $ok, $ko.Count)
+            foreach ($x in $ko) { Write-Output ('::warning::' + ($x -replace '[\r\n]', ' ')) }
+          } else { Write-Output '::warning::Autotest : aucun résultat écrit' }
