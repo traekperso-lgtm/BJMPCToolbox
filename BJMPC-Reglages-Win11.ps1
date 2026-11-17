@@ -14,13 +14,13 @@
 #>
 
 $ErrorActionPreference = 'Continue'
-$Script:ReglagesVersion = '1.1'
+$Script:ReglagesVersion = '1.2'
 
 $Script:TweakCatalog = @(
     @{
         Id = 'tel_win'; Group = 'Télémétrie et diagnostics'; Risk = 'safe'; Default = $true; Reboot = $false
         Label = 'Télémétrie Windows au niveau minimal'
-        Desc = 'Stratégies DataCollection, programme d''amélioration (CEIP), services et tâches de collecte (Appraiser, CEIP, disque, retours). Sur Windows Famille/Pro, le niveau « Requis » reste envoyé : c''est une limite imposée par Microsoft.'
+        Desc = 'Stratégies DataCollection, journaux et vidages limités, inventaire des applications (AppCompat), enregistreur DiagTrack, programme d''amélioration (CEIP), services et tâches de collecte (Appraiser, inventaire de l''appareil, OneSettings, CEIP, disque, retours). Windows Famille et Pro ramènent la stratégie « aucune » au niveau « Requis » : c''est le service DiagTrack, désactivé ici, qui envoie ces données. Seules les éditions Entreprise et Éducation respectent « aucune ».'
         Fn = ''
         Needs = @()
         Reg = @(
@@ -33,7 +33,13 @@ $Script:TweakCatalog = @(
             @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection', 'AllowCommercialDataPipeline', 0, 'DWord'),
             @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection', 'DisableOneSettingsDownloads', 1, 'DWord'),
             @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection', 'DoNotShowFeedbackNotifications', 1, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection', 'LimitDiagnosticLogCollection', 1, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection', 'LimitDumpCollection', 1, 'DWord'),
             @('HKLM:\SOFTWARE\Policies\Microsoft\SQMClient\Windows', 'CEIPEnable', 0, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppCompat', 'AITEnable', 0, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppCompat', 'DisableInventory', 1, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppCompat', 'DisableUAR', 1, 'DWord'),
+            @('HKLM:\SYSTEM\CurrentControlSet\Control\WMI\Autologger\AutoLogger-Diagtrack-Listener', 'Start', 0, 'DWord'),
             @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\DataCollection', 'AllowTelemetry', 0, 'DWord')
         )
         Svc = @(
@@ -52,6 +58,10 @@ $Script:TweakCatalog = @(
             @('\Microsoft\Windows\Application Experience\', 'MareBackup'),
             @('\Microsoft\Windows\Autochk\', 'Proxy'),
             @('\Microsoft\Windows\DiskDiagnostic\', 'Microsoft-Windows-DiskDiagnosticDataCollector'),
+            @('\Microsoft\Windows\Device Information\', 'Device'),
+            @('\Microsoft\Windows\Device Information\', 'Device User'),
+            @('\Microsoft\Windows\Flighting\OneSettings\', 'RefreshCache'),
+            @('\Microsoft\Windows\PI\', 'Sqm-Tasks'),
             @('\Microsoft\Windows\Feedback\Siuf\', 'DmClient'),
             @('\Microsoft\Windows\Feedback\Siuf\', 'DmClientOnScenarioDownload')
         )
@@ -65,6 +75,8 @@ $Script:TweakCatalog = @(
         Needs = @()
         Reg = @(
             @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Error Reporting', 'Disabled', 1, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Error Reporting', 'DontSendAdditionalData', 1, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\PCHealth\ErrorReporting', 'DoReport', 0, 'DWord'),
             @('HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting', 'Disabled', 1, 'DWord'),
             @('HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting', 'DontSendAdditionalData', 1, 'DWord'),
             @('HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting', 'LoggingDisabled', 1, 'DWord')
@@ -112,6 +124,10 @@ $Script:TweakCatalog = @(
             @('HKLM:\SOFTWARE\Policies\Microsoft\InputPersonalization', 'RestrictImplicitTextCollection', 1, 'DWord'),
             @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\HandwritingErrorReports', 'PreventHandwritingErrorReports', 1, 'DWord'),
             @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\TabletPC', 'PreventHandwritingDataSharing', 1, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\TextInput', 'AllowLinguisticDataCollection', 0, 'DWord'),
+            @('HKCU:\SOFTWARE\Microsoft\InputPersonalization', 'RestrictImplicitInkCollection', 1, 'DWord'),
+            @('HKCU:\SOFTWARE\Microsoft\InputPersonalization', 'RestrictImplicitTextCollection', 1, 'DWord'),
+            @('HKCU:\SOFTWARE\Microsoft\Personalization\Settings', 'AcceptedPrivacyPolicy', 0, 'DWord'),
             @('HKCU:\SOFTWARE\Microsoft\InputPersonalization\TrainedDataStore', 'HarvestContacts', 0, 'DWord')
         )
         Svc = @()
@@ -131,6 +147,94 @@ $Script:TweakCatalog = @(
             @('HKCU:\Software\Policies\Microsoft\WindowsMediaPlayer', 'PreventMusicFileMetadataRetrieval', 1, 'DWord'),
             @('HKCU:\Software\Policies\Microsoft\WindowsMediaPlayer', 'PreventRadioPresetsRetrieval', 1, 'DWord')
         )
+        Svc = @()
+        Task = @()
+        Feat = @()
+    },
+    @{
+        Id = 'tel_netcomm'; Group = 'Télémétrie et diagnostics'; Risk = 'safe'; Default = $true; Reboot = $true
+        Label = 'Connexions de fond de Windows vers Microsoft'
+        Desc = 'Liste Microsoft « connexions des composants de Windows » : images des appareils, polices téléchargées à la demande, cartes hors connexion, modèle de santé des disques, validation de licence KMS en ligne, OneDrive avant l''ouverture de session, installation à distance depuis le site du Store, synchronisation des SMS, rapport de l''outil de suppression de logiciels malveillants, astuces en ligne des Paramètres, liens et assistants en ligne d''anciens composants. Aucun effet visible au quotidien.'
+        Fn = ''
+        Needs = @()
+        Reg = @(
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\Device Metadata', 'PreventDeviceMetadataFromNetwork', 1, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\System', 'EnableFontProviders', 0, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\Maps', 'AutoDownloadAndUpdateMapData', 0, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\Maps', 'AllowUntriggeredNetworkTrafficOnSettingsPage', 0, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\StorageHealth', 'AllowDiskHealthModelUpdates', 0, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\CurrentVersion\Software Protection Platform', 'NoGenTicket', 1, 'DWord'),
+            @('HKLM:\SOFTWARE\Microsoft\OneDrive', 'PreventNetworkTrafficPreUserSignIn', 1, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\PushToInstall', 'DisablePushToInstall', 1, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\Messaging', 'AllowMessageSync', 0, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\MRT', 'DontReportInfectionInformation', 1, 'DWord'),
+            @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer', 'AllowOnlineTips', 0, 'DWord'),
+            @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer', 'NoOnlinePrintsWizard', 1, 'DWord'),
+            @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer', 'NoPublishingWizard', 1, 'DWord'),
+            @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer', 'NoWebServices', 1, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\EventViewer', 'MicrosoftEventVwrDisableLinks', 1, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\PCHealth\HelpSvc', 'Headlines', 0, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\PCHealth\HelpSvc', 'MicrosoftKBSearch', 0, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\SearchCompanion', 'DisableContentFileUpdates', 1, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\Internet Connection Wizard', 'ExitOnMSICW', 1, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\Registration Wizard Control', 'NoRegistration', 1, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Messenger\Client', 'CEIP', 2, 'DWord')
+        )
+        Svc = @()
+        Task = @(
+            @('\Microsoft\Windows\Maps\', 'MapsUpdateTask'),
+            @('\Microsoft\Windows\Maps\', 'MapsToastTask')
+        )
+        Feat = @()
+    },
+    @{
+        Id = 'tel_samples'; Group = 'Télémétrie et diagnostics'; Risk = 'warn'; Default = $false; Reboot = $false
+        Label = 'Defender : ne plus envoyer de fichiers à Microsoft'
+        Desc = 'Plus d''envoi automatique d''échantillons ni de rapports Watson. La protection cloud de Defender reste active (elle reconnaît les nouveaux virus) : la couper retirerait une vraie protection. Windows Sécurité peut afficher un avertissement jaune à ignorer. Si la protection contre les falsifications est active, Defender peut ignorer ce réglage.'
+        Fn = ''
+        Needs = @()
+        Reg = @(
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Spynet', 'SubmitSamplesConsent', 2, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Reporting', 'DisableGenericRePorts', 1, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Reporting', 'DisableEnhancedNotifications', 1, 'DWord')
+        )
+        Svc = @()
+        Task = @()
+        Feat = @()
+    },
+    @{
+        Id = 'tel_cdp'; Group = 'Télémétrie et diagnostics'; Risk = 'warn'; Default = $false; Reboot = $false
+        Label = 'Partage entre appareils : Mobile connecté, presse-papiers dans le cloud, reprise d''activité'
+        Desc = 'Coupe les échanges avec le compte Microsoft pour relier ce PC au téléphone et aux autres PC. Mobile connecté, le Partage de proximité et le presse-papiers synchronisé cessent de fonctionner. L''historique local du presse-papiers (Win+V) reste disponible.'
+        Fn = ''
+        Needs = @()
+        Reg = @(
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\System', 'EnableCdp', 0, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\System', 'EnableMmx', 0, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\System', 'AllowCrossDeviceClipboard', 0, 'DWord')
+        )
+        Svc = @()
+        Task = @()
+        Feat = @()
+    },
+    @{
+        Id = 'tel_findmy'; Group = 'Télémétrie et diagnostics'; Risk = 'warn'; Default = $false; Reboot = $false
+        Label = 'Localiser mon appareil désactivé'
+        Desc = 'Le PC n''envoie plus sa position à Microsoft. En cas de perte ou de vol, il ne pourra plus être localisé depuis le compte Microsoft.'
+        Fn = ''
+        Needs = @()
+        Reg = @(,@('HKLM:\SOFTWARE\Policies\Microsoft\FindMyDevice', 'AllowFindMyDevice', 0, 'DWord'))
+        Svc = @()
+        Task = @()
+        Feat = @()
+    },
+    @{
+        Id = 'tel_ncsi'; Group = 'Télémétrie et diagnostics'; Risk = 'warn'; Default = $false; Reboot = $true
+        Label = 'Test de connexion Internet de Windows (msftconnecttest.com)'
+        Desc = 'Windows ne contacte plus Microsoft pour savoir si Internet répond. En contrepartie, l''icône réseau peut afficher « Pas d''accès Internet », certaines applications (Store, Office) peuvent se croire hors ligne et la page de connexion des Wi-Fi d''hôtel ou de gare ne s''ouvre plus seule. Pour un utilisateur averti.'
+        Fn = ''
+        Needs = @()
+        Reg = @(,@('HKLM:\SOFTWARE\Policies\Microsoft\Windows\NetworkConnectivityStatusIndicator', 'NoActiveProbe', 1, 'DWord'))
         Svc = @()
         Task = @()
         Feat = @()
@@ -180,7 +284,11 @@ $Script:TweakCatalog = @(
             @('HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager', 'SubscribedContent-338388Enabled', 0, 'DWord'),
             @('HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager', 'SubscribedContent-338389Enabled', 0, 'DWord'),
             @('HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager', 'SubscribedContent-353698Enabled', 0, 'DWord'),
-            @('HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager', 'SubscribedContent-310093Enabled', 0, 'DWord')
+            @('HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager', 'SubscribedContent-310093Enabled', 0, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent', 'DisableConsumerAccountStateContent', 1, 'DWord'),
+            @('HKCU:\Software\Policies\Microsoft\Windows\CloudContent', 'DisableThirdPartySuggestions', 1, 'DWord'),
+            @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced', 'Start_AccountNotifications', 0, 'DWord'),
+            @('HKCU:\Software\Microsoft\Windows\CurrentVersion\UserProfileEngagement', 'ScoobeSystemSettingEnabled', 0, 'DWord')
         )
         Svc = @()
         Task = @()
@@ -192,7 +300,11 @@ $Script:TweakCatalog = @(
         Desc = 'Supprime les images changeantes et les astuces de l''écran de verrouillage. Le fond de l''écran de verrouillage reste fixe.'
         Fn = ''
         Needs = @()
-        Reg = @(,@('HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent', 'DisableWindowsSpotlightFeatures', 1, 'DWord'))
+        Reg = @(
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent', 'DisableWindowsSpotlightFeatures', 1, 'DWord'),
+            @('HKCU:\Software\Policies\Microsoft\Windows\CloudContent', 'DisableWindowsSpotlightFeatures', 1, 'DWord'),
+            @('HKCU:\Software\Policies\Microsoft\Windows\CloudContent', 'DisableSpotlightCollectionOnDesktop', 1, 'DWord')
+        )
         Svc = @()
         Task = @()
         Feat = @()
@@ -252,11 +364,30 @@ $Script:TweakCatalog = @(
         Needs = @()
         Reg = @(
             @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI', 'DisableAIDataAnalysis', 1, 'DWord'),
-            @('HKCU:\Software\Policies\Microsoft\Windows\WindowsAI', 'DisableAIDataAnalysis', 1, 'DWord')
+            @('HKCU:\Software\Policies\Microsoft\Windows\WindowsAI', 'DisableAIDataAnalysis', 1, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI', 'AllowRecallEnablement', 0, 'DWord')
         )
         Svc = @()
         Task = @()
         Feat = @(,@('feature', 'Recall'))
+    },
+    @{
+        Id = 'ai_clicktodo'; Group = 'IA et Copilot'; Risk = 'safe'; Default = $true; Reboot = $false
+        Label = 'Click to Do, agent des Paramètres et IA de Paint'
+        Desc = 'Click to Do (analyse de ce qui est à l''écran), recherche par agent IA dans les Paramètres, Cocréateur, Remplissage génératif et Image Creator dans Paint. Sans effet sur un PC qui n''a pas ces fonctions.'
+        Fn = ''
+        Needs = @()
+        Reg = @(
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI', 'DisableClickToDo', 1, 'DWord'),
+            @('HKCU:\Software\Policies\Microsoft\Windows\WindowsAI', 'DisableClickToDo', 1, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI', 'DisableSettingsAgent', 1, 'DWord'),
+            @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Paint', 'DisableCocreator', 1, 'DWord'),
+            @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Paint', 'DisableGenerativeFill', 1, 'DWord'),
+            @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Paint', 'DisableImageCreator', 1, 'DWord')
+        )
+        Svc = @()
+        Task = @()
+        Feat = @()
     },
     @{
         Id = 'ai_notepad'; Group = 'IA et Copilot'; Risk = 'safe'; Default = $true; Reboot = $false
@@ -275,7 +406,7 @@ $Script:TweakCatalog = @(
     @{
         Id = 'app_edge'; Group = 'Navigateurs et logiciels tiers'; Risk = 'safe'; Default = $true; Reboot = $false
         Label = 'Edge : retirer les fonctions superflues (stratégies)'
-        Desc = 'Désactive recommandations, boutique, collections, achats, barre latérale, démarrage anticipé et télémétrie. Edge affichera « géré par votre organisation » : c''est normal avec les stratégies.'
+        Desc = 'Désactive recommandations, boutique, collections, achats, barre latérale, démarrage anticipé, fonctionnement en arrière-plan, fil d''actualités du nouvel onglet, lecture des pages par Copilot, suggestions de recherche envoyées à chaque frappe et télémétrie. Edge affichera « géré par votre organisation » : c''est normal avec les stratégies.'
         Fn = ''
         Needs = @()
         Reg = @(
@@ -297,7 +428,16 @@ $Script:TweakCatalog = @(
             @('HKLM:\SOFTWARE\Policies\Microsoft\Edge', 'SpotlightExperiencesAndRecommendationsEnabled', 0, 'DWord'),
             @('HKLM:\SOFTWARE\Policies\Microsoft\Edge', 'DiagnosticData', 0, 'DWord'),
             @('HKLM:\SOFTWARE\Policies\Microsoft\Edge', 'EdgeAssetDeliveryServiceEnabled', 0, 'DWord'),
-            @('HKLM:\SOFTWARE\Policies\Microsoft\Edge', 'HubsSidebarEnabled', 0, 'DWord')
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Edge', 'HubsSidebarEnabled', 0, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Edge', 'CopilotPageContext', 0, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Edge', 'ComposeInlineEnabled', 0, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Edge', 'Microsoft365CopilotChatIconEnabled', 0, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Edge', 'NewTabPageContentEnabled', 0, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Edge', 'EdgeFollowEnabled', 0, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Edge', 'ResolveNavigationErrorsUseWebService', 0, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Edge', 'WebWidgetAllowed', 0, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Edge', 'BackgroundModeEnabled', 0, 'DWord'),
+            @('HKLM:\SOFTWARE\Policies\Microsoft\Edge', 'SearchSuggestEnabled', 0, 'DWord')
         )
         Svc = @()
         Task = @()
@@ -343,7 +483,10 @@ $Script:TweakCatalog = @(
             @('HKCU:\SOFTWARE\Microsoft\Office\Common\ClientTelemetry', 'DisableTelemetry', 1, 'DWord'),
             @('HKCU:\SOFTWARE\Microsoft\Office\16.0\Common\ClientTelemetry', 'DisableTelemetry', 1, 'DWord'),
             @('HKCU:\SOFTWARE\Microsoft\Office\Common\ClientTelemetry', 'VerboseLogging', 0, 'DWord'),
-            @('HKCU:\SOFTWARE\Microsoft\Office\16.0\Common\ClientTelemetry', 'VerboseLogging', 0, 'DWord')
+            @('HKCU:\SOFTWARE\Microsoft\Office\16.0\Common\ClientTelemetry', 'VerboseLogging', 0, 'DWord'),
+            @('HKCU:\SOFTWARE\Policies\Microsoft\Office\Common\ClientTelemetry', 'SendTelemetry', 3, 'DWord'),
+            @('HKCU:\SOFTWARE\Policies\Microsoft\Office\16.0\Common', 'sendcustomerdata', 0, 'DWord'),
+            @('HKCU:\SOFTWARE\Policies\Microsoft\Office\16.0\Common\Feedback', 'SurveyEnabled', 0, 'DWord')
         )
         Svc = @()
         Task = @(

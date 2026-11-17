@@ -15,7 +15,7 @@
 #>
 
 $ErrorActionPreference = 'Continue'
-$Script:AppVersion = '2.3'
+$Script:AppVersion = '2.4'
 $Script:Root       = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $Script:LogDir     = Join-Path $env:SystemDrive 'BJMPC-Logs'
 $Script:BackupDir  = Join-Path $Script:LogDir 'Backup'

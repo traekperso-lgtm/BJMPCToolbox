@@ -148,6 +148,31 @@ $c = @($Script:Win11DefRegistry | Where-Object { -not $Script:Win11DefCats.Conta
     }
 }
 
+Describe 'Catalogue de réglages (Confidentialité, Interface, Mises à jour)' {
+    It 'Identifiants uniques, valeurs de registre bien formées et sans doublon, télémétrie complète' {
+        $r = Invoke-Engine 'opt' @'
+$ids = @($Script:TweakCatalog | ForEach-Object { $_.Id })
+$bad = @(); $seen = @{}; $dup = @()
+foreach ($t in $Script:TweakCatalog) {
+    foreach ($g in @($t.Reg)) {
+        if (@($g).Count -ne 4 -or [string]$g[0] -notmatch '^HK(LM|CU):\\' -or @('DWord', 'String', 'QWord', 'Binary', 'ExpandString', 'MultiString') -notcontains [string]$g[3]) { $bad += ($t.Id + ' ' + ($g -join '|')) ; continue }
+        $k = ([string]$g[0] + '|' + [string]$g[1]).ToLowerInvariant()
+        if ($seen.ContainsKey($k)) { $dup += $k } else { $seen[$k] = $t.Id }
+    }
+}
+$need = @('tel_win', 'tel_wer', 'tel_netcomm', 'tel_samples', 'tel_cdp', 'tel_findmy', 'tel_ncsi', 'ai_recall', 'ai_clicktodo')
+$Sync.Result = @{ N = $ids.Count; U = @($ids | Select-Object -Unique).Count; Bad = $bad; Dup = $dup; Missing = @($need | Where-Object { $ids -notcontains $_ })
+    Def = @($Script:TweakCatalog | Where-Object { $_.Risk -eq 'warn' -and $_.Default } | ForEach-Object { $_.Id }) }
+'@
+        $r.Errors | Should -BeNullOrEmpty
+        $r.Result.U | Should -Be $r.Result.N
+        $r.Result.Bad | Should -BeNullOrEmpty
+        $r.Result.Dup | Should -BeNullOrEmpty
+        $r.Result.Missing | Should -BeNullOrEmpty
+        $r.Result.Def | Should -BeNullOrEmpty -Because 'un réglage à risque ne doit jamais être coché d''office'
+    }
+}
+
 Describe 'Analyse statique' {
     It 'PSScriptAnalyzer : aucune erreur, syntaxe compatible PowerShell 5.1' {
         if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) { Set-ItResult -Skipped -Because 'PSScriptAnalyzer absent'; return }

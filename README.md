@@ -2,7 +2,7 @@
 
 🇫🇷 [Français](#-français) · 🇬🇧 [English](#-english)
 
-> **Version 2.3** · Windows 11 · Windows PowerShell 5.1 (WPF) · by **BJMPC Informatique**
+> **Version 2.4** · Windows 11 · Windows PowerShell 5.1 (WPF) · by **BJMPC Informatique**
 
 ---
 
@@ -21,6 +21,16 @@ Elle est écrite en Windows PowerShell 5.1 (interface WPF), sans installation : 
 - **Sauvegarde automatique des fichiers du client** vers un autre disque, à la demande ou planifiée.
 - **Optimisations dépassées retirées** : Nagle, priorités MMCSS, SysMain désactivé, services « inutiles », Win32PrioritySeparation, compression mémoire, désactivation de HVCI… Elles n'apportent rien de mesurable sur Windows 11 aujourd'hui, ou retirent une protection.
 - **Pilotes revus en profondeur** : entre deux familles de pilotes d'une même puce, c'est la date qui départage (comme le fait Windows), plus le seul numéro de version ; retour arrière réel après une mise à jour.
+
+### Nouveautés de la version 2.4
+
+- **Télémétrie au plus bas**, comparée à la liste officielle de Microsoft (« Manage connections from Windows operating system components to Microsoft services ») et aux outils reconnus (privacy.sexy, O&O ShutUp10++, WinUtil, guide Privacy Guides) :
+  - *Télémétrie Windows* : journaux et vidages limités, inventaire des applications (AppCompat), enregistreur DiagTrack coupé, tâches d'inventaire de l'appareil et OneSettings ;
+  - nouveau réglage *Connexions de fond vers Microsoft* (coché d'office) : images des appareils, polices à la demande, cartes, modèle de santé des disques, validation KMS, OneDrive avant connexion, installation à distance, synchronisation des SMS, rapports de l'outil anti-malware, astuces en ligne ;
+  - à cocher en connaissance de cause : envoi d'échantillons Defender, partage entre appareils (Mobile connecté, presse-papiers dans le cloud), Localiser mon appareil, test de connexion Internet (NCSI) ;
+  - IA : Click to Do, agent des Paramètres, IA de Paint, blocage de Recall par stratégie ; Edge : Copilot dans les pages, fil d'actualités, mode arrière-plan, suggestions de recherche ; Office : niveau de télémétrie « aucun ».
+- Volontairement exclus, parce qu'ils retirent une protection ou cassent Windows : couper Windows Update, la mise à jour des certificats racine, la protection cloud de Defender ou SmartScreen, et bloquer des adresses Microsoft dans le pare-feu ou le fichier hosts.
+- Sur Windows Famille et Pro, Microsoft ramène la stratégie « aucune » au niveau « Requis » ; c'est l'arrêt du service DiagTrack qui empêche l'envoi. Seules les éditions Entreprise et Éducation respectent « aucune ».
 
 ### Nouveautés de la version 2.3
 
@@ -123,7 +133,7 @@ BJMPC Toolbox est distribuée sous la licence [PolyForm Noncommercial 1.0.0](LIC
 
 ### Retours
 
-Ouvrez une *issue* en précisant la version de Windows, la version de l'outil (2.3) et, si possible, le journal de `C:\BJMPC-Logs\`.
+Ouvrez une *issue* en précisant la version de Windows, la version de l'outil (2.4) et, si possible, le journal de `C:\BJMPC-Logs\`.
 
 ---
 
@@ -142,6 +152,16 @@ It is written in Windows PowerShell 5.1 (WPF UI) and needs no installation: laun
 - **Automatic backup of the customer's files** to another disk, on demand or scheduled.
 - **Outdated tweaks removed**: Nagle, MMCSS priorities, disabling SysMain, "useless" services, Win32PrioritySeparation, memory compression, disabling HVCI… They bring nothing measurable on today's Windows 11, or remove a protection.
 - **Drivers reviewed in depth**: between two driver families for the same chip, the date decides (as Windows does), no longer the version number alone; a real rollback after an update.
+
+### What's new in version 2.4
+
+- **Telemetry brought as low as it goes**, checked against Microsoft's official list ("Manage connections from Windows operating system components to Microsoft services") and well-known tools (privacy.sexy, O&O ShutUp10++, WinUtil, Privacy Guides):
+  - *Windows telemetry*: limited logs and dumps, application inventory (AppCompat), DiagTrack autologger off, device inventory and OneSettings tasks;
+  - new *Background connections to Microsoft* setting (ticked by default): device images, on-demand fonts, maps, disk health model, KMS validation, OneDrive before sign-in, push-to-install, SMS sync, malware removal tool reports, online tips;
+  - opt-in with known trade-offs: Defender sample submission, cross-device features (Phone Link, cloud clipboard), Find My Device, connectivity test (NCSI);
+  - AI: Click to Do, Settings agent, Paint AI, Recall blocked by policy; Edge: Copilot page context, news feed, background mode, search suggestions; Office: telemetry level "none".
+- Deliberately left out because they remove protection or break Windows: turning off Windows Update, root certificate updates, Defender cloud protection or SmartScreen, and blocking Microsoft addresses in the firewall or hosts file.
+- On Windows Home and Pro, Microsoft turns the "off" policy into "Required"; stopping the DiagTrack service is what prevents the upload. Only Enterprise and Education honour "off".
 
 ### What's new in version 2.3
 

@@ -1,5 +1,30 @@
-﻿BJMPC Toolbox 2.3 - interface graphique (Windows 11)
+﻿BJMPC Toolbox 2.4 - interface graphique (Windows 11)
 =====================================================
+
+NOUVEAUTES 2.4
+  Confidentialite > Telemetrie et diagnostics, comparee a la liste officielle Microsoft des connexions des
+  composants de Windows et aux outils reconnus (privacy.sexy, O&O ShutUp10++, WinUtil, Privacy Guides).
+  - Telemetrie Windows (coche d'office) : en plus, journaux et vidages limites (LimitDiagnosticLogCollection,
+    LimitDumpCollection), inventaire des applications coupe (AppCompat : AITEnable, DisableInventory, DisableUAR),
+    enregistreur AutoLogger-Diagtrack-Listener arrete, taches Device Information, OneSettings RefreshCache, Sqm-Tasks.
+  - Rapports d'erreurs : DontSendAdditionalData et ancienne strategie PCHealth DoReport.
+  - Saisie : collecte linguistique (TextInput), dictionnaire personnel de saisie, collecte implicite par compte.
+  - Nouveau "Connexions de fond de Windows vers Microsoft" (coche d'office, redemarrage) : metadonnees des
+    appareils, polices a la demande, cartes, modele de sante des disques, validation KMS en ligne (NoGenTicket),
+    OneDrive avant l'ouverture de session, installation a distance (PushToInstall), synchronisation des SMS,
+    rapport MRT, astuces en ligne, liens et assistants en ligne d'anciens composants.
+  - Nouveaux, non coches (contrepartie decrite) : Defender sans envoi d'echantillons (protection cloud gardee),
+    partage entre appareils (Mobile connecte, presse-papiers cloud), Localiser mon appareil, test NCSI.
+  - IA : nouveau "Click to Do, agent des Parametres et IA de Paint" ; Recall bloque aussi par AllowRecallEnablement.
+  - Publicites : contenus lies au compte (sauvegarde, OneDrive...), suggestions tierces, "terminer la configuration".
+  - Edge : Copilot dans les pages, redaction IA, icone Microsoft 365 Copilot, fil du nouvel onglet, suivi de
+    createurs, pages d'erreur en ligne, widget, mode arriere-plan, suggestions de recherche.
+  - Office : niveau de telemetrie "aucun" (SendTelemetry = 3), sendcustomerdata, enquetes.
+  - Exclus volontairement : couper Windows Update, les certificats racine, la protection cloud de Defender,
+    SmartScreen, ou bloquer des adresses Microsoft (pare-feu, hosts) : perte de protection ou pannes.
+  - Rappel : sur Windows Famille/Pro, Microsoft ramene "aucune" au niveau "Requis" ; c'est l'arret du service
+    DiagTrack qui empeche l'envoi. Seules Entreprise et Education respectent "aucune".
+  - Test automatique ajoute : catalogue sans doublon, valeurs bien formees, aucun reglage a risque coche d'office.
 
 NOUVEAUTES 2.3
   - Lancement : BJMPC-Toolbox.bat ne demande plus qu'une seule confirmation administrateur (lancement direct de
