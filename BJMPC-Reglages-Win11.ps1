@@ -1296,23 +1296,61 @@ function Set-Tweaks {
     Write-Log ("{0} réglage(s) appliqué(s), {1} ignoré(s). Annulation possible depuis l'onglet Restauration." -f $ok, $skipped) 'OK'
 }
 
-# ---------------------------------------------------------------- DNS : autres fournisseurs
-$Script:DnsPresets = @{
-    cloudflare = @{ Name = 'Cloudflare'; V4 = @('1.1.1.1', '1.0.0.1'); V6 = @('2606:4700:4700::1111', '2606:4700:4700::1001'); Doh = 'https://cloudflare-dns.com/dns-query' }
-    google     = @{ Name = 'Google';     V4 = @('8.8.8.8', '8.8.4.4'); V6 = @('2001:4860:4860::8888', '2001:4860:4860::8844'); Doh = 'https://dns.google/dns-query' }
-    quad9      = @{ Name = 'Quad9';      V4 = @('9.9.9.9', '149.112.112.112'); V6 = @('2620:fe::fe', '2620:fe::9'); Doh = 'https://dns.quad9.net/dns-query' }
-    adguard    = @{ Name = 'AdGuard';    V4 = @('94.140.14.14', '94.140.15.15'); V6 = @('2a10:50c0::ad1:ff', '2a10:50c0::ad2:ff'); Doh = 'https://dns.adguard-dns.com/dns-query' }
-    opendns    = @{ Name = 'OpenDNS';    V4 = @('208.67.222.222', '208.67.220.220'); V6 = @('2620:119:35::35', '2620:119:53::53'); Doh = 'https://doh.opendns.com/dns-query' }
+# ---------------------------------------------------------------- DNS chiffré (DNS over HTTPS)
+# Servers : adresse -> modèle DoH, dans l'ordre d'utilisation (IPv4 puis IPv6). Strict : le fournisseur ne répond qu'en chiffré.
+$Script:DnsPresets = [ordered]@{
+    dns4all     = @{ Name = 'DNS4ALL'; Servers = @(
+            @('194.0.5.3', 'https://doh.dns4all.eu/dns-query'), @('80.67.169.12', 'https://ns0.fdn.fr/dns-query'),
+            @('2001:678:8::3', 'https://doh.dns4all.eu/dns-query'), @('2001:910:800::12', 'https://ns0.fdn.fr/dns-query')) }
+    fdn         = @{ Name = 'FDN'; Servers = @(
+            @('80.67.169.12', 'https://ns0.fdn.fr/dns-query'), @('80.67.169.40', 'https://ns1.fdn.fr/dns-query'),
+            @('2001:910:800::12', 'https://ns0.fdn.fr/dns-query'), @('2001:910:800::40', 'https://ns1.fdn.fr/dns-query')) }
+    dns4eu      = @{ Name = 'DNS4EU sans filtre'; Servers = @(
+            @('86.54.11.100', 'https://unfiltered.joindns4.eu/dns-query'), @('86.54.11.200', 'https://unfiltered.joindns4.eu/dns-query'),
+            @('2a13:1001::86:54:11:100', 'https://unfiltered.joindns4.eu/dns-query'), @('2a13:1001::86:54:11:200', 'https://unfiltered.joindns4.eu/dns-query')) }
+    dns4eunoads = @{ Name = 'DNS4EU anti-pub'; Servers = @(
+            @('86.54.11.13', 'https://noads.joindns4.eu/dns-query'), @('86.54.11.213', 'https://noads.joindns4.eu/dns-query'),
+            @('2a13:1001::86:54:11:13', 'https://noads.joindns4.eu/dns-query'), @('2a13:1001::86:54:11:213', 'https://noads.joindns4.eu/dns-query')) }
+    digitale    = @{ Name = 'Digitale Gesellschaft'; Strict = $true; Servers = @(
+            @('185.95.218.42', 'https://dns.digitale-gesellschaft.ch/dns-query'), @('185.95.218.43', 'https://dns.digitale-gesellschaft.ch/dns-query'),
+            @('2a05:fc84::42', 'https://dns.digitale-gesellschaft.ch/dns-query'), @('2a05:fc84::43', 'https://dns.digitale-gesellschaft.ch/dns-query')) }
+    cloudflare  = @{ Name = 'Cloudflare'; Servers = @(
+            @('1.1.1.1', 'https://cloudflare-dns.com/dns-query'), @('1.0.0.1', 'https://cloudflare-dns.com/dns-query'),
+            @('2606:4700:4700::1111', 'https://cloudflare-dns.com/dns-query'), @('2606:4700:4700::1001', 'https://cloudflare-dns.com/dns-query')) }
+    adguard     = @{ Name = 'AdGuard'; Servers = @(
+            @('94.140.14.14', 'https://dns.adguard-dns.com/dns-query'), @('94.140.15.15', 'https://dns.adguard-dns.com/dns-query'),
+            @('2a10:50c0::ad1:ff', 'https://dns.adguard-dns.com/dns-query'), @('2a10:50c0::ad2:ff', 'https://dns.adguard-dns.com/dns-query')) }
+    google      = @{ Name = 'Google'; Servers = @(
+            @('8.8.8.8', 'https://dns.google/dns-query'), @('8.8.4.4', 'https://dns.google/dns-query'),
+            @('2001:4860:4860::8888', 'https://dns.google/dns-query'), @('2001:4860:4860::8844', 'https://dns.google/dns-query')) }
+    opendns     = @{ Name = 'OpenDNS'; Servers = @(
+            @('208.67.222.222', 'https://doh.opendns.com/dns-query'), @('208.67.220.220', 'https://doh.opendns.com/dns-query'),
+            @('2620:119:35::35', 'https://doh.opendns.com/dns-query'), @('2620:119:53::53', 'https://doh.opendns.com/dns-query')) }
 }
+$Script:DohIfRoot = 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\InterfaceSpecificParameters'
 
 function Set-DnsPreset {
-    # DNS chiffré (DoH) avec repli UDP autorisé : si le fournisseur est injoignable, la résolution continue.
-    param([string]$Provider)
+    # DNS chiffré (DoH). Par défaut le repli en clair reste autorisé : si le fournisseur est injoignable, la connexion
+    # continue. -Strict (ou un fournisseur qui ne répond qu'en chiffré) : jamais de DNS en clair.
+    param([string]$Provider, [switch]$Strict)
     $p = $Script:DnsPresets[$Provider]
     if (-not $p) { Write-Log "Fournisseur DNS inconnu : $Provider" 'WARN'; return }
+    $strictMode = ([bool]$Strict -or [bool]$p.Strict)
     $adapters = @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })
     if ($adapters.Count -eq 0) { Write-Log 'Aucune carte physique active détectée' 'WARN'; return }
-    $addrs = @($p.V4) + @($p.V6)
+    $addrs = @($p.Servers | ForEach-Object { [string]$_[0] })
+    # 1) Modèle DoH de chaque adresse (connu de Windows pour toutes les cartes)
+    foreach ($sv in $p.Servers) {
+        $ip = [string]$sv[0]; $tpl = [string]$sv[1]
+        try {
+            $cur = Get-DnsClientDohServerAddress -ServerAddress $ip -ErrorAction SilentlyContinue
+            if ($cur) { Set-DnsClientDohServerAddress -ServerAddress $ip -DohTemplate $tpl -AllowFallbackToUdp (-not $strictMode) -AutoUpgrade $true -ErrorAction Stop | Out-Null }
+            else { Add-DnsClientDohServerAddress -ServerAddress $ip -DohTemplate $tpl -AllowFallbackToUdp (-not $strictMode) -AutoUpgrade $true -ErrorAction Stop | Out-Null }
+            Write-Log "Modèle DoH : $ip -> $tpl" 'OK'
+        } catch { Write-Log "Modèle DoH de $ip : $($_.Exception.Message)" 'WARN' }
+    }
+    # 2) Serveurs de chaque carte active, puis chiffrement activé carte par carte (DohFlags = 1 : modèle connu de Windows).
+    #    Sans DohFlags, Windows 11 garde le DNS en clair même si le modèle existe.
     foreach ($a in $adapters) {
         $k4 = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($a.InterfaceGuid)"
         $k6 = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters\Interfaces\$($a.InterfaceGuid)"
@@ -1320,11 +1358,49 @@ function Set-DnsPreset {
         try {
             Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ServerAddresses $addrs -ErrorAction Stop
             Write-Log "DNS de $($a.Name) : $($p.Name) ($($addrs -join ', '))" 'OK'
-        } catch { Write-Log "DNS de $($a.Name) : $($_.Exception.Message)" 'WARN' }
+        } catch { Write-Log "DNS de $($a.Name) : $($_.Exception.Message)" 'WARN'; continue }
+        foreach ($ip in $addrs) {
+            $fam = $(if ($ip -match ':') { 'Doh6' } else { 'Doh' })
+            $kd = "$($Script:DohIfRoot)\$($a.InterfaceGuid)\DohInterfaceSettings\$fam\$ip"
+            try {
+                if (-not (Test-Path -LiteralPath $kd)) {
+                    Add-Orig "regkey|$kd" @{ Type = 'regkey'; Path = $kd }
+                    New-Item -Path $kd -Force -ErrorAction Stop | Out-Null
+                }
+                New-ItemProperty -LiteralPath $kd -Name 'DohFlags' -Value 1 -PropertyType QWord -Force -ErrorAction Stop | Out-Null
+            } catch { Write-Log "Chiffrement de $ip sur $($a.Name) : $($_.Exception.Message)" 'WARN' }
+        }
     }
-    foreach ($ip in $addrs) { Invoke-Native 'netsh.exe' "dns add encryption server=$ip dohtemplate=$($p.Doh) autoupgrade=yes udpfallback=yes" }
     Invoke-Native 'ipconfig.exe' '/flushdns'
-    Write-Log "DNS $($p.Name) configuré avec chiffrement (DoH). Retour possible avec « Revenir au DNS d'origine »." 'OK'
+    # 3) Contrôle : chaque adresse a-t-elle bien son modèle DoH ?
+    $miss = @($addrs | Where-Object { -not (Get-DnsClientDohServerAddress -ServerAddress $_ -ErrorAction SilentlyContinue) })
+    if ($miss.Count) { Write-Log ("Chiffrement non confirmé pour : {0}" -f ($miss -join ', ')) 'WARN' }
+    $mode = $(if ($strictMode) { 'strict : jamais de DNS en clair' } else { 'repli en clair autorisé si le fournisseur ne répond pas' })
+    Write-Log "DNS $($p.Name) configuré et chiffré (DoH, $mode). Retour possible avec « Revenir au DNS d'origine »." 'OK'
+}
+
+function Restore-DnsOrigin {
+    # Remet les serveurs DNS d'origine et retire le chiffrement ajouté par la Toolbox (seulement ces deux choses).
+    $n = 0
+    foreach ($k in @($Script:Orig.Keys | Where-Object { $_ -like 'dns|*' -or $_ -like ('regkey|' + $Script:DohIfRoot + '*') })) {
+        try { Restore-Record $Script:Orig[$k]; $n++ } catch { Write-Log "Retour $k : $($_.Exception.Message)" 'WARN' }
+        $Script:Orig.Remove($k)
+    }
+    Save-Orig
+    Invoke-Native 'ipconfig.exe' '/flushdns'
+    if ($n) { Write-Log "DNS d'origine rétabli ($n élément(s))." 'OK' } else { Write-Log "Aucune modification du DNS à annuler." 'OK' }
+}
+
+function Select-DnsPreset {
+    # Menu console (ancien mode texte)
+    $keys = @($Script:DnsPresets.Keys)
+    for ($n = 0; $n -lt $keys.Count; $n++) { Write-Host ("  {0}) {1}" -f ($n + 1), $Script:DnsPresets[$keys[$n]].Name) }
+    Write-Host "  R) Revenir au DNS d'origine"
+    Write-Host "  0) Annuler"
+    $c = Read-Host "  Choix"
+    if ($c -match '^[rR]$') { Restore-DnsOrigin; return }
+    $i = 0
+    if ([int]::TryParse($c, [ref]$i) -and $i -ge 1 -and $i -le $keys.Count) { Set-DnsPreset -Provider $keys[$i - 1] }
 }
 
 # ---------------------------------------------------------------- Plans d'alimentation Windows intégrés

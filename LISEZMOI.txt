@@ -1,5 +1,17 @@
-﻿BJMPC Toolbox 2.4 - interface graphique (Windows 11)
+﻿BJMPC Toolbox 2.5 - interface graphique (Windows 11)
 =====================================================
+
+NOUVEAUTES 2.5
+  - Optimiser > Reseau et DNS : carte "DNS chiffre : France et pays voisins". Mullvad et Quad9 retires.
+       DNS4ALL (SIDN, registre du .nl, Pays-Bas) - conseille, aucune donnee personnelle conservee ; FDN en secours
+       FDN (association francaise, 1992) - aucune journalisation, aucun filtrage
+       DNS4EU sans filtre / DNS4EU anti-pub (projet de l'Union europeenne) - journaux anonymises
+       Digitale Gesellschaft (association suisse) - aucune journalisation, repond seulement en chiffre
+    Cloudflare, AdGuard, Google et OpenDNS restent dans "Autres DNS chiffres". dns0.eu (francais) a ferme fin 2025.
+  - Correction importante : sous Windows 11, le modele DoH seul ne suffit pas, Windows restait en clair. La Toolbox
+    active maintenant le chiffrement sur chaque carte (DohFlags) ; "Revenir au DNS d'origine" le retire aussi.
+  - Case "Mode strict" : jamais de DNS en clair (sinon, repli en clair si le fournisseur ne repond pas).
+  - Controle : Parametres > Reseau et Internet > connexion > Proprietes : les serveurs DNS indiquent "Chiffre".
 
 NOUVEAUTES 2.4
   Confidentialite > Telemetrie et diagnostics, comparee a la liste officielle Microsoft des connexions des

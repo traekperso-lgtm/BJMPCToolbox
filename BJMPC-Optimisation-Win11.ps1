@@ -550,37 +550,6 @@ function Optimize-Network {
     Write-Log "Cartes réseau réglées. La pile TCP de Windows 11 est laissée à ses valeurs par défaut." 'OK'
 }
 
-function Set-MullvadDns {
-    Write-Host "  1) Mullvad standard (aucun filtrage)"
-    Write-Host "  2) Mullvad base (bloque pubs, traqueurs, malwares)"
-    Write-Host "  3) Revenir au DNS d'origine (annule cette modification)"
-    Write-Host "  0) Annuler"
-    $c = Read-Host "  Choix"
-    if ($c -eq '3') { foreach ($k in @($Script:Orig.Keys | Where-Object { $_ -like 'dns|*' })) { Restore-Record $Script:Orig[$k]; $Script:Orig.Remove($k) }; Save-Orig; Invoke-Native 'ipconfig.exe' '/flushdns'; return }
-    $cfg = switch ($c) {
-        '1' { @{ V4 = '194.242.2.2'; V6 = '2a07:e340::2'; Doh = 'https://dns.mullvad.net/dns-query' } }
-        '2' { @{ V4 = '194.242.2.4'; V6 = '2a07:e340::4'; Doh = 'https://base.dns.mullvad.net/dns-query' } }
-        default { $null }
-    }
-    if (-not $cfg) { return }
-    Write-Host "  Attention : avec udpfallback=no, si Mullvad est injoignable, plus aucune résolution DNS ne fonctionne." -ForegroundColor Yellow
-    if (-not (Confirm-Action "Continuer ?" $true)) { return }
-
-    foreach ($a in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
-        $k4 = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($a.InterfaceGuid)"
-        $k6 = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters\Interfaces\$($a.InterfaceGuid)"
-        Add-Orig "dns|$($a.Name)" @{ Type = 'dns'; Adapter = $a.Name; Index = $a.ifIndex; Static4 = [string](Get-RegValue $k4 'NameServer'); Static6 = [string](Get-RegValue $k6 'NameServer') }
-        try {
-            Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ServerAddresses @($cfg.V4, $cfg.V6) -ErrorAction Stop
-            Write-Log "DNS de $($a.Name) : $($cfg.V4) / $($cfg.V6)" 'OK'
-        } catch { Write-Log "DNS de $($a.Name) : $($_.Exception.Message)" 'WARN' }
-    }
-    Invoke-Native 'netsh.exe' "dns add encryption server=$($cfg.V4) dohtemplate=$($cfg.Doh) autoupgrade=yes udpfallback=no"
-    Invoke-Native 'netsh.exe' "dns add encryption server=$($cfg.V6) dohtemplate=$($cfg.Doh) autoupgrade=yes udpfallback=no"
-    Invoke-Native 'ipconfig.exe' '/flushdns'
-    Write-Log "DNS chiffré (DoH) configuré. Testez sur https://mullvad.net/check" 'OK'
-}
-
 # ---------------------------------------------------------------- Stockage NVMe / système
 function Optimize-Storage {
     Write-Log "=== Disque SSD et démarrage ==="
@@ -1101,7 +1070,7 @@ function Show-Menu {
     Write-Host ""
     Write-Host "   RÉSEAU" -ForegroundColor Magenta
     Write-Host "    6) Cartes réseau Wi-Fi 6/7 et Ethernet (énergie, modes, itinérance)"
-    Write-Host "    7) DNS chiffré Mullvad (DoH, IPv4 + IPv6)"
+    Write-Host "    7) DNS chiffré (DNS4ALL, FDN, DNS4EU…)"
     Write-Host ""
     Write-Host "   SYSTÈME" -ForegroundColor Magenta
     Write-Host "    8) Disque SSD et démarrage (TRIM, démarrage rapide, hibernation)"
@@ -1140,7 +1109,7 @@ do {
         '4'  { Show-Header "Plan d'alimentation"; Optimize-Power; Wait-Key }
         'H'  { Show-Header "Planification GPU matérielle (HAGS)"; if (Confirm-Action "Activer HAGS ? (Non = la désactiver)" $true) { Set-Hags -Mode on } else { Set-Hags -Mode off }; Wait-Key }
         '6'  { Show-Header "Réseau"; Optimize-Network; Wait-Key }
-        '7'  { Show-Header "DNS chiffré Mullvad"; Set-MullvadDns; Wait-Key }
+        '7'  { Show-Header "DNS chiffré"; Select-DnsPreset; Wait-Key }
         '8'  { Show-Header "Disque SSD et démarrage"; Optimize-Storage; Wait-Key }
         '11' { Show-Header "Protection OLED"; Set-OledCare; Wait-Key }
         '12' { Show-Header "Réglages recommandés"; if (Confirm-Action "Appliquer les réglages recommandés (point de restauration inclus) ?" $true) { Invoke-FullProfile }; Wait-Key }

@@ -15,7 +15,7 @@
 #>
 
 $ErrorActionPreference = 'Continue'
-$Script:AppVersion = '2.4'
+$Script:AppVersion = '2.5'
 $Script:Root       = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $Script:LogDir     = Join-Path $env:SystemDrive 'BJMPC-Logs'
 $Script:BackupDir  = Join-Path $Script:LogDir 'Backup'
@@ -1496,20 +1496,31 @@ function Build-Network {
 
     [void](New-TweakCard $p 'Pile réseau' 'Ordre de préférence des protocoles.')
 
-    $d = New-Card 'DNS chiffré (Mullvad)' 'DNS over HTTPS en IPv4 et IPv6, mise à niveau automatique. Avec le repli UDP désactivé, si Mullvad est injoignable la résolution s''arrête au lieu de passer en clair.' 'DoH' 'a'
-    Add-Row $d.Body 'Mullvad standard' '194.242.2.2 · 2a07:e340::2 · aucun filtrage' '' 'n' @((New-Btn 'Appliquer' (New-Spec 'opt' 'Set-MullvadDns' 'DNS Mullvad standard' @{ '^\s*Choix' = '1'; 'Continuer' = 'yes' } '' $Script:AfterChange) -Primary))
-    Add-Row $d.Body 'Mullvad base' '194.242.2.4 · 2a07:e340::4 · bloque pubs, traqueurs et malwares' '' 'n' @((New-Btn 'Appliquer' (New-Spec 'opt' 'Set-MullvadDns' 'DNS Mullvad base' @{ '^\s*Choix' = '2'; 'Continuer' = 'yes' } '' $Script:AfterChange) -Primary))
-    Add-Row $d.Body 'Revenir au DNS d''origine' 'Annule la modification du DNS uniquement.' '' 'n' @((New-Btn 'Revenir' (New-Spec 'opt' 'Set-MullvadDns' 'DNS d''origine' @{ '^\s*Choix' = '3' } '' $Script:AfterChange)))
+    $d = New-Card 'DNS chiffré : France et pays voisins' 'DNS over HTTPS en IPv4 et IPv6 : votre fournisseur d''accès ne voit plus les sites demandés. Fournisseurs européens sans conservation des requêtes, sans publicité.' 'DoH' 'a'
+    $Script:DnsStrict = New-Check 'Mode strict : jamais de DNS en clair (si le fournisseur ne répond pas, plus d''Internet jusqu''au retour au DNS d''origine)' $false
+    $Script:DnsStrict.Margin = '0,0,0,8'
+    [void]$d.Body.Children.Add($Script:DnsStrict)
+    $mkDns = {
+        param([string]$Key, [string]$Title)
+        $sp = New-Spec 'opt' ('Set-DnsPreset -Provider ' + $Key) $Title @{} '' $Script:AfterChange
+        $sp.CodeFn = [scriptblock]::Create("'Set-DnsPreset -Provider $Key' + `$(if (`$Script:DnsStrict.IsChecked) { ' -Strict' } else { '' })")
+        return $sp
+    }
+    Add-Row $d.Body 'DNS4ALL' 'SIDN (registre du .nl, Pays-Bas) · 194.0.5.3 · aucune donnée personnelle conservée · secours : FDN' 'Conseillé' 'g' @((New-Btn 'Appliquer' (& $mkDns 'dns4all' 'DNS DNS4ALL') -Primary))
+    Add-Row $d.Body 'FDN' 'Association française (1992) · 80.67.169.12 · aucune journalisation, aucun filtrage' '' 'n' @((New-Btn 'Appliquer' (& $mkDns 'fdn' 'DNS FDN')))
+    Add-Row $d.Body 'DNS4EU sans filtre' 'Projet de l''Union européenne · 86.54.11.100 · journaux anonymisés' '' 'n' @((New-Btn 'Appliquer' (& $mkDns 'dns4eu' 'DNS DNS4EU')))
+    Add-Row $d.Body 'DNS4EU anti-pub' '86.54.11.13 · bloque publicités et sites dangereux · journaux anonymisés' '' 'n' @((New-Btn 'Appliquer' (& $mkDns 'dns4eunoads' 'DNS DNS4EU anti-pub')))
+    Add-Row $d.Body 'Digitale Gesellschaft' 'Association suisse · 185.95.218.42 · aucune journalisation · toujours en mode strict (ne répond qu''en chiffré)' '' 'n' @((New-Btn 'Appliquer' (& $mkDns 'digitale' 'DNS Digitale Gesellschaft')))
+    Add-Row $d.Body 'Revenir au DNS d''origine' 'Remet les serveurs DNS d''avant et retire le chiffrement ajouté.' '' 'n' @((New-Btn 'Revenir' (New-Spec 'opt' 'Restore-DnsOrigin' 'DNS d''origine' @{} '' $Script:AfterChange)))
     [void]$p.Children.Add($d.Card)
 
-    $o = New-Card 'Autres DNS chiffrés' 'Même principe (DNS over HTTPS, IPv4 et IPv6). Le repli en clair reste autorisé : si le fournisseur est injoignable, la connexion continue. Le retour au DNS d''origine se fait ci-dessus ou dans le Journal.' 'DoH' 'a'
-    Add-Row $o.Body 'Cloudflare' '1.1.1.1 · très rapide' '' 'n' @((New-Btn 'Appliquer' (New-Spec 'opt' 'Set-DnsPreset -Provider cloudflare' 'DNS Cloudflare' @{} '' $Script:AfterChange)))
-    Add-Row $o.Body 'Quad9' '9.9.9.9 · bloque les domaines malveillants, siège en Suisse' '' 'n' @((New-Btn 'Appliquer' (New-Spec 'opt' 'Set-DnsPreset -Provider quad9' 'DNS Quad9' @{} '' $Script:AfterChange)))
-    Add-Row $o.Body 'AdGuard' '94.140.14.14 · bloque aussi les publicités' '' 'n' @((New-Btn 'Appliquer' (New-Spec 'opt' 'Set-DnsPreset -Provider adguard' 'DNS AdGuard' @{} '' $Script:AfterChange)))
-    Add-Row $o.Body 'Google' '8.8.8.8 · très rapide, mais Google voit vos requêtes' '' 'n' @((New-Btn 'Appliquer' (New-Spec 'opt' 'Set-DnsPreset -Provider google' 'DNS Google' @{} '' $Script:AfterChange)))
-    Add-Row $o.Body 'OpenDNS' '208.67.222.222 · filtrage de base (Cisco)' '' 'n' @((New-Btn 'Appliquer' (New-Spec 'opt' 'Set-DnsPreset -Provider opendns' 'DNS OpenDNS' @{} '' $Script:AfterChange)))
+    $o = New-Card 'Autres DNS chiffrés' 'Grands fournisseurs hors d''Europe ou à filtrage : rapides, mais ils voient vos requêtes. Même chiffrement et même mode strict.' 'DoH' 'a'
+    Add-Row $o.Body 'Cloudflare' '1.1.1.1 · très rapide · journaux effacés sous 24 h' '' 'n' @((New-Btn 'Appliquer' (& $mkDns 'cloudflare' 'DNS Cloudflare')))
+    Add-Row $o.Body 'AdGuard' '94.140.14.14 · bloque aussi les publicités' '' 'n' @((New-Btn 'Appliquer' (& $mkDns 'adguard' 'DNS AdGuard')))
+    Add-Row $o.Body 'Google' '8.8.8.8 · très rapide, mais Google voit vos requêtes' '' 'n' @((New-Btn 'Appliquer' (& $mkDns 'google' 'DNS Google')))
+    Add-Row $o.Body 'OpenDNS' '208.67.222.222 · filtrage de base (Cisco)' '' 'n' @((New-Btn 'Appliquer' (& $mkDns 'opendns' 'DNS OpenDNS')))
     [void]$p.Children.Add($o.Card)
-    $t = New-Text 'Contrôle : ouvrez https://mullvad.net/check après l''application. Tests de latence et de perte : Réparer > Diagnostics.' 13 '#9298A3' 'Normal' -Wrap
+    $t = New-Text 'Contrôle : Paramètres > Réseau et Internet > votre connexion > Propriétés : les serveurs DNS doivent indiquer « Chiffré ». Tests de latence et de perte : Réparer > Diagnostics.' 13 '#9298A3' 'Normal' -Wrap
     [void]$p.Children.Add($t)
 }
 
@@ -3929,9 +3940,9 @@ $Script:PlainMap = @(
     @{ K = '¦Réglages : Pile réseau'; C = 'net'; T = 'Nous avons ajusté la façon dont votre ordinateur choisit sa connexion Internet.' }
     @{ K = '¦Réglages : Démarrage'; C = 'vitesse'; T = 'Nous avons ajusté quelques réglages de démarrage de Windows.' }
     @{ K = '¦Réglages : '; C = 'vitesse'; T = 'Nous avons ajusté quelques réglages de Windows.' }
-    @{ K = '¦Mullvad base|¦AdGuard'; C = 'net'; T = 'Nous avons rendu votre navigation sur Internet plus privée : les adresses des sites que vous visitez sont maintenant protégées. Cela bloque aussi une partie des publicités et des sites dangereux.' }
+    @{ K = '¦DNS AdGuard|DNS4EU anti-pub'; C = 'net'; T = 'Nous avons rendu votre navigation sur Internet plus privée : les adresses des sites que vous visitez sont maintenant protégées. Cela bloque aussi une partie des publicités et des sites dangereux.' }
     @{ K = '¦DNS d.origine'; C = 'net'; T = 'Nous avons remis le réglage d''origine de votre connexion Internet.' }
-    @{ K = '^Set-MullvadDns|^Set-DnsPreset|¦DNS '; C = 'net'; T = 'Nous avons rendu votre navigation sur Internet plus privée : les adresses des sites que vous visitez sont maintenant protégées.' }
+    @{ K = '^Set-DnsPreset|¦DNS '; C = 'net'; T = 'Nous avons rendu votre navigation sur Internet plus privée : les adresses des sites que vous visitez sont maintenant protégées.' }
     @{ K = '^Optimize-Network|¦Réseau$'; C = 'net'; T = 'Nous avons réglé votre carte Wi-Fi et réseau pour que la connexion soit plus stable.' }
     @{ K = '^Invoke-DiskCleanup -WindowsOld'; C = 'menage'; T = 'Nous avons nettoyé les fichiers inutiles qui prenaient de la place, y compris l''ancienne version de Windows.' }
     @{ K = '^Invoke-DiskCleanup|^Invoke-Cleanup|¦Nettoyage'; C = 'menage'; T = 'Nous avons nettoyé les fichiers inutiles qui prenaient de la place.' }
@@ -4628,7 +4639,7 @@ function Get-DemoEntries {
         @{ Engine = 'maint'; Title = 'SFC'; Code = 'Invoke-SFC' },
         @{ Engine = 'opt'; Title = 'Réglages : Télémétrie et diagnostics'; Code = '' },
         @{ Engine = 'opt'; Title = 'Réglages : Publicités, recherche et suggestions'; Code = '' },
-        @{ Engine = 'opt'; Title = 'DNS Quad9'; Code = 'Set-DnsPreset -Provider quad9' },
+        @{ Engine = 'opt'; Title = 'DNS DNS4ALL'; Code = 'Set-DnsPreset -Provider dns4all' },
         @{ Engine = 'tools'; Title = 'Nettoyage de disque Windows'; Code = 'Invoke-DiskCleanup' },
         @{ Engine = 'tools'; Title = 'Caches des navigateurs'; Code = 'Clear-BrowserCaches' }
     )

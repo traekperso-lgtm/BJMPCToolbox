@@ -2,7 +2,7 @@
 
 🇫🇷 [Français](#-français) · 🇬🇧 [English](#-english)
 
-> **Version 2.4** · Windows 11 · Windows PowerShell 5.1 (WPF) · by **BJMPC Informatique**
+> **Version 2.5** · Windows 11 · Windows PowerShell 5.1 (WPF) · by **BJMPC Informatique**
 
 ---
 
@@ -21,6 +21,12 @@ Elle est écrite en Windows PowerShell 5.1 (interface WPF), sans installation : 
 - **Sauvegarde automatique des fichiers du client** vers un autre disque, à la demande ou planifiée.
 - **Optimisations dépassées retirées** : Nagle, priorités MMCSS, SysMain désactivé, services « inutiles », Win32PrioritySeparation, compression mémoire, désactivation de HVCI… Elles n'apportent rien de mesurable sur Windows 11 aujourd'hui, ou retirent une protection.
 - **Pilotes revus en profondeur** : entre deux familles de pilotes d'une même puce, c'est la date qui départage (comme le fait Windows), plus le seul numéro de version ; retour arrière réel après une mise à jour.
+
+### Nouveautés de la version 2.5
+
+- **DNS chiffré : France et pays voisins** (Optimiser > Réseau et DNS). Mullvad et Quad9 retirés. Au choix : **DNS4ALL** (SIDN, Pays-Bas, conseillé, secours FDN), **FDN** (association française), **DNS4EU** sans filtre ou anti-pub (Union européenne), **Digitale Gesellschaft** (association suisse). Cloudflare, AdGuard, Google et OpenDNS restent dans « Autres DNS chiffrés ».
+- **Chiffrement réellement actif sous Windows 11** : en plus du modèle DoH, la Toolbox active le chiffrement sur chaque carte réseau (`DohFlags`), sans quoi Windows reste en clair. « Revenir au DNS d'origine » retire aussi ce réglage.
+- **Mode strict** facultatif : jamais de DNS en clair.
 
 ### Nouveautés de la version 2.4
 
@@ -102,7 +108,7 @@ Prérequis : Windows 11, droits administrateur, Windows PowerShell 5.1 (inclus d
   - Après une réparation, l'analyse suivante dit si l'erreur est revenue. La *surveillance en direct* affiche chaque nouvelle erreur en quelques secondes.
 - **Réparer Windows / Nettoyage et dépannage / Diagnostics** : DISM, SFC, CHKDSK, réinitialisations, dépannage rapide, nettoyage, et des mesures en lecture seule (disques SMART, erreurs matérielles, Wi-Fi, audit de sécurité, licence…). « Nettoyage et dépannage » inclut aussi le diagnostic des imprimantes réseau mortes (TCP/IP, WSD, IPP) qui bloquent Word, Excel et l'impression, avec sauvegarde avant retrait. Il propose aussi de rétablir la lecture automatique des CD audio et DVD (réglages bloquants corrigés, lecteur au choix), annulable depuis le Journal, et un **détecteur de doublons de photos** : seules les photos au contenu identique (SHA-256 puis octet par octet) sont regroupées, jamais sur la seule taille ou la date ; en option, même image avec des métadonnées différentes (pixels comparés). Les doublons sont mis de côté dans un dossier `BJMPC-Doublons`, jamais supprimés, et se remettent en place en un clic.
 - **Registre** : « Rétablir les valeurs par défaut de Windows 11 » (référence 24H2 à 26H2). Compare services, sécurité et contrôle de compte, mémoire, priorités, réseau, télémétrie et tâches planifiées à leur valeur d'origine, et détecte toute stratégie (clés *Policies*) posée par un outil d'optimisation ou un logiciel. Les écarts sont remis à la valeur standard quel que soit l'outil qui les a posés, avec point de restauration et annulation en un clic. Ce n'est pas une comparaison de tout le registre : Microsoft ne publie pas de liste complète des valeurs par défaut.
-- **Optimiser** : réglages de jeu de Windows, **HAGS** (carte dédiée : état, activer, désactiver), mode d'alimentation, cartes réseau, DNS chiffré, SSD (ReTrim).
+- **Optimiser** : réglages de jeu de Windows, **HAGS** (carte dédiée : état, activer, désactiver), mode d'alimentation, cartes réseau, DNS chiffré européen (DNS4ALL, FDN, DNS4EU, Digitale Gesellschaft), SSD (ReTrim).
 - **Personnalisation et divers** : démarrage rapide et hibernation, démarrage et diagnostic, doublons de photos (aperçus côte à côte), échelle d'affichage et protection OLED, catalogue de réglages Windows à cocher (Confidentialité, Interface et Explorateur, Mises à jour et sécurité).
 - **Applications** : catalogue de logiciels (winget), mises à jour, inventaire, retrait des applications préinstallées.
 - **Pilotes** : analyse de tous les appareils, comparée à ce que Windows Update propose pour ce matériel exact. Jamais un pilote plus ancien que celui en place, et le pilote fourni par Windows est gardé s'il est plus récent que celui du constructeur. Carte graphique : dernier pilote par l'outil officiel (NVIDIA, AMD, Intel). Appareils sans pilote : paquet chipset signé, jamais de pilote non signé. Point de restauration et sauvegarde avant, vérification de l'appareil et retrait de l'ancienne version après. Autres onglets : pilotes installés (anciennes versions), ajouter un pilote, appareils absents, sauvegardes.
@@ -133,7 +139,7 @@ BJMPC Toolbox est distribuée sous la licence [PolyForm Noncommercial 1.0.0](LIC
 
 ### Retours
 
-Ouvrez une *issue* en précisant la version de Windows, la version de l'outil (2.4) et, si possible, le journal de `C:\BJMPC-Logs\`.
+Ouvrez une *issue* en précisant la version de Windows, la version de l'outil (2.5) et, si possible, le journal de `C:\BJMPC-Logs\`.
 
 ---
 
@@ -152,6 +158,12 @@ It is written in Windows PowerShell 5.1 (WPF UI) and needs no installation: laun
 - **Automatic backup of the customer's files** to another disk, on demand or scheduled.
 - **Outdated tweaks removed**: Nagle, MMCSS priorities, disabling SysMain, "useless" services, Win32PrioritySeparation, memory compression, disabling HVCI… They bring nothing measurable on today's Windows 11, or remove a protection.
 - **Drivers reviewed in depth**: between two driver families for the same chip, the date decides (as Windows does), no longer the version number alone; a real rollback after an update.
+
+### What's new in version 2.5
+
+- **Encrypted DNS: France and neighbouring countries** (Optimise > Network & DNS). Mullvad and Quad9 removed. Choose **DNS4ALL** (SIDN, Netherlands, recommended, FDN as backup), **FDN** (French non-profit), **DNS4EU** unfiltered or ad-blocking (European Union), **Digitale Gesellschaft** (Swiss non-profit). Cloudflare, AdGuard, Google and OpenDNS remain under "Other encrypted DNS".
+- **Encryption actually on in Windows 11**: besides the DoH template, the Toolbox turns encryption on for each network adapter (`DohFlags`); otherwise Windows stays in plain text. "Back to original DNS" also removes it.
+- Optional **strict mode**: never fall back to plain-text DNS.
 
 ### What's new in version 2.4
 
@@ -233,7 +245,7 @@ Requirements: Windows 11, administrator rights, Windows PowerShell 5.1 (built in
   - After a repair, the next scan tells whether the error came back. *Live monitoring* shows each new error within seconds.
 - **Repair Windows / Cleanup & troubleshooting / Diagnostics**: DISM, SFC, CHKDSK, resets, quick fixes, cleanup, and read-only measurements (SMART disks, hardware errors, Wi-Fi, security audit, licence…). Also: dead network printers (TCP/IP, WSD, IPP), audio CD / DVD AutoPlay, and a **duplicate photo finder** that only groups photos whose content is identical (SHA-256 then byte by byte), never on size or date alone; optionally the same image with different metadata (pixels compared). Duplicates are moved to a `BJMPC-Doublons` folder, never deleted, and can be put back in one click.
 - **Registry**: "Restore Windows 11 defaults" (reference: 24H2 to 26H2). Compares services, security and UAC, memory, priorities, network, telemetry and scheduled tasks with their original values, and detects any policy (*Policies* keys) set by a tweaking tool or a program. Differences are put back to the standard value whatever tool set them, with a restore point and one-click undo. This is not a whole-registry comparison: Microsoft does not publish a complete list of default values.
-- **Optimise**: Windows gaming settings, **HAGS** (dedicated card: state, enable, disable), power mode, network adapters, encrypted DNS, SSD (ReTrim).
+- **Optimise**: Windows gaming settings, **HAGS** (dedicated card: state, enable, disable), power mode, network adapters, European encrypted DNS (DNS4ALL, FDN, DNS4EU, Digitale Gesellschaft), SSD (ReTrim).
 - **Customisation & more**: fast startup and hibernation, startup and diagnostics, duplicate photos (side-by-side previews), display scaling and OLED care, a catalogue of Windows tweaks to tick (Privacy, Interface & Explorer, Updates & security).
 - **Applications**: software catalogue (winget), updates, inventory, removal of preinstalled apps.
 - **Drivers**: every device is checked against what Windows Update offers for that exact hardware. Never a driver older than the installed one, and the Windows in-box driver is kept when it is newer than the vendor's. Graphics card: latest driver through the official vendor tool (NVIDIA, AMD, Intel). Devices without a driver: signed chipset package, never an unsigned driver. Restore point and backup before, device check and removal of the old version after. Other tabs: installed drivers (old versions), add a driver, absent devices, backups.

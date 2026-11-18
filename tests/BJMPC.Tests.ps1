@@ -173,6 +173,32 @@ $Sync.Result = @{ N = $ids.Count; U = @($ids | Select-Object -Unique).Count; Bad
     }
 }
 
+Describe 'DNS chiffrés' {
+    It 'Adresses IP valides, modèles DoH en https, Mullvad et Quad9 retirés, DNS4ALL présent' {
+        $r = Invoke-Engine 'opt' @'
+$bad = @()
+foreach ($k in @($Script:DnsPresets.Keys)) {
+    $p = $Script:DnsPresets[$k]
+    if (@($p.Servers).Count -lt 2) { $bad += "$k : moins de 2 adresses" }
+    foreach ($sv in @($p.Servers)) {
+        $ip = $null
+        if (-not [Net.IPAddress]::TryParse([string]$sv[0], [ref]$ip)) { $bad += "$k : IP $($sv[0])" }
+        if ([string]$sv[1] -notmatch '^https://[a-z0-9.-]+/dns-query$') { $bad += "$k : modèle $($sv[1])" }
+    }
+}
+$all = ($Script:DnsPresets.Values | ForEach-Object { $_.Servers | ForEach-Object { $_ -join ' ' } }) -join ' '
+$Sync.Result = @{ Bad = $bad; Keys = @($Script:DnsPresets.Keys); Old = ($all -match 'mullvad|quad9|9\.9\.9\.9|194\.242\.2\.')
+    Fn = @('Set-DnsPreset', 'Restore-DnsOrigin', 'Select-DnsPreset' | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) }) }
+'@
+        $r.Errors | Should -BeNullOrEmpty
+        $r.Result.Bad | Should -BeNullOrEmpty
+        $r.Result.Old | Should -BeFalse
+        $r.Result.Fn | Should -BeNullOrEmpty
+        $r.Result.Keys | Should -Contain 'dns4all'
+        $r.Result.Keys | Should -Contain 'fdn'
+    }
+}
+
 Describe 'Analyse statique' {
     It 'PSScriptAnalyzer : aucune erreur, syntaxe compatible PowerShell 5.1' {
         if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) { Set-ItResult -Skipped -Because 'PSScriptAnalyzer absent'; return }
