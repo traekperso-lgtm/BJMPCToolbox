@@ -162,7 +162,7 @@ function Test-NetworkQuality {
     $targets = @()
     if ($gw -and $gw -ne '0.0.0.0') { $targets += @{ Name = 'Passerelle (routeur)'; Host = [string]$gw } }
     $targets += @{ Name = 'Internet (1.1.1.1)'; Host = '1.1.1.1' }
-    $targets += @{ Name = 'Internet (9.9.9.9)'; Host = '9.9.9.9' }
+    $targets += @{ Name = 'Internet (FDN 80.67.169.12)'; Host = '80.67.169.12' }
     $count = 8
     foreach ($t in $targets) {
         $r = @(Test-Connection -ComputerName $t.Host -Count $count -ErrorAction SilentlyContinue)
@@ -1151,13 +1151,29 @@ function Get-StartupItems {
     Write-Log "=== Programmes lancés au démarrage ==="
     $items = @(Get-CimInstance Win32_StartupCommand -ErrorAction SilentlyContinue | Sort-Object Name)
     if ($items.Count -eq 0) { Write-Log "Aucun programme de démarrage listé." 'OK'; return }
+    # Les éléments désactivés dans Paramètres > Applications > Démarrage restent listés par Windows : on lit leur état
+    # (StartupApproved, premier octet impair = désactivé) pour ne pas les compter comme lancés.
+    $off = @{}
+    $roots = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved', 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved')
+    try { $roots += ('Registry::' + (Get-UserHiveRoot) + '\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved') } catch {}
+    foreach ($r in $roots) {
+        foreach ($sub in 'Run', 'Run32', 'StartupFolder') {
+            $k = Get-Item -LiteralPath (Join-Path $r $sub) -ErrorAction SilentlyContinue
+            if (-not $k) { continue }
+            foreach ($n in $k.GetValueNames()) { $v = $k.GetValue($n); if ($v -is [byte[]] -and $v.Length -gt 0 -and ($v[0] % 2) -eq 1) { $off[$n.ToLowerInvariant()] = $true } }
+        }
+    }
+    $active = 0
     foreach ($i in $items) {
         $cmd = [string]$i.Command
-        if ($cmd.Length -gt 90) { $cmd = $cmd.Substring(0, 90) + '...' }
-        Write-Host ("  {0,-34} {1}" -f $i.Name, $cmd) -ForegroundColor Gray
+        if ($cmd.Length -gt 80) { $cmd = $cmd.Substring(0, 80) + '...' }
+        $n = ([string]$i.Name).ToLowerInvariant()
+        $isOff = ($off.ContainsKey($n) -or $off.ContainsKey($n + '.lnk'))
+        if (-not $isOff) { $active++ }
+        Write-Host ("  {0,-34} {1,-11} {2}" -f $i.Name, $(if ($isOff) { 'désactivé' } else { 'actif' }), $cmd) -ForegroundColor $(if ($isOff) { 'DarkGray' } else { 'Gray' })
     }
     Write-Host ""
-    Write-Log ("{0} programme(s). Pour en désactiver : Paramètres > Applications > Démarrage." -f $items.Count)
+    Write-Log ("{0} programme(s) lancé(s) au démarrage, {1} désactivé(s). Pour en désactiver : Paramètres > Applications > Démarrage." -f $active, ($items.Count - $active))
 }
 
 function Open-StartupSettings {
@@ -1283,7 +1299,12 @@ function Install-ToolboxUpdate {
             New-Item -ItemType Directory -Path $arch -Force -ErrorAction Stop | Out-Null
             foreach ($f in $Script:UpdFiles) { $p = Join-Path $Root $f; if (Test-Path -LiteralPath $p) { Copy-Item -LiteralPath $p -Destination $arch -Force -ErrorAction Stop } }
             Write-Log "Version $Current archivée : $arch" 'OK'
-            foreach ($f in $Script:UpdFiles) { Copy-Item -LiteralPath (Join-Path $src $f) -Destination (Join-Path $Root $f) -Force -ErrorAction Stop }
+            try { foreach ($f in $Script:UpdFiles) { Copy-Item -LiteralPath (Join-Path $src $f) -Destination (Join-Path $Root $f) -Force -ErrorAction Stop } }
+            catch {
+                # Copie interrompue (fichier verrouillé, disque plein) : on remet la version archivée pour ne pas mélanger deux versions.
+                foreach ($f in $Script:UpdFiles) { $a = Join-Path $arch $f; if (Test-Path -LiteralPath $a) { Copy-Item -LiteralPath $a -Destination (Join-Path $Root $f) -Force -ErrorAction SilentlyContinue } }
+                throw ("copie interrompue, version $Current remise en place : " + $_.Exception.Message)
+            }
             if (Test-Path -LiteralPath (Join-Path $src 'README.md')) { Copy-Item -LiteralPath (Join-Path $src 'README.md') -Destination (Join-Path $Root 'README.md') -Force -ErrorAction SilentlyContinue }
             Write-Log ("Toolbox mise à jour en {0}. Fermez-la et relancez BJMPC-Toolbox.bat pour utiliser la nouvelle version." -f $latest) 'OK'
             $res.Ok = @($latest); $res.Version = $latest
@@ -2109,14 +2130,28 @@ function Start-MemoryDiagnostic {
     try { Start-Process mdsched.exe -ErrorAction Stop } catch { Write-Log "Lancement impossible : $($_.Exception.Message)" 'ERROR' }
 }
 
+function Get-UserLocalDir {
+    # Dossier AppData\Local (ou un autre sous-dossier du profil) de la personne connectée à l'écran.
+    param([string]$Sub = 'AppData\Local')
+    $up = $env:USERPROFILE
+    try { if ($Script:UserProfileDir -and (Test-Path -LiteralPath $Script:UserProfileDir)) { $up = $Script:UserProfileDir } } catch {}
+    return (Join-Path $up $Sub)
+}
+
 function Clear-ShaderCache {
     Write-Log "=== Vidage des caches de shaders (DirectX, NVIDIA, AMD) ==="
+    $la = Get-UserLocalDir; $ll = Get-UserLocalDir 'AppData\LocalLow'
     $dirs = @(
-        (Join-Path $env:LOCALAPPDATA 'D3DSCache'),
-        (Join-Path $env:LOCALAPPDATA 'NVIDIA\DXCache'),
-        (Join-Path $env:LOCALAPPDATA 'NVIDIA\GLCache'),
-        (Join-Path $env:LOCALAPPDATA 'AMD\DxCache'),
-        (Join-Path $env:LOCALAPPDATA 'AMD\GLCache')
+        (Join-Path $la 'D3DSCache'),
+        (Join-Path $la 'NVIDIA\DXCache'),
+        (Join-Path $la 'NVIDIA\GLCache'),
+        (Join-Path $la 'AMD\DxCache'),
+        (Join-Path $la 'AMD\GLCache'),
+        (Join-Path $la 'AMD\DxcCache'),
+        (Join-Path $la 'AMD\VkCache'),
+        (Join-Path $la 'Intel\ShaderCache'),
+        (Join-Path $ll 'NVIDIA\PerDriverVersion\DXCache'),
+        (Join-Path $ll 'Intel\ShaderCache')
     )
     $freed = 0.0
     foreach ($d in $dirs) {
@@ -2608,8 +2643,24 @@ function Uninstall-OneDrive {
         return
     }
     Get-Process -Name OneDrive -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    # 1) Commande de désinstallation déclarée par OneDrive (par machine ou par utilisateur, y compris l'utilisateur de la session)
+    $roots = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall', 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall')
+    try { $roots += ('Registry::' + (Get-UserHiveRoot) + '\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall') } catch {}
+    foreach ($r in $roots) {
+        $us = Get-RegVal (Join-Path $r 'OneDriveSetup.exe') 'UninstallString'
+        if ($us -and $us -match '^\s*"?([^"]+?\.exe)"?\s*(.*)$' -and (Test-Path -LiteralPath $Matches[1])) {
+            $exe = $Matches[1]; $uArgs = $Matches[2]
+            if ($uArgs -notmatch '/uninstall') { $uArgs = ('/uninstall ' + $uArgs).Trim() }
+            try {
+                Start-Process -FilePath $exe -ArgumentList $uArgs -Wait -ErrorAction Stop
+                Write-Log 'OneDrive désinstallé. Le dossier OneDrive de votre profil et son contenu n''ont pas été supprimés.' 'OK'
+                return
+            } catch { Write-Log "OneDrive ($us) : $($_.Exception.Message)" 'WARN' }
+        }
+    }
+    # 2) Programme d'installation fourni avec Windows
     $cands = @("$env:SystemRoot\SysWOW64\OneDriveSetup.exe", "$env:SystemRoot\System32\OneDriveSetup.exe")
-    $cands += @(Get-ChildItem -Path "$env:LOCALAPPDATA\Microsoft\OneDrive" -Filter 'OneDriveSetup.exe' -Recurse -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+    $cands += @(Get-ChildItem -Path (Join-Path (Get-UserLocalDir) 'Microsoft\OneDrive') -Filter 'OneDriveSetup.exe' -Recurse -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
     $exe = $cands | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
     if (-not $exe) { Write-Log 'Programme de désinstallation de OneDrive introuvable (déjà désinstallé ?).' 'WARN'; return }
     try {
@@ -2718,11 +2769,12 @@ function Get-FolderBytes {
 function Clear-BrowserCaches {
     # Vide uniquement les caches (pas l'historique, les cookies, les mots de passe ni les sessions).
     Write-Log '=== Caches des navigateurs ==='
+    $la = Get-UserLocalDir
     $roots = @(
-        @('Chrome', "$env:LOCALAPPDATA\Google\Chrome\User Data", 'chrome'),
-        @('Edge', "$env:LOCALAPPDATA\Microsoft\Edge\User Data", 'msedge'),
-        @('Brave', "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data", 'brave'),
-        @('Vivaldi', "$env:LOCALAPPDATA\Vivaldi\User Data", 'vivaldi'))
+        @('Chrome', "$la\Google\Chrome\User Data", 'chrome'),
+        @('Edge', "$la\Microsoft\Edge\User Data", 'msedge'),
+        @('Brave', "$la\BraveSoftware\Brave-Browser\User Data", 'brave'),
+        @('Vivaldi', "$la\Vivaldi\User Data", 'vivaldi'))
     $total = 0L
     foreach ($r in $roots) {
         if (-not (Test-Path -LiteralPath $r[1])) { continue }
@@ -2741,7 +2793,7 @@ function Clear-BrowserCaches {
         Write-Log ("{0} : {1} Mo de cache" -f $r[0], [math]::Round($size / 1MB, 0)) 'OK'
         $total += $size
     }
-    $ff = "$env:LOCALAPPDATA\Mozilla\Firefox\Profiles"
+    $ff = "$la\Mozilla\Firefox\Profiles"
     if (Test-Path -LiteralPath $ff) {
         if (Get-Process -Name firefox -ErrorAction SilentlyContinue) { Write-Log 'Firefox est ouvert : fermez-le pour vider tout le cache.' 'WARN' }
         $size = 0L

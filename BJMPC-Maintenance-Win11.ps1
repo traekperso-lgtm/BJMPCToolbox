@@ -133,6 +133,14 @@ function New-RestorePoint {
     }
 }
 
+function Get-UserLocalDir {
+    # Dossier AppData\Local (ou un autre sous-dossier du profil) de la personne connectée à l'écran.
+    param([string]$Sub = 'AppData\Local')
+    $up = $env:USERPROFILE
+    try { if ($Script:UserProfileDir -and (Test-Path -LiteralPath $Script:UserProfileDir)) { $up = $Script:UserProfileDir } } catch {}
+    return (Join-Path $up $Sub)
+}
+
 function Invoke-DISM {
     Write-Log "DISM - vérification de l'image Windows"
     Invoke-Native 'DISM.exe' '/Online /Cleanup-Image /CheckHealth'
@@ -254,13 +262,16 @@ function Reset-WindowsUpdate {
     }
     # Files BITS
     Get-ChildItem "$env:ALLUSERSPROFILE\Microsoft\Network\Downloader" -Filter 'qmgr*.dat' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
-    # Ré-enregistrement des DLL principales
-    foreach ($dll in 'atl.dll','urlmon.dll','mshtml.dll','shdocvw.dll','browseui.dll','jscript.dll','vbscript.dll','scrrun.dll','msxml3.dll','msxml6.dll','actxprxy.dll','softpub.dll','wintrust.dll','initpki.dll','wuapi.dll','wuaueng.dll','wucltux.dll','wups.dll','wups2.dll','wuweb.dll','qmgr.dll') {
-        & regsvr32.exe /s "$env:windir\System32\$dll" 2>$null
-    }
-    Invoke-Native 'netsh.exe' 'winsock reset'
+    # Retiré : ré-enregistrement de DLL (regsvr32) et « winsock reset », hérités de Windows 7 : sans effet sur
+    # Windows Update de Windows 11, plusieurs de ces DLL n'existent plus.
     foreach ($s in 'cryptsvc','bits','wuauserv','usosvc') { Start-Service -Name $s -ErrorAction SilentlyContinue }
-    Write-Log "Windows Update réinitialisé (dossiers .bak conservés)" 'OK'
+    # Copies .bak de plus de 30 jours : supprimées (elles peuvent peser plusieurs Go). La copie du jour est gardée.
+    foreach ($b in @(Get-ChildItem -Path "$env:windir", "$env:windir\System32" -Directory -Filter '*.bak_*' -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^(SoftwareDistribution|catroot2)\.bak_\d{8}_\d{6}$' -and $_.CreationTime -lt (Get-Date).AddDays(-30) })) {
+        Remove-Item -LiteralPath $b.FullName -Recurse -Force -ErrorAction SilentlyContinue
+        if (-not (Test-Path -LiteralPath $b.FullName)) { Write-Log "Ancienne copie supprimée : $($b.FullName)" 'OK' }
+    }
+    Write-Log "Windows Update réinitialisé (copie .bak du jour conservée)" 'OK'
     $Script:RebootNeeded = $true
 }
 
@@ -313,13 +324,18 @@ function Reset-Graphics {
     }
 
     # 3. Caches de shaders
+    $la = Get-UserLocalDir; $ll = Get-UserLocalDir 'AppData\LocalLow'
     $shaderPaths = @(
-        "$env:LOCALAPPDATA\D3DSCache",
-        "$env:LOCALAPPDATA\NVIDIA\DXCache",
-        "$env:LOCALAPPDATA\NVIDIA\GLCache",
-        "$env:LOCALAPPDATA\AMD\DxCache",
-        "$env:LOCALAPPDATA\AMD\GLCache",
-        "$env:LOCALAPPDATA\Intel\ShaderCache"
+        "$la\D3DSCache",
+        "$la\NVIDIA\DXCache",
+        "$la\NVIDIA\GLCache",
+        "$la\AMD\DxCache",
+        "$la\AMD\GLCache",
+        "$la\Intel\ShaderCache",
+        "$la\AMD\DxcCache",
+        "$la\AMD\VkCache",
+        "$ll\NVIDIA\PerDriverVersion\DXCache",
+        "$ll\Intel\ShaderCache"
     )
     foreach ($p in $shaderPaths) {
         if (Test-Path $p) {
@@ -356,9 +372,10 @@ function Clear-ShellCaches {
     Write-Log "Vidage des caches icônes, miniatures et polices"
     Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 1
-    $exp = "$env:LOCALAPPDATA\Microsoft\Windows\Explorer"
+    $la = Get-UserLocalDir
+    $exp = "$la\Microsoft\Windows\Explorer"
     Get-ChildItem $exp -Include 'iconcache*','thumbcache*' -Recurse -Force -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
-    Remove-Item "$env:LOCALAPPDATA\IconCache.db" -Force -ErrorAction SilentlyContinue
+    Remove-Item "$la\IconCache.db" -Force -ErrorAction SilentlyContinue
     # Cache de polices
     Stop-Service FontCache -Force -ErrorAction SilentlyContinue
     Remove-Item "$env:windir\ServiceProfiles\LocalService\AppData\Local\FontCache\*" -Recurse -Force -ErrorAction SilentlyContinue
@@ -398,8 +415,10 @@ function Repair-WMI {
 function Invoke-Cleanup {
     Write-Log "Nettoyage des fichiers temporaires"
     $before = (Get-PSDrive -Name ($env:SystemDrive.TrimEnd(':'))).Free
-    foreach ($p in @("$env:TEMP", "$env:windir\Temp", "$env:LOCALAPPDATA\Temp", "$env:windir\Prefetch",
-                     "$env:LOCALAPPDATA\Microsoft\Windows\INetCache", "$env:LOCALAPPDATA\CrashDumps",
+    # Prefetch n'est plus vidé : Windows s'en sert pour lancer les applications plus vite.
+    $la = Get-UserLocalDir
+    foreach ($p in @("$env:TEMP", "$env:windir\Temp", "$la\Temp",
+                     "$la\Microsoft\Windows\INetCache", "$la\CrashDumps",
                      "$env:ProgramData\Microsoft\Windows\WER\ReportQueue")) {
         if (Test-Path $p) { Get-ChildItem $p -Recurse -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue }
     }
@@ -423,10 +442,15 @@ function Invoke-DefenderScan {
 
 function Reset-Search {
     Write-Log "Réinitialisation de l'indexation Windows Search"
-    Stop-Service WSearch -Force -ErrorAction SilentlyContinue
-    Remove-Item "$env:ProgramData\Microsoft\Search\Data\Applications\Windows\Windows.edb" -Force -ErrorAction SilentlyContinue
-    Start-Service WSearch -ErrorAction SilentlyContinue
-    Write-Log "Index reconstruit en arrière-plan" 'OK'
+    # Méthode Microsoft : SetupCompletedSuccessfully = 0 force la reconstruction complète au redémarrage du service.
+    # Windows 11 stocke l'index dans Windows.db (SQLite) ; l'ancien Windows.edb n'existe plus que sur les PC mis à niveau.
+    try { Stop-Service WSearch -Force -ErrorAction Stop } catch { Write-Log "Arrêt de Windows Search impossible : $($_.Exception.Message)" 'WARN'; return }
+    try { Set-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows Search' -Name SetupCompletedSuccessfully -Value 0 -Type DWord -ErrorAction Stop }
+    catch { Write-Log "Réinitialisation de l'index refusée : $($_.Exception.Message)" 'WARN' }
+    $dir = "$env:ProgramData\Microsoft\Search\Data\Applications\Windows"
+    foreach ($f in 'Windows.db', 'Windows.db-wal', 'Windows.db-shm', 'Windows.edb') { Remove-Item -LiteralPath (Join-Path $dir $f) -Force -ErrorAction SilentlyContinue }
+    try { Start-Service WSearch -ErrorAction Stop; Write-Log "Index effacé : Windows le reconstruit en arrière-plan (quelques heures selon le nombre de fichiers)" 'OK' }
+    catch { Write-Log "Windows Search n'a pas redémarré : $($_.Exception.Message)" 'WARN' }
 }
 
 function Reset-PowerPlan {

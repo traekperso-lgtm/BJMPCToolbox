@@ -1,5 +1,35 @@
-﻿BJMPC Toolbox 2.5 - interface graphique (Windows 11)
+﻿BJMPC Toolbox 2.6 - interface graphique (Windows 11)
 =====================================================
+
+NOUVEAUTES 2.6
+  - Optimiser > Stockage (remplace "Disque") :
+       Vos disques : analyse en lecture seule (type NVMe/SSD/disque dur/USB, sante, temperature, usure, TRIM,
+         optimisation planifiee, pilote NVMe) avec anomalies signalees (SSD vu comme disque dur, surchauffe...).
+       Entretien : TRIM NTFS et ReFS retabli s'il etait coupe, optimisation planifiee reactivee, puis optimisation
+         de chaque lecteur avec la bonne methode (TRIM pour un SSD, defragmentation pour un disque dur).
+       Economies d'energie (sur secteur seulement, batterie jamais touchee) : USB, PCI Express (NVMe), SATA,
+         arret des disques durs. Chacune memorise sa valeur et s'annule ("Revenir aux valeurs d'origine").
+       Pilote NVMe natif nvmedisk (carte Expert, inspire de nvme-performance-script) : refuse si un pilote de
+         fabricant, Intel RST/VMD ou RAID est en place ; point de restauration obligatoire et verifie ; BitLocker
+         suspendu pour 2 redemarrages ; "Verifier" dit si le pilote est vraiment actif ; "Revenir" retire seulement
+         les 4 valeurs posees (jamais toute la cle Overrides). Non pris en charge par Microsoft sur Windows 11.
+       Volontairement absents : cache d'ecriture force, vidage desactive, mode "meilleures performances" des cles
+         USB, noms 8.3 (pertes de donnees ou anciens logiciels casses).
+  - Audit complet, anomalies corrigees :
+       Recherche Windows : Windows 11 utilise Windows.db, plus Windows.edb ; reconstruction par la methode Microsoft.
+       Windows Update : retrait des enregistrements de DLL et du winsock reset herites de Windows 7 ; copies .bak
+         de plus de 30 jours supprimees.
+       Nettoyage : Prefetch n'est plus vide (il accelere le lancement des applications).
+       Caches de shaders : ajout des emplacements NVIDIA (LocalLow\PerDriverVersion), AMD (DxcCache, VkCache), Intel.
+       Caches, navigateurs, icones : nettoyes dans le profil de la personne connectee, plus celui de l'administrateur.
+       Mise a jour de la Toolbox : si la copie echoue en cours, l'ancienne version est remise (plus de melange).
+       OneDrive : desinstalle avec sa propre commande (installation par utilisateur ou par machine).
+       Programmes de demarrage : les elements desactives sont reconnus et comptes a part.
+       Points de restauration : verifies apres creation, limite de frequence de Windows remise ensuite.
+       ReTrim : seulement sur les SSD (un disque dur renvoyait une erreur).
+       DNS chiffre : si IPv6 est coupe sur la carte, configuration en IPv4 seul au lieu d'un echec.
+       Test de connexion : 9.9.9.9 (Quad9) remplace par FDN.
+       MPO : signale comme parfois sans effet sur Windows 11 24H2 et plus recent.
 
 NOUVEAUTES 2.5
   - Optimiser > Reseau et DNS : carte "DNS chiffre : France et pays voisins". Mullvad et Quad9 retires.

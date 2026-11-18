@@ -2,7 +2,7 @@
 
 🇫🇷 [Français](#-français) · 🇬🇧 [English](#-english)
 
-> **Version 2.5** · Windows 11 · Windows PowerShell 5.1 (WPF) · by **BJMPC Informatique**
+> **Version 2.6** · Windows 11 · Windows PowerShell 5.1 (WPF) · by **BJMPC Informatique**
 
 ---
 
@@ -21,6 +21,12 @@ Elle est écrite en Windows PowerShell 5.1 (interface WPF), sans installation : 
 - **Sauvegarde automatique des fichiers du client** vers un autre disque, à la demande ou planifiée.
 - **Optimisations dépassées retirées** : Nagle, priorités MMCSS, SysMain désactivé, services « inutiles », Win32PrioritySeparation, compression mémoire, désactivation de HVCI… Elles n'apportent rien de mesurable sur Windows 11 aujourd'hui, ou retirent une protection.
 - **Pilotes revus en profondeur** : entre deux familles de pilotes d'une même puce, c'est la date qui départage (comme le fait Windows), plus le seul numéro de version ; retour arrière réel après une mise à jour.
+
+### Nouveautés de la version 2.6
+
+- **Optimiser > Stockage** (remplace « Disque ») : analyse des disques (type, santé, température, usure, TRIM, optimisation planifiée, pilote NVMe), entretien (TRIM NTFS/ReFS, optimisation planifiée, bonne méthode par type de disque), économies d'énergie USB, PCI Express, SATA et disques durs sur secteur seulement, chacune annulable.
+- **Pilote NVMe natif (nvmedisk)**, carte « Expert » : proposé seulement si tous les SSD NVMe utilisent le pilote Microsoft standard ; point de restauration obligatoire et vérifié, BitLocker suspendu, retour ciblé sans toucher aux autres réglages de Windows.
+- **Audit complet, anomalies corrigées** : reconstruction de l'index de recherche (Windows 11 n'utilise plus Windows.edb), réinitialisation de Windows Update sans commandes de Windows 7, Prefetch plus vidé, caches de shaders récents (NVIDIA, AMD, Intel), nettoyages faits dans le profil de la personne connectée et non de l'administrateur, mise à jour de la Toolbox remise en état si la copie échoue, désinstallation de OneDrive par sa vraie commande, programmes de démarrage désactivés reconnus, points de restauration vérifiés et limite Windows remise, ReTrim limité aux SSD, DNS chiffré en IPv4 seul si IPv6 est coupé.
 
 ### Nouveautés de la version 2.5
 
@@ -94,7 +100,7 @@ Prérequis : Windows 11, droits administrateur, Windows PowerShell 5.1 (inclus d
 |---|---|
 | **Accueil** | Vue d'ensemble · Résumé pour le client |
 | **Réparer** | Réparation automatique · Réparer Windows · Nettoyage et dépannage · Registre · Diagnostics |
-| **Optimiser** | Jeux et alimentation · Réseau et DNS · Disque |
+| **Optimiser** | Jeux et alimentation · Réseau et DNS · Stockage |
 | **Personnalisation et divers** | Démarrage · Doublons de photos · Affichage et OLED · Confidentialité · Interface et Explorateur · Mises à jour et sécurité |
 | **Logiciels et pilotes** | Applications · Pilotes |
 | **Fichiers et restauration** | Sauvegarde des fichiers · Historique · Journal et points de restauration |
@@ -139,7 +145,7 @@ BJMPC Toolbox est distribuée sous la licence [PolyForm Noncommercial 1.0.0](LIC
 
 ### Retours
 
-Ouvrez une *issue* en précisant la version de Windows, la version de l'outil (2.5) et, si possible, le journal de `C:\BJMPC-Logs\`.
+Ouvrez une *issue* en précisant la version de Windows, la version de l'outil (2.6) et, si possible, le journal de `C:\BJMPC-Logs\`.
 
 ---
 
@@ -158,6 +164,12 @@ It is written in Windows PowerShell 5.1 (WPF UI) and needs no installation: laun
 - **Automatic backup of the customer's files** to another disk, on demand or scheduled.
 - **Outdated tweaks removed**: Nagle, MMCSS priorities, disabling SysMain, "useless" services, Win32PrioritySeparation, memory compression, disabling HVCI… They bring nothing measurable on today's Windows 11, or remove a protection.
 - **Drivers reviewed in depth**: between two driver families for the same chip, the date decides (as Windows does), no longer the version number alone; a real rollback after an update.
+
+### What's new in version 2.6
+
+- **Optimise > Storage** (replaces "Disk"): drive analysis (type, health, temperature, wear, TRIM, scheduled optimisation, NVMe driver), maintenance (TRIM NTFS/ReFS, scheduled optimisation, right method per drive type), USB, PCI Express, SATA and hard-disk power savings on AC only, each one reversible.
+- **Native NVMe driver (nvmedisk)**, "Expert" card: offered only when every NVMe SSD uses Microsoft's standard driver; verified restore point, BitLocker suspended, targeted rollback.
+- **Full audit, issues fixed**: search index rebuild (Windows 11 no longer uses Windows.edb), Windows Update reset without Windows 7 commands, Prefetch no longer emptied, current shader caches, cleanups done in the signed-in user's profile, self-update rolled back if copying fails, OneDrive removed with its real uninstall command, disabled startup items recognised, verified restore points, ReTrim on SSDs only, encrypted DNS falls back to IPv4 when IPv6 is off.
 
 ### What's new in version 2.5
 
@@ -231,7 +243,7 @@ Requirements: Windows 11, administrator rights, Windows PowerShell 5.1 (built in
 |---|---|
 | **Home** | Overview · Customer summary |
 | **Repair** | Automatic repair · Repair Windows · Cleanup & troubleshooting · Registry · Diagnostics |
-| **Optimise** | Gaming & power · Network & DNS · Disk |
+| **Optimise** | Gaming & power · Network & DNS · Storage |
 | **Customisation & more** | Startup · Duplicate photos · Display & OLED · Privacy · Interface & Explorer · Updates & security |
 | **Software & drivers** | Applications · Drivers |
 | **Files & restore** | File backup · History · Journal & restore points |

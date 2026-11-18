@@ -15,7 +15,7 @@
 #>
 
 $ErrorActionPreference = 'Continue'
-$Script:AppVersion = '2.5'
+$Script:AppVersion = '2.6'
 $Script:Root       = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $Script:LogDir     = Join-Path $env:SystemDrive 'BJMPC-Logs'
 $Script:BackupDir  = Join-Path $Script:LogDir 'Backup'
@@ -142,6 +142,8 @@ try {
             Remove-PSDrive -Name HKCU -Force -ErrorAction Stop
             New-PSDrive -Name HKCU -PSProvider Registry -Root ('HKEY_USERS\' + $__hkSid) -Scope Global -ErrorAction Stop | Out-Null
             $Script:UserHive = 'HKEY_USERS\' + $__hkSid
+            # Dossier du profil de cette personne (caches, fichiers temporaires) : pas celui de l'administrateur.
+            try { $Script:UserProfileDir = [string](Get-ItemProperty -LiteralPath ('HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\' + $__hkSid) -ErrorAction Stop).ProfileImagePath } catch {}
         }
     }
 } catch { $Script:UserHive = 'HKEY_CURRENT_USER' }
@@ -1454,7 +1456,7 @@ function Build-Gaming {
     $c = New-Card 'Réglages de jeu de Windows' 'Mode Jeu, capture en arrière-plan désactivée, jeux fenêtrés optimisés avec fréquence variable. Les options ci-dessous se cochent ou non.'
     $Script:GamingChecks.Hags = New-Check 'Activer aussi la planification GPU matérielle (HAGS, voir ci-dessus)' $true
     $Script:GamingChecks.Mouse = New-Check 'Désactiver l''accélération de la souris (précision du pointeur, effet à la prochaine session)' $false
-    $Script:GamingChecks.Mpo = New-Check 'Désactiver MPO (Multiplane Overlay) : seulement en cas de scintillement ou de bug d''affichage OLED/VRR' $false
+    $Script:GamingChecks.Mpo = New-Check 'Désactiver MPO (Multiplane Overlay) : seulement en cas de scintillement ou de bug d''affichage OLED/VRR (peut rester sans effet sur Windows 11 24H2 et plus récent)' $false
     [void]$c.Body.Children.Add($Script:GamingChecks.Hags)
     [void]$c.Body.Children.Add($Script:GamingChecks.Mouse)
     [void]$c.Body.Children.Add($Script:GamingChecks.Mpo)

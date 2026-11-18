@@ -1355,11 +1355,17 @@ function Set-DnsPreset {
         $k4 = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($a.InterfaceGuid)"
         $k6 = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters\Interfaces\$($a.InterfaceGuid)"
         Add-Orig "dns|$($a.Name)" @{ Type = 'dns'; Adapter = $a.Name; Index = $a.ifIndex; Static4 = [string](Get-RegValue $k4 'NameServer'); Static6 = [string](Get-RegValue $k6 'NameServer') }
+        $used = $addrs
         try {
             Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ServerAddresses $addrs -ErrorAction Stop
             Write-Log "DNS de $($a.Name) : $($p.Name) ($($addrs -join ', '))" 'OK'
-        } catch { Write-Log "DNS de $($a.Name) : $($_.Exception.Message)" 'WARN'; continue }
-        foreach ($ip in $addrs) {
+        } catch {
+            # IPv6 désactivé sur la carte : Windows refuse la liste mixte, on garde les adresses IPv4.
+            $used = @($addrs | Where-Object { $_ -notmatch ':' })
+            try { Set-DnsClientServerAddress -InterfaceIndex $a.ifIndex -ServerAddresses $used -ErrorAction Stop; Write-Log "DNS de $($a.Name) : $($p.Name) en IPv4 seulement ($($used -join ', '))" 'OK' }
+            catch { Write-Log "DNS de $($a.Name) : $($_.Exception.Message)" 'WARN'; continue }
+        }
+        foreach ($ip in $used) {
             $fam = $(if ($ip -match ':') { 'Doh6' } else { 'Doh' })
             $kd = "$($Script:DohIfRoot)\$($a.InterfaceGuid)\DohInterfaceSettings\$fam\$ip"
             try {
