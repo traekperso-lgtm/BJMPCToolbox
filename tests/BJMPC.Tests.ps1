@@ -199,6 +199,25 @@ $Sync.Result = @{ Bad = $bad; Keys = @($Script:DnsPresets.Keys); Old = ($all -ma
     }
 }
 
+Describe 'Stockage (lecture seule)' {
+    It 'Rapport de stockage, état du pilote NVMe et lecture des réglages d''alimentation sans erreur' {
+        $r = Invoke-Engine 'opt' @'
+$Script:LogFile = Join-Path $env:TEMP 'bjmpc-test-stockage.log'
+Get-StorageReport
+$rep = $Sync.Result
+$nv = Get-NvmeState
+$g = Get-ActivePlanGuid
+$pi = Get-PowerIndex $g '2a737441-1930-4402-8d77-b2bebba308a3' '48e6b7a6-50f5-4782-a5d4-53bb8f07e226'
+$Sync.Result = @{ Disks = @($rep.Disks).Count; HasNotes = ($null -ne $rep.Notes); Nvme = $nv; Pi = $pi; Plan = $g }
+'@
+        $r.Errors | Should -BeNullOrEmpty
+        $r.Result.Disks | Should -BeGreaterThan 0
+        $r.Result.Plan | Should -Match '^[0-9a-f-]{36}$'
+        $r.Result.Nvme | Should -Not -BeNullOrEmpty
+        if (-not $r.Result.Nvme.Eligible) { [string]$r.Result.Nvme.Reason | Should -Not -BeNullOrEmpty }
+    }
+}
+
 Describe 'Analyse statique' {
     It 'PSScriptAnalyzer : aucune erreur, syntaxe compatible PowerShell 5.1' {
         if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) { Set-ItResult -Skipped -Because 'PSScriptAnalyzer absent'; return }

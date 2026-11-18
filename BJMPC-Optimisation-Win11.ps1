@@ -385,14 +385,24 @@ function Show-State {
 }
 
 function New-RestorePoint {
+    # $Script:RestorePointOk = $true seulement si un point de moins de 10 minutes existe vraiment après l'appel : Windows peut refuser sans
+    # erreur (un point par 24 h par défaut, protection du système coupée). La limite de fréquence est remise ensuite.
     Write-Log "Création d'un point de restauration..."
+    $k = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore'
+    $Script:RestorePointOk = $false
+    $old = Get-RegValue $k 'SystemRestorePointCreationFrequency'
     try {
         Enable-ComputerRestore -Drive "$env:SystemDrive\" -ErrorAction SilentlyContinue
-        Set-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore' -Name SystemRestorePointCreationFrequency -Value 0 -Type DWord -ErrorAction SilentlyContinue
-        Checkpoint-Computer -Description "BJMPC Optimisation $(Get-Date -Format 'yyyy-MM-dd HH:mm')" -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
-        Write-Log "Point de restauration créé" 'OK'
+        Set-ItemProperty $k -Name SystemRestorePointCreationFrequency -Value 0 -Type DWord -ErrorAction SilentlyContinue
+        Checkpoint-Computer -Description "BJMPC Optimisation $(Get-Date -Format 'yyyy-MM-dd HH:mm')" -RestorePointType MODIFY_SETTINGS -ErrorAction Stop -WarningAction SilentlyContinue
+        $last = Get-ComputerRestorePoint -ErrorAction Stop | Sort-Object CreationTime -Descending | Select-Object -First 1
+        if ($last -and ((Get-Date) - [Management.ManagementDateTimeConverter]::ToDateTime($last.CreationTime)).TotalMinutes -le 10) { Write-Log "Point de restauration créé" 'OK'; $Script:RestorePointOk = $true; return }
+        Write-Log "Windows n'a pas créé de point de restauration (aucun point récent trouvé)." 'WARN'
     } catch {
         Write-Log "Point de restauration impossible : $($_.Exception.Message)" 'WARN'
+    } finally {
+        if ($null -eq $old) { Remove-ItemProperty $k -Name SystemRestorePointCreationFrequency -ErrorAction SilentlyContinue }
+        else { Set-ItemProperty $k -Name SystemRestorePointCreationFrequency -Value $old -Type DWord -ErrorAction SilentlyContinue }
     }
 }
 
@@ -552,7 +562,7 @@ function Optimize-Network {
 
 # ---------------------------------------------------------------- Stockage NVMe / système
 function Optimize-Storage {
-    Write-Log "=== Disque SSD et démarrage ==="
+    Write-Log "=== Stockage et démarrage ==="
     # TRIM : actif par défaut, on le rétablit seulement s'il a été coupé.
     $o = & fsutil.exe behavior query DisableDeleteNotify 2>$null | Out-String
     if ($o -match 'NTFS DisableDeleteNotify\s*=\s*(\d)' -and $Matches[1] -ne '0') {
@@ -562,7 +572,12 @@ function Optimize-Storage {
     # SysMain (Windows adapte déjà SysMain aux SSD ; le couper ralentit le lancement des applications).
 
     if (Confirm-Action "Lancer un ReTrim immédiat des volumes SSD ?" $true) {
-        foreach ($v in @(Get-Volume | Where-Object { $_.DriveLetter -and $_.DriveType -eq 'Fixed' -and $_.FileSystem -eq 'NTFS' })) {
+        # Seulement les volumes posés sur un SSD : un ReTrim sur un disque dur échoue (« non pris en charge »).
+        $ssd = @{}
+        foreach ($pd in @(Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { [string]$_.MediaType -eq 'SSD' })) { $ssd[[string]$pd.DeviceId] = $true }
+        foreach ($v in @(Get-Volume | Where-Object { $_.DriveLetter -and $_.DriveType -eq 'Fixed' -and $_.FileSystem -in 'NTFS', 'ReFS' })) {
+            $dn = ''; try { $dn = [string](Get-Partition -DriveLetter $v.DriveLetter -ErrorAction Stop).DiskNumber } catch {}
+            if (-not $ssd.ContainsKey($dn)) { Write-Log "ReTrim $($v.DriveLetter): ignoré (pas un SSD)"; continue }
             try { Optimize-Volume -DriveLetter $v.DriveLetter -ReTrim -ErrorAction Stop; Write-Log "ReTrim $($v.DriveLetter): OK" 'OK' } catch { Write-Log "ReTrim $($v.DriveLetter): $($_.Exception.Message)" 'WARN' }
         }
     }
@@ -584,6 +599,210 @@ function Optimize-Storage {
         Write-Log "Hibernation désactivée" 'OK'
     }
     Write-Log "Disque et démarrage : terminé" 'OK'
+}
+
+# ---------------------------------------------------------------- Stockage : inventaire, entretien, alimentation, NVMe natif
+# Tout est réversible : chaque réglage d'alimentation garde sa valeur d'origine (type 'pwr'), les valeurs de registre
+# passent par Set-Reg. Rien n'est appliqué sans un clic sur un bouton.
+$Script:NvmeOverrideKey = 'HKLM:\SYSTEM\CurrentControlSet\Policies\Microsoft\FeatureManagement\Overrides'
+$Script:NvmeOverrideIds = @('1176759950', '1853569164', '156965516', '735209102')
+$Script:StoragePower = @{
+    usb  = @(
+        @('2a737441-1930-4402-8d77-b2bebba308a3', '48e6b7a6-50f5-4782-a5d4-53bb8f07e226', 0, 'USB : suspension sélective'),
+        @('2a737441-1930-4402-8d77-b2bebba308a3', 'd4e98f31-5ffe-4ce1-be31-1b38b384c009', 0, 'USB 3 : économie d''énergie de la liaison'))
+    pcie = @(, @('501a4d13-42af-4429-9fd1-a8218c268e20', 'ee12f906-d277-404b-b6da-e5fa1a576df5', 0, 'PCI Express : économie d''énergie de la liaison (ASPM)'))
+    sata = @(, @('0012ee47-9041-4b5d-9b77-535fba8b1442', '0b2d69d7-a2a1-449c-9680-f91c70521c60', 0, 'SATA (AHCI) : économie d''énergie de la liaison'))
+    hdd  = @(, @('0012ee47-9041-4b5d-9b77-535fba8b1442', '6738e2c4-e8a5-4a42-b16a-e040e769756e', 0, 'Arrêt des disques durs après inactivité'))
+}
+
+function Get-PowerIndex {
+    # Valeurs actuelles (secteur, batterie) d'un réglage du mode d'alimentation : les deux dernières valeurs 0x de powercfg.
+    param([string]$Scheme, [string]$Sub, [string]$Setting)
+    $o = & powercfg.exe /query $Scheme $Sub $Setting 2>$null | Out-String
+    $m = [regex]::Matches($o, '0x([0-9a-fA-F]{8})')
+    if ($m.Count -lt 2) { return $null }
+    return @([Convert]::ToInt32($m[$m.Count - 2].Groups[1].Value, 16), [Convert]::ToInt32($m[$m.Count - 1].Groups[1].Value, 16))
+}
+
+function Set-PowerOnAc {
+    # Change un réglage sur secteur seulement, dans le mode d'alimentation actif ; la batterie n'est jamais touchée.
+    param([string]$Sub, [string]$Setting, [int]$Value, [string]$Label)
+    $g = Get-ActivePlanGuid
+    if (-not $g) { Write-Log "Mode d'alimentation actif introuvable : $Label" 'WARN'; return }
+    $cur = Get-PowerIndex $g $Sub $Setting
+    if ($null -eq $cur) { Write-Log "Réglage absent sur ce PC, ignoré : $Label"; return }
+    if ($cur[0] -eq $Value) { Write-Log "Déjà réglé : $Label"; return }
+    Add-Orig "pwr|$g|$Setting" @{ Type = 'pwr'; Scheme = $g; Sub = $Sub; Setting = $Setting; Ac = $cur[0]; Label = $Label }
+    & powercfg.exe /setacvalueindex $g $Sub $Setting $Value 2>$null | Out-Null
+    & powercfg.exe /setactive $g 2>$null | Out-Null
+    Write-Log ("{0} (sur secteur) : {1} -> {2}" -f $Label, $cur[0], $Value) 'OK'
+}
+
+function Set-StoragePower {
+    param([ValidateSet('usb', 'pcie', 'sata', 'hdd')][string]$Kind)
+    if ($Kind -eq 'hdd') {
+        $hdd = @(Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { [string]$_.MediaType -eq 'HDD' })
+        if ($hdd.Count -eq 0) { Write-Log 'Aucun disque dur à plateaux détecté : rien à changer.' 'OK'; return }
+    }
+    if ($Kind -eq 'sata') {
+        $sata = @(Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { [string]$_.BusType -eq 'SATA' })
+        if ($sata.Count -eq 0) { Write-Log 'Aucun disque SATA détecté : rien à changer.' 'OK'; return }
+    }
+    foreach ($s in $Script:StoragePower[$Kind]) { Set-PowerOnAc $s[0] $s[1] $s[2] $s[3] }
+}
+
+function Get-StorageReport {
+    # Lecture seule : disques, volumes, pilote NVMe, TRIM, optimisation planifiée, anomalies détectées.
+    $r = [ordered]@{ Disks = @(); Volumes = @(); Notes = @(); Trim = $null; TrimRefs = $null; Task = $null }
+    $phys = @(Get-PhysicalDisk -ErrorAction SilentlyContinue | Sort-Object DeviceId)
+    foreach ($d in $phys) {
+        $rc = $null; try { $rc = $d | Get-StorageReliabilityCounter -ErrorAction Stop } catch {}
+        $bus = [string]$d.BusType; $media = [string]$d.MediaType
+        $kind = switch ($true) {
+            ($bus -eq 'NVMe') { 'NVMe'; break }
+            ($bus -eq 'USB') { 'USB'; break }
+            ($media -eq 'SSD') { 'SSD'; break }
+            ($media -eq 'HDD') { 'Disque dur'; break }
+            default { 'Inconnu' }
+        }
+        $r.Disks += [pscustomobject]@{
+            Name = ([string]$d.FriendlyName).Trim(); Kind = $kind; Bus = $bus; Media = $media
+            SizeGB = [math]::Round([double]$d.Size / 1GB); Health = [string]$d.HealthStatus
+            Temp = $(if ($rc -and $rc.Temperature) { [int]$rc.Temperature } else { $null })
+            Wear = $(if ($rc -and $null -ne $rc.Wear) { [int]$rc.Wear } else { $null })
+            Firmware = [string]$d.FirmwareVersion
+        }
+        if ($bus -eq 'NVMe' -and $media -ne 'SSD') { $r.Notes += "« $($d.FriendlyName) » : Windows ne le reconnaît pas comme SSD (type « $media »). L'optimisation automatique risque de le défragmenter au lieu du TRIM : faire réévaluer le disque (commande « winsat formal »)." }
+        if ([string]$d.HealthStatus -ne 'Healthy') { $r.Notes += "« $($d.FriendlyName) » : santé « $($d.HealthStatus) ». Sauvegardez vos fichiers et contrôlez le disque (Réparer > Diagnostics)." }
+        if ($rc -and $rc.Temperature -ge 70) { $r.Notes += "« $($d.FriendlyName) » : $($rc.Temperature) °C, température élevée (au-delà de 70 °C, les SSD ralentissent pour se protéger)." }
+        if ($rc -and $rc.Wear -ge 80) { $r.Notes += "« $($d.FriendlyName) » : usure à $($rc.Wear) %. Prévoir son remplacement." }
+    }
+    foreach ($v in @(Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter } | Sort-Object DriveLetter)) {
+        $r.Volumes += [pscustomobject]@{ Letter = [string]$v.DriveLetter; Label = [string]$v.FileSystemLabel; Fs = [string]$v.FileSystem; Type = [string]$v.DriveType
+            SizeGB = [math]::Round([double]$v.Size / 1GB); FreePct = $(if ($v.Size) { [int](100 * $v.SizeRemaining / $v.Size) } else { $null }) }
+    }
+    $o = & fsutil.exe behavior query DisableDeleteNotify 2>$null | Out-String
+    if ($o -match 'NTFS DisableDeleteNotify\s*=\s*(\d)') { $r.Trim = ($Matches[1] -eq '0') }
+    if ($o -match 'ReFS DisableDeleteNotify\s*=\s*(\d)') { $r.TrimRefs = ($Matches[1] -eq '0') }
+    if ($r.Trim -eq $false) { $r.Notes += 'Le TRIM est coupé : les SSD ralentissent avec le temps. Bouton « Entretien » pour le rétablir.' }
+    try { $t = Get-ScheduledTask -TaskPath '\Microsoft\Windows\Defrag\' -TaskName 'ScheduledDefrag' -ErrorAction Stop; $r.Task = ([string]$t.State -ne 'Disabled') } catch {}
+    if ($r.Task -eq $false) { $r.Notes += 'L''optimisation planifiée des lecteurs est désactivée. Bouton « Entretien » pour la rétablir.' }
+    $r.Nvme = Get-NvmeState
+    Set-OptResult ([pscustomobject]$r)
+    foreach ($d in $r.Disks) { Write-Log ("{0} · {1} · {2} Go · santé {3}{4}{5}" -f $d.Name, $d.Kind, $d.SizeGB, $d.Health, $(if ($null -ne $d.Temp) { " · $($d.Temp) °C" } else { '' }), $(if ($null -ne $d.Wear) { " · usure $($d.Wear) %" } else { '' })) 'OK' }
+    foreach ($n in $r.Notes) { Write-Log $n 'WARN' }
+    if ($r.Notes.Count -eq 0) { Write-Log 'Aucune anomalie de stockage détectée.' 'OK' }
+}
+
+function Invoke-StorageMaintenance {
+    # Entretien sûr : TRIM rétabli s'il a été coupé (NTFS et ReFS), optimisation planifiée réactivée, puis optimisation
+    # de chaque volume interne avec la méthode que Windows choisit lui-même (TRIM pour un SSD, défragmentation pour un disque dur).
+    param([switch]$OptimizeNow)
+    Write-Log '=== Stockage : entretien ==='
+    $o = & fsutil.exe behavior query DisableDeleteNotify 2>$null | Out-String
+    if ($o -match 'NTFS DisableDeleteNotify\s*=\s*(\d)' -and $Matches[1] -ne '0') { Set-FsutilBehavior 'DisableDeleteNotify' 0 } else { Write-Log 'TRIM (NTFS) déjà actif' 'OK' }
+    if ($o -match 'ReFS DisableDeleteNotify\s*=\s*(\d)' -and $Matches[1] -ne '0') {
+        Add-Orig 'fsutil|DisableDeleteNotifyReFS' @{ Type = 'fsutilrefs'; Value = [int]$Matches[1] }
+        & fsutil.exe behavior set DisableDeleteNotify ReFS 0 | Out-Null
+        Write-Log 'TRIM (ReFS) rétabli' 'OK'
+    }
+    try {
+        $t = Get-ScheduledTask -TaskPath '\Microsoft\Windows\Defrag\' -TaskName 'ScheduledDefrag' -ErrorAction Stop
+        if ([string]$t.State -eq 'Disabled') {
+            Add-Orig 'taskon|\Microsoft\Windows\Defrag\ScheduledDefrag' @{ Type = 'taskon'; TaskPath = '\Microsoft\Windows\Defrag\'; TaskName = 'ScheduledDefrag' }
+            Enable-ScheduledTask -TaskPath '\Microsoft\Windows\Defrag\' -TaskName 'ScheduledDefrag' -ErrorAction Stop | Out-Null
+            Write-Log 'Optimisation planifiée des lecteurs réactivée' 'OK'
+        } else { Write-Log 'Optimisation planifiée des lecteurs déjà active' 'OK' }
+    } catch { Write-Log "Optimisation planifiée : $($_.Exception.Message)" 'WARN' }
+    if (-not $OptimizeNow) { return }
+    $media = @{}
+    foreach ($pd in @(Get-PhysicalDisk -ErrorAction SilentlyContinue)) { $media[[string]$pd.DeviceId] = [string]$pd.MediaType }
+    foreach ($v in @(Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter -and $_.DriveType -eq 'Fixed' -and $_.FileSystem -in 'NTFS', 'ReFS' })) {
+        $kind = ''
+        try { $dn = [string](Get-Partition -DriveLetter $v.DriveLetter -ErrorAction Stop).DiskNumber; $kind = $media[$dn] } catch {}
+        try {
+            if ($kind -eq 'SSD') { Optimize-Volume -DriveLetter $v.DriveLetter -ReTrim -ErrorAction Stop; Write-Log "$($v.DriveLetter): SSD, TRIM effectué" 'OK' }
+            elseif ($kind -eq 'HDD') {
+                $a = Optimize-Volume -DriveLetter $v.DriveLetter -Analyze -Verbose 4>&1 | Out-String
+                if ($a -match '(\d+)\s*%') { Write-Log "$($v.DriveLetter): disque dur, fragmentation $($Matches[1]) %" }
+                Optimize-Volume -DriveLetter $v.DriveLetter -Defrag -ErrorAction Stop; Write-Log "$($v.DriveLetter): disque dur, défragmenté" 'OK'
+            } else { Optimize-Volume -DriveLetter $v.DriveLetter -ErrorAction Stop; Write-Log "$($v.DriveLetter): optimisé (méthode choisie par Windows)" 'OK' }
+        } catch { Write-Log "$($v.DriveLetter): $($_.Exception.Message)" 'WARN' }
+    }
+}
+
+function Restore-StorageSettings {
+    # Annule les réglages de la page Stockage (alimentation sur secteur, TRIM ReFS, optimisation planifiée).
+    $n = 0
+    foreach ($k in @($Script:Orig.Keys | Where-Object { $_ -like 'pwr|*' -or $_ -eq 'fsutil|DisableDeleteNotifyReFS' -or $_ -like 'taskon|*' })) {
+        Restore-Record $Script:Orig[$k]; $Script:Orig.Remove($k); $n++
+    }
+    Save-Orig
+    if ($n) { Write-Log "$n réglage(s) de stockage remis à l'origine." 'OK' } else { Write-Log 'Aucun réglage de stockage à annuler.' 'OK' }
+}
+
+function Get-NvmeState {
+    # Lecture seule. Éligible seulement si : Windows 11 24H2 ou plus récent, pilote nvmedisk.sys présent, au moins un SSD
+    # NVMe, et TOUS les contrôleurs NVMe sur le pilote Microsoft standard (stornvme). Un pilote de fabricant (Samsung, Intel
+    # RST/VMD, RAID…) exclut la bascule : c'est le cas où un PC peut ne plus démarrer.
+    $s = [ordered]@{ Build = 0; HasDriver = $false; Controllers = @(); NativeRunning = $false; Overrides = @(); Eligible = $false; Reason = ''; BitLocker = $false }
+    try { $s.Build = [int](Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).BuildNumber } catch {}
+    $s.HasDriver = Test-Path -LiteralPath (Join-Path $env:SystemRoot 'System32\drivers\nvmedisk.sys')
+    try {
+        $s.Controllers = @(Get-CimInstance Win32_PnPEntity -ErrorAction Stop | Where-Object { @($_.CompatibleID) -match 'CC_010802' } |
+            ForEach-Object { [pscustomobject]@{ Name = [string]$_.Name; Service = [string]$_.Service } })
+    } catch {}
+    try { $nd = Get-CimInstance Win32_SystemDriver -Filter "Name='nvmedisk'" -ErrorAction Stop; $s.NativeRunning = ([string]$nd.State -eq 'Running') } catch {}
+    foreach ($id in $Script:NvmeOverrideIds) { if ($null -ne (Get-RegValue $Script:NvmeOverrideKey $id)) { $s.Overrides += $id } }
+    try { $bl = Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction Stop; $s.BitLocker = ([string]$bl.ProtectionStatus -eq 'On') } catch {}
+    $vendor = @($s.Controllers | Where-Object { $_.Service -and $_.Service -ne 'stornvme' -and $_.Service -ne 'nvmedisk' })
+    if ($s.Build -lt 26100) { $s.Reason = 'Windows 11 24H2 ou plus récent requis.' }
+    elseif (-not $s.HasDriver) { $s.Reason = 'Le pilote nvmedisk.sys n''existe pas sur cette version de Windows.' }
+    elseif ($s.Controllers.Count -eq 0) { $s.Reason = 'Aucun SSD NVMe détecté.' }
+    elseif ($vendor.Count -gt 0) { $s.Reason = 'Pilote de fabricant ou RAID/VMD en place (' + (($vendor | ForEach-Object { $_.Service }) -join ', ') + ') : bascule refusée, le PC pourrait ne plus démarrer.' }
+    else { $s.Eligible = $true }
+    return [pscustomobject]$s
+}
+
+function Show-NvmeState {
+    $s = Get-NvmeState
+    Set-OptResult $s
+    Write-Log ("Windows build {0} · nvmedisk.sys {1} · pilote natif {2} · activation posée : {3}" -f $s.Build, $(if ($s.HasDriver) { 'présent' } else { 'absent' }), $(if ($s.NativeRunning) { 'ACTIF' } else { 'inactif' }), $(if ($s.Overrides.Count) { 'oui' } else { 'non' })) 'OK'
+    foreach ($c in $s.Controllers) { Write-Log ("Contrôleur : {0} (pilote {1})" -f $c.Name, $c.Service) }
+    if (-not $s.Eligible) { Write-Log $s.Reason 'WARN' }
+    if ($s.Overrides.Count -and -not $s.NativeRunning) { Write-Log 'Activation posée mais pilote natif inactif : redémarrez, ou Windows l''a bloquée sur cette version (dans ce cas, « Revenir au pilote standard »).' 'WARN' }
+}
+
+function Enable-NativeNvme {
+    # Expérimental, non pris en charge par Microsoft sur Windows 11. Garde-fous : éligibilité stricte, point de restauration
+    # obligatoire et vérifié, BitLocker suspendu pour deux redémarrages, valeurs d'origine mémorisées.
+    $s = Get-NvmeState
+    if (-not $s.Eligible) { Write-Log ("Bascule refusée : " + $s.Reason) 'WARN'; return }
+    if ($s.NativeRunning) { Write-Log 'Le pilote NVMe natif est déjà actif.' 'OK'; return }
+    New-RestorePoint
+    if (-not $Script:RestorePointOk) { Write-Log 'Bascule annulée : aucun point de restauration n''a pu être créé.' 'WARN'; return }
+    if ($s.BitLocker) {
+        try { Suspend-BitLocker -MountPoint $env:SystemDrive -RebootCount 2 -ErrorAction Stop | Out-Null; Write-Log 'BitLocker suspendu pour 2 redémarrages (reprise automatique ensuite).' 'OK' }
+        catch { Write-Log ("Bascule annulée : BitLocker n'a pas pu être suspendu (" + $_.Exception.Message + '). Sans cela, Windows pourrait demander la clé de récupération.') 'WARN'; return }
+    }
+    foreach ($id in $Script:NvmeOverrideIds) { Set-Reg $Script:NvmeOverrideKey $id 1 'DWord' }
+    $Script:RebootNeeded = $true
+    Write-Log 'Activation posée. Redémarrez, puis « Vérifier » : le pilote natif doit apparaître ACTIF. Sinon, revenez au pilote standard.' 'OK'
+}
+
+function Disable-NativeNvme {
+    # Retire uniquement les quatre valeurs posées (jamais la clé Overrides entière, qui peut contenir d'autres réglages de Windows).
+    $s = Get-NvmeState
+    if ($s.Overrides.Count -eq 0) { Write-Log 'Aucune activation du pilote natif n''est posée : rien à retirer.' 'OK'; return }
+    if ($s.BitLocker) { try { Suspend-BitLocker -MountPoint $env:SystemDrive -RebootCount 2 -ErrorAction Stop | Out-Null; Write-Log 'BitLocker suspendu pour 2 redémarrages.' 'OK' } catch { Write-Log "BitLocker : $($_.Exception.Message)" 'WARN' } }
+    foreach ($id in $Script:NvmeOverrideIds) {
+        $k = "reg|$($Script:NvmeOverrideKey)|$id"
+        if ($Script:Orig.Contains($k)) { Restore-Record $Script:Orig[$k]; $Script:Orig.Remove($k) }
+        else { Remove-ItemProperty -Path $Script:NvmeOverrideKey -Name $id -ErrorAction SilentlyContinue; Write-Log "Valeur retirée : $id" 'OK' }
+    }
+    Save-Orig
+    $Script:RebootNeeded = $true
+    Write-Log 'Retour au pilote standard (stornvme) au prochain redémarrage.' 'OK'
 }
 
 # Retiré en 2.0 : désactivation de services ("niveau sûr" et "niveau avancé"). Sur Windows 11 la plupart ne
@@ -987,6 +1206,9 @@ function Restore-Record {
             'mma'    { if ($r.Enabled) { Enable-MMAgent -MemoryCompression -ErrorAction Stop } }
             'dpi'    { Restore-DpiRecord $r }
             'regkey' { if (Test-Path -LiteralPath $r.Path) { Remove-Item -LiteralPath $r.Path -Recurse -Force -ErrorAction Stop } }
+            'pwr'    { & powercfg.exe /setacvalueindex ([string]$r.Scheme) ([string]$r.Sub) ([string]$r.Setting) ([int]$r.Ac) | Out-Null; if ((Get-ActivePlanGuid) -eq [string]$r.Scheme) { & powercfg.exe /setactive ([string]$r.Scheme) | Out-Null } }
+            'fsutilrefs' { & fsutil.exe behavior set DisableDeleteNotify ReFS ([int]$r.Value) | Out-Null }
+            'taskon' { Disable-ScheduledTask -TaskPath $r.TaskPath -TaskName $r.TaskName -ErrorAction Stop | Out-Null }
             'feature' { Enable-WindowsOptionalFeature -Online -FeatureName $r.Name -NoRestart -ErrorAction Stop | Out-Null }
             'cap'    { Add-WindowsCapability -Online -Name $r.Name -ErrorAction Stop | Out-Null }
         }

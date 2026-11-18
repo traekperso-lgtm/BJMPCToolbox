@@ -548,15 +548,22 @@ $Script:DrvTmp = Join-Path (Join-Path $env:SystemDrive 'BJMPC-Logs') 'Travail\pi
 function New-DriverRestorePoint {
     # Rend $true seulement si un point de restauration de moins de 10 minutes existe réellement après l'appel :
     # Windows peut refuser sans erreur (un seul point par 24 h par défaut, protection du système désactivée).
+    # La limite de fréquence d'origine est remise ensuite.
+    $k = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore'
+    $old = Get-RegVal $k 'SystemRestorePointCreationFrequency'
     try {
         Enable-ComputerRestore -Drive "$env:SystemDrive\" -ErrorAction SilentlyContinue
-        Set-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore' -Name SystemRestorePointCreationFrequency -Value 0 -Type DWord -ErrorAction SilentlyContinue
+        Set-ItemProperty $k -Name SystemRestorePointCreationFrequency -Value 0 -Type DWord -ErrorAction SilentlyContinue
         Checkpoint-Computer -Description ("BJMPC Pilotes " + (Get-Date -Format 'yyyy-MM-dd HH:mm')) -RestorePointType MODIFY_SETTINGS -ErrorAction Stop -WarningAction SilentlyContinue
         $last = Get-ComputerRestorePoint -ErrorAction Stop | Sort-Object CreationTime -Descending | Select-Object -First 1
         if ($last -and ((Get-Date) - [Management.ManagementDateTimeConverter]::ToDateTime($last.CreationTime)).TotalMinutes -le 10) { Write-Log 'Point de restauration créé.' 'OK'; return $true }
         Write-Log 'Windows n''a pas créé de point de restauration (aucun point récent trouvé après la demande).' 'WARN'
         return $false
     } catch { Write-Log ("Point de restauration non créé (protection du système désactivée ?) : " + $_.Exception.Message) 'WARN'; return $false }
+    finally {
+        if ($null -eq $old) { Remove-ItemProperty $k -Name SystemRestorePointCreationFrequency -ErrorAction SilentlyContinue }
+        else { Set-ItemProperty $k -Name SystemRestorePointCreationFrequency -Value $old -Type DWord -ErrorAction SilentlyContinue }
+    }
 }
 
 function ConvertTo-SafeVersion {

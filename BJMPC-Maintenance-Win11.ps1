@@ -112,15 +112,24 @@ function Get-SystemSummary {
 }
 
 function New-RestorePoint {
+    # $Script:RestorePointOk = $true seulement si un point de moins de 10 minutes existe vraiment après l'appel : Windows peut refuser sans
+    # erreur (un point par 24 h par défaut, protection du système coupée). La limite de fréquence est remise ensuite.
     Write-Log "Création d'un point de restauration..."
+    $k = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore'
+    $Script:RestorePointOk = $false
+    $old = $null; try { $old = (Get-ItemProperty -Path $k -Name SystemRestorePointCreationFrequency -ErrorAction Stop).SystemRestorePointCreationFrequency } catch {}
     try {
         Enable-ComputerRestore -Drive "$env:SystemDrive\" -ErrorAction SilentlyContinue
-        # Lève la limite de 1 point / 24h
-        Set-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore' -Name SystemRestorePointCreationFrequency -Value 0 -Type DWord -ErrorAction SilentlyContinue
-        Checkpoint-Computer -Description "BJMPC Maintenance $(Get-Date -Format 'yyyy-MM-dd HH:mm')" -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
-        Write-Log "Point de restauration créé" 'OK'
+        Set-ItemProperty $k -Name SystemRestorePointCreationFrequency -Value 0 -Type DWord -ErrorAction SilentlyContinue
+        Checkpoint-Computer -Description "BJMPC Maintenance $(Get-Date -Format 'yyyy-MM-dd HH:mm')" -RestorePointType MODIFY_SETTINGS -ErrorAction Stop -WarningAction SilentlyContinue
+        $last = Get-ComputerRestorePoint -ErrorAction Stop | Sort-Object CreationTime -Descending | Select-Object -First 1
+        if ($last -and ((Get-Date) - [Management.ManagementDateTimeConverter]::ToDateTime($last.CreationTime)).TotalMinutes -le 10) { Write-Log "Point de restauration créé" 'OK'; $Script:RestorePointOk = $true; return }
+        Write-Log "Windows n'a pas créé de point de restauration (aucun point récent trouvé)." 'WARN'
     } catch {
         Write-Log "Point de restauration impossible : $($_.Exception.Message)" 'WARN'
+    } finally {
+        if ($null -eq $old) { Remove-ItemProperty $k -Name SystemRestorePointCreationFrequency -ErrorAction SilentlyContinue }
+        else { Set-ItemProperty $k -Name SystemRestorePointCreationFrequency -Value $old -Type DWord -ErrorAction SilentlyContinue }
     }
 }
 

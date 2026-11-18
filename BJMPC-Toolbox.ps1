@@ -1092,7 +1092,7 @@ try { $crit = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Level = 1; 
 Chk 'Aucun plantage ni arrêt brutal depuis 7 jours' ($crit -eq 0) ("{0} événement(s) critique(s) : Réparer > Réparation automatique" -f $crit)
 # --- Réglages recommandés
 $o = & fsutil.exe behavior query DisableDeleteNotify 2>$null | Out-String
-Chk 'TRIM actif sur le SSD' ($o -match 'NTFS DisableDeleteNotify\s*=\s*0') 'Optimiser > Disque'
+Chk 'TRIM actif sur le SSD' ($o -match 'NTFS DisableDeleteNotify\s*=\s*0') 'Optimiser > Stockage'
 Chk 'Capture de jeu en arrière-plan coupée' ((Get-RegVal 'HKCU:\System\GameConfigStore' 'GameDVR_Enabled') -eq 0) 'Bouton « Réglages recommandés »'
 $dt = Get-Service -Name DiagTrack -ErrorAction SilentlyContinue
 Chk 'Télémétrie réduite au minimum' ($dt -and $dt.StartType -eq 'Disabled') 'Bouton « Réglages recommandés »'
@@ -1527,20 +1527,87 @@ function Build-Network {
 # ---------------------------------------------------------------- Système
 $Script:HibRadios = @()
 $Script:SysChecks = @{}
+
+function Show-StorageReport {
+    param($Res)
+    $Script:StorPanel.Children.Clear()
+    if (-not $Res) { [void]$Script:StorPanel.Children.Add((New-Text 'Analyse impossible.' 13 '#FF8A80' 'Normal' -Wrap)); return }
+    foreach ($d in @($Res.Disks)) {
+        $ok = ([string]$d.Health -eq 'Healthy')
+        $extra = @()
+        if ($null -ne $d.Temp) { $extra += ("{0} °C" -f $d.Temp) }
+        if ($null -ne $d.Wear) { $extra += ("usure {0} %" -f $d.Wear) }
+        $line = "{0}  {1} · {2} · {3} Go · santé {4}{5}" -f $(if ($ok) { '✔' } else { '✖' }), $d.Name, $d.Kind, $d.SizeGB, $(if ($ok) { 'bonne' } else { [string]$d.Health }), $(if ($extra.Count) { ' · ' + ($extra -join ' · ') } else { '' })
+        [void]$Script:StorPanel.Children.Add((New-Text $line 13 $(if ($ok) { '#C5C9D0' } else { '#FF8A80' }) 'Normal' -Wrap))
+    }
+    $vols = @($Res.Volumes | ForEach-Object { "{0}: {1} {2} Go ({3} % libre)" -f $_.Letter, $_.Fs, $_.SizeGB, $_.FreePct })
+    if ($vols.Count) { $t = New-Text ('Volumes : ' + ($vols -join ' · ')) 12 '#9298A3' 'Normal' -Wrap; $t.Margin = '0,6,0,0'; [void]$Script:StorPanel.Children.Add($t) }
+    $trim = $(if ($Res.Trim -eq $true) { 'actif' } elseif ($Res.Trim -eq $false) { 'COUPÉ' } else { 'inconnu' })
+    $task = $(if ($Res.Task -eq $true) { 'active' } elseif ($Res.Task -eq $false) { 'DÉSACTIVÉE' } else { 'inconnue' })
+    $t = New-Text ("TRIM : {0} · optimisation planifiée des lecteurs : {1}" -f $trim, $task) 12 '#9298A3' 'Normal' -Wrap; $t.Margin = '0,2,0,0'
+    [void]$Script:StorPanel.Children.Add($t)
+    if ($Res.Nvme) { Show-NvmeInfo $Res.Nvme }
+    $notes = @($Res.Notes)
+    if ($notes.Count -eq 0) { $t = New-Text '✔  Aucune anomalie détectée.' 13 '#7CE3A1' 'Normal' -Wrap; $t.Margin = '0,8,0,0'; [void]$Script:StorPanel.Children.Add($t) }
+    foreach ($n in $notes) { $t = New-Text ('⚠  ' + [string]$n) 13 '#F5B94A' 'Normal' -Wrap; $t.Margin = '0,6,0,0'; [void]$Script:StorPanel.Children.Add($t) }
+}
+
+function Show-NvmeInfo {
+    param($S)
+    if (-not $S) { $Script:NvmeNote.Text = 'Vérification impossible.'; return }
+    $drv = $(if ($S.NativeRunning) { 'pilote natif nvmedisk ACTIF' } else { 'pilote standard (stornvme)' })
+    $ctl = @($S.Controllers | ForEach-Object { "{0} [{1}]" -f $_.Name, $_.Service }) -join ' · '
+    $txt = "État : {0}. Contrôleurs : {1}." -f $drv, $(if ($ctl) { $ctl } else { 'aucun NVMe' })
+    if ($S.Overrides.Count -and -not $S.NativeRunning) { $txt += ' Activation posée mais pas en service : redémarrez, sinon Windows l''a bloquée ; revenez alors au pilote standard.' }
+    if (-not $S.Eligible -and -not $S.NativeRunning) { $txt += ' Non proposé sur ce PC : ' + [string]$S.Reason }
+    if ($S.BitLocker) { $txt += ' BitLocker actif : il sera suspendu pour deux redémarrages.' }
+    $Script:NvmeNote.Text = $txt
+}
+
 function Build-System {
-    $p = New-Page 'sys' 'Disque' 'Le SSD : TRIM vérifié et rétabli s''il a été coupé, ReTrim à la demande. Windows 11 gère seul le reste (SysMain, défragmentation) : la Toolbox n''y touche pas.'
-    $c = New-Card 'SSD' 'Vérifie que le TRIM est actif (et le rétablit s''il a été coupé).'
-    $Script:SysChecks.Retrim = New-Check 'Lancer un ReTrim immédiat des volumes SSD' $true
+    $p = New-Page 'sys' 'Stockage' 'SSD NVMe, SSD SATA, disques durs et USB. Lecture d''abord, puis réglages au choix : chacun mémorise sa valeur d''origine et s''annule depuis cette page ou le Journal.'
+
+    $a = New-Card 'Vos disques' 'Type, santé, température, usure, TRIM, optimisation planifiée et pilote NVMe. Lecture seule.'
+    $ab = New-Btn 'Analyser' (New-Spec 'opt' 'Get-StorageReport' 'Analyse du stockage' @{} '' { param($r) Show-StorageReport $r }) -Primary
+    $ab.HorizontalAlignment = 'Left'; $ab.Margin = '0,10,0,6'
+    [void]$a.Body.Children.Add($ab)
+    $Script:StorPanel = New-Object Windows.Controls.StackPanel
+    [void]$a.Body.Children.Add($Script:StorPanel)
+    [void]$p.Children.Add($a.Card)
+
+    $c = New-Card 'Entretien' 'Rétablit le TRIM s''il a été coupé (NTFS et ReFS) et réactive l''optimisation planifiée de Windows si elle a été désactivée. Rien d''autre n''est modifié.'
+    $Script:SysChecks.Retrim = New-Check 'Optimiser maintenant chaque lecteur interne avec la bonne méthode (TRIM pour un SSD, défragmentation pour un disque dur, jamais l''inverse)' $true
     [void]$c.Body.Children.Add($Script:SysChecks.Retrim)
-    $spec = New-Spec 'opt' 'Optimize-Storage' 'SSD' @{} '' $Script:AfterChange
-    $spec.AutoFn = { @{ 'ReTrim' = $(if ($Script:SysChecks.Retrim.IsChecked) { 'yes' } else { 'no' }); '^\s*Choix' = '3' } }
-    $b = New-Btn 'Appliquer' $spec -Primary
+    $spec = New-Spec 'opt' 'Invoke-StorageMaintenance' 'Entretien du stockage' @{} '' $Script:AfterChange
+    $spec.CodeFn = { 'Invoke-StorageMaintenance' + $(if ($Script:SysChecks.Retrim.IsChecked) { ' -OptimizeNow' } else { '' }) }
+    $b = New-Btn 'Lancer l''entretien' $spec -Primary
     $b.HorizontalAlignment = 'Left'; $b.Margin = '0,14,0,0'
     [void]$c.Body.Children.Add($b)
     [void]$p.Children.Add($c.Card)
-    $n = New-Text 'Les anciennes cartes « Services inutiles » ont été retirées : désactiver des services ne rend pas Windows 11 plus rapide. Pour remettre par défaut des services modifiés par une ancienne version : Réparer > Registre.' 12.5 '#9298A3' 'Normal' -Wrap
-    $n.Margin = '0,4,0,0'
-    [void]$p.Children.Add($n)
+
+    $w = New-Card 'Économies d''énergie du stockage' 'Sur secteur seulement, dans le mode d''alimentation actif : la batterie d''un portable n''est pas touchée. Utile contre les déconnexions USB, les micro-coupures et les temps de réveil des disques. Consommation un peu plus élevée en contrepartie.' 'Facultatif' 'n'
+    Add-Row $w.Body 'USB' 'Plus de mise en veille des ports USB ni de la liaison USB 3 : corrige clés, disques et périphériques qui se déconnectent.' '' 'n' @((New-Btn 'Appliquer' (New-Spec 'opt' 'Set-StoragePower -Kind usb' 'Stockage : USB sans mise en veille' @{} '' $Script:AfterChange)))
+    Add-Row $w.Body 'NVMe et PCI Express' 'Liaison PCI Express toujours active (ASPM coupé) : supprime les micro-latences de réveil des SSD NVMe.' '' 'n' @((New-Btn 'Appliquer' (New-Spec 'opt' 'Set-StoragePower -Kind pcie' 'Stockage : liaison PCI Express active' @{} '' $Script:AfterChange)))
+    Add-Row $w.Body 'SSD et disques SATA' 'Liaison SATA toujours active (HIPM/DIPM coupés) : supprime les saccades au réveil du lien. Sans effet s''il n''y a pas de disque SATA.' '' 'n' @((New-Btn 'Appliquer' (New-Spec 'opt' 'Set-StoragePower -Kind sata' 'Stockage : liaison SATA active' @{} '' $Script:AfterChange)))
+    Add-Row $w.Body 'Disques durs' 'Les disques à plateaux ne s''arrêtent plus après inactivité : plus d''attente de redémarrage du disque. Sans effet s''il n''y a pas de disque dur.' '' 'n' @((New-Btn 'Appliquer' (New-Spec 'opt' 'Set-StoragePower -Kind hdd' 'Stockage : disques durs toujours prêts' @{} '' $Script:AfterChange)))
+    Add-Row $w.Body 'Revenir aux valeurs d''origine' 'Annule tous les réglages de cette page (alimentation, TRIM ReFS, optimisation planifiée).' '' 'n' @((New-Btn 'Revenir' (New-Spec 'opt' 'Restore-StorageSettings' 'Stockage : valeurs d''origine' @{} '' $Script:AfterChange)))
+    [void]$p.Children.Add($w.Card)
+
+    $n = New-Card 'Pilote NVMe natif de Windows (nvmedisk)' 'Microsoft l''a conçu pour Windows Server 2025 : jusqu''à 10-15 % de débit en plus sur certains SSD. Sur Windows 11 il n''est PAS pris en charge : Microsoft le bloque déjà dans les versions de test, Samsung Magician, WD Dashboard et des logiciels de sauvegarde peuvent ne plus voir le disque, et l''identifiant du disque change. Proposé seulement si tous les SSD NVMe utilisent le pilote Microsoft standard ; point de restauration obligatoire, BitLocker suspendu automatiquement.' 'Expert' 'w'
+    $Script:NvmeNote = New-Text 'Cliquez sur « Vérifier » pour savoir si ce PC est éligible.' 13 '#9298A3' 'Normal' -Wrap
+    $Script:NvmeNote.Margin = '0,8,0,4'
+    [void]$n.Body.Children.Add($Script:NvmeNote)
+    $nb = New-Object Windows.Controls.WrapPanel
+    $nb.Margin = '-8,4,0,0'
+    [void]$nb.Children.Add((New-Btn 'Vérifier' (New-Spec 'opt' 'Show-NvmeState' 'Pilote NVMe : vérification' @{} '' { param($r) Show-NvmeInfo $r })))
+    [void]$nb.Children.Add((New-Btn 'Activer le pilote natif' (New-Spec 'opt' 'Enable-NativeNvme' 'Pilote NVMe natif' @{} 'Activer le pilote NVMe natif (expérimental) ? Un point de restauration sera créé d''abord ; en cas de problème au démarrage : démarrage avancé > Restauration du système. Les outils Samsung Magician, WD Dashboard et certains logiciels de sauvegarde peuvent ne plus reconnaître le disque.' $Script:AfterChange)))
+    [void]$nb.Children.Add((New-Btn 'Revenir au pilote standard' (New-Spec 'opt' 'Disable-NativeNvme' 'Pilote NVMe standard' @{} '' $Script:AfterChange)))
+    [void]$n.Body.Children.Add($nb)
+    [void]$p.Children.Add($n.Card)
+
+    $t = New-Text 'Volontairement absent : cache d''écriture forcé, vidage du cache désactivé, mode « meilleures performances » des clés USB et noms courts 8.3 : ces réglages font perdre des données au moindre débranchement ou coupure, ou cassent d''anciens logiciels.' 12.5 '#9298A3' 'Normal' -Wrap
+    $t.Margin = '0,4,0,0'
+    [void]$p.Children.Add($t)
 }
 
 function Build-Boot {
@@ -3875,6 +3942,10 @@ $Script:PlainMap = @(
     @{ K = '^Restart-ExplorerShell'; C = 'repar'; T = 'Nous avons relancé l''affichage de Windows, c''est-à-dire la barre du bas et le bureau.' }
     @{ K = '^Restart-AudioServices|¦Services audio'; C = 'repar'; T = 'Nous avons relancé le son de votre ordinateur.' }
     @{ K = '^Get-PrinterDiagnostic'; C = 'skip'; T = '' }
+    @{ K = '^Get-StorageReport|^Show-NvmeState'; C = 'skip'; T = '' }
+    @{ K = '^Restore-StorageSettings|^Disable-NativeNvme'; C = 'vitesse'; T = 'Nous avons remis les réglages d''origine du stockage de votre ordinateur.' }
+    @{ K = '^Enable-NativeNvme'; C = 'vitesse'; T = 'Nous avons activé le pilote Windows le plus récent pour votre disque NVMe, après avoir créé un point de restauration.' }
+    @{ K = '^Invoke-StorageMaintenance|^Set-StoragePower'; C = 'vitesse'; T = 'Nous avons entretenu vos disques (SSD, disque dur, USB) pour qu''ils restent rapides et stables.' }
     @{ K = '^Get-DiscAutoplayState'; C = 'skip'; T = '' }
     @{ K = '^Get-UndoHistory'; C = 'skip'; T = '' }
     @{ K = '^Get-ToolboxUpdate|^Install-ToolboxUpdate|¦Mise à jour de la Toolbox'; C = 'skip'; T = '' }
@@ -4978,7 +5049,7 @@ try {
     # Sections ; chaque onglet est une page (clé de page, libellé).
     Add-Section 'home' 'Accueil' ([string][char]0xE80F) @(@('dash', 'Vue d''ensemble'), @('summary', 'Résumé pour le client'))
     Add-Section 'repair' 'Réparer' ([string][char]0xE90F) @(@('events', 'Réparation automatique'), @('maint', 'Réparer Windows'), @('care', 'Nettoyage et dépannage'), @('registry', 'Registre'), @('tools', 'Diagnostics'))
-    Add-Section 'optim' 'Optimiser' ([string][char]0xE945) @(@('gaming', 'Jeux et alimentation'), @('net', 'Réseau et DNS'), @('sys', 'Disque'))
+    Add-Section 'optim' 'Optimiser' ([string][char]0xE945) @(@('gaming', 'Jeux et alimentation'), @('net', 'Réseau et DNS'), @('sys', 'Stockage'))
     Add-Section 'perso' 'Personnalisation et divers' ([string][char]0xE771) @(@('boot', 'Démarrage'), @('photos', 'Doublons de photos'), @('display', 'Affichage et OLED'), @('priv', 'Confidentialité'), @('ui', 'Interface et Explorateur'), @('winset', 'Mises à jour et sécurité'))
     Add-Section 'soft' 'Logiciels et pilotes' ([string][char]0xE71D) @(@('apps', 'Applications'), @('drivers', 'Pilotes'))
     Add-Section 'backup' 'Fichiers et restauration' ([string][char]0xE81C) @(@('files', 'Sauvegarde des fichiers'), @('history', 'Historique'), @('journal', 'Journal et points de restauration'))
