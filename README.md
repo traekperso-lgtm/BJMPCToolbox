@@ -76,6 +76,13 @@ Le détail, version par version, est dans [`LISEZMOI.txt`](LISEZMOI.txt).
 
 ### Lancer l'outil
 
+**Avec l'installateur :** dans les [Releases](https://github.com/traekperso-lgtm/BJMPCToolbox/releases), lancez
+`BJMPC-Toolbox-<version>-Setup.exe`, puis « BJMPC Toolbox » dans le menu Démarrer. L'installateur et les scripts sont
+signés « BJMPC Informatique » : pour que Windows reconnaisse l'éditeur, lancez d'abord une fois
+`Installer-certificat-BJMPC.cmd`, fourni à côté (voir `certificat/LISEZMOI-certificat.txt`).
+
+**Sans installation :**
+
 1. Téléchargez tout le dossier (les fichiers vont ensemble, ne les séparez pas).
 2. Double-clic sur **`BJMPC-Toolbox.bat`** : la demande d'administrateur s'affiche, puis la fenêtre s'ouvre.
 3. Facultatif : `Verif.bat` lance un **autotest en lecture seule** (construit chaque page, vérifie chaque bouton) ; `Apercu.bat` montre l'aperçu du résumé client.

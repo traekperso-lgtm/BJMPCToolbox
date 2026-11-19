@@ -1,0 +1,27 @@
+﻿BJMPC Informatique - certificat de signature
+=============================================
+
+Les programmes BJMPC (BJMPC Mail, BJMPC Player, BJMPC Toolbox) sont signés avec le certificat
+« BJMPC Informatique ». Ce certificat n'est pas acheté auprès d'une autorité reconnue par Microsoft :
+Windows ne le connaît donc pas tant qu'on ne l'a pas installé sur le PC.
+
+CHEZ LE CLIENT (une fois par PC)
+  1. Mettre dans un même dossier : Installer-certificat-BJMPC.cmd, Installer-certificat-BJMPC.ps1
+     et les installateurs BJMPC à installer.
+  2. Double-cliquer sur Installer-certificat-BJMPC.cmd, accepter la demande administrateur.
+  3. Lancer les installateurs : « Éditeur vérifié : BJMPC Informatique », plus d'écran SmartScreen.
+
+  Pour retirer le certificat : Installer-certificat-BJMPC.cmd /retirer
+
+VÉRIFIER QUE C'EST LE BON CERTIFICAT
+  Empreinte SHA1 : 537606BC75F6C55A27F95050B50188B2F997E779
+  (Clic droit sur un installateur > Propriétés > Signatures numériques > Détails > Afficher le certificat > Détails.)
+
+SÉCURITÉ
+  - Le script vérifie l'empreinte du certificat avant de l'installer, et ne débloque que les fichiers
+    portant une signature BJMPC Informatique valide.
+  - La clé privée du certificat n'est PAS dans ce dossier : elle reste dans les secrets GitHub et chez
+    BJMPC Informatique. Quiconque la posséderait pourrait signer des programmes reconnus par les PC
+    où le certificat est installé : elle ne doit jamais être partagée.
+  - Sans ce certificat, les installateurs fonctionnent quand même : SmartScreen demande seulement
+    « Informations complémentaires > Exécuter quand même ».

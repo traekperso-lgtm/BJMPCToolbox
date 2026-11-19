@@ -49,3 +49,89 @@ jobs:
             Write-Output ("::notice::Autotest interface : {0} OK, {1} ECHEC" -f $ok, $ko.Count)
             foreach ($x in $ko) { Write-Output ('::warning::' + ($x -replace '[\r\n]', ' ')) }
           } else { Write-Output '::warning::Autotest : aucun résultat écrit' }
+
+  installateur:
+    needs: windows
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Vérification des scripts du kit
+        shell: pwsh
+        run: |
+          foreach ($f in Get-ChildItem -Recurse -Include *.ps1 -Path certificat, .github/scripts) {
+            $e = $null; [void][Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$e)
+            if ($e) { $e | ForEach-Object { Write-Output "::error file=$($f.Name)::$($_.Message)" }; exit 1 }
+          }
+
+      - name: Version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = [regex]::Match((Get-Content BJMPC-Toolbox.ps1 -Raw), "\`$Script:AppVersion\s*=\s*'([^']+)'").Groups[1].Value
+          if (-not $v) { throw 'version introuvable' }
+          $exists = git ls-remote --tags origin "refs/tags/v$v"
+          "version=$v" >> $env:GITHUB_OUTPUT
+          "new=$(if ($exists) { 'false' } else { 'true' })" >> $env:GITHUB_OUTPUT
+          Write-Host "Version $v - nouvelle : $(-not $exists)"
+
+      - name: Copie et signature des scripts
+        id: sign
+        shell: pwsh
+        env:
+          BJMPC_CERT_PFX: ${{ secrets.BJMPC_CERT_PFX }}
+        run: |
+          New-Item -ItemType Directory staging | Out-Null
+          Copy-Item BJMPC-*.ps1, BJMPC-Toolbox.bat, LISEZMOI.txt, LICENSE.md, README.md staging/
+          ./.github/scripts/signer.ps1 -Preparer -Chemins staging/*.ps1
+
+      - name: Installateur (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup --no-progress -y | Out-Null }
+          if (-not (Test-Path $iscc)) { throw 'Inno Setup introuvable' }
+          $a = @("/DAppVersion=${{ steps.ver.outputs.version }}", '/DSourceDir=..\staging')
+          if ('${{ steps.sign.outputs.signe }}' -eq 'true') {
+            $a += '/DSIGN'
+            $a += '/Sbjmpc=$q' + $env:SIGNTOOL + '$q sign /f $q' + $env:BJMPC_PFX_PATH + '$q /p BJMPC-Informatique /fd sha256 /tr http://timestamp.digicert.com /td sha256 /d $qBJMPC Toolbox$q $f'
+          }
+          & $iscc @a installer/BJMPC-Toolbox.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC : code $LASTEXITCODE" }
+          Copy-Item certificat/* installer-out/
+          Compress-Archive -Path staging/* -DestinationPath "installer-out/BJMPC-Toolbox-v${{ steps.ver.outputs.version }}-portable.zip"
+          Get-ChildItem installer-out | Format-Table Name, Length
+
+      - name: Vérification des signatures
+        if: steps.sign.outputs.signe == 'true'
+        shell: pwsh
+        run: |
+          foreach ($f in @(Get-ChildItem staging -Filter *.ps1) + @(Get-ChildItem installer-out -Filter *.exe)) {
+            $s = Get-AuthenticodeSignature $f.FullName
+            Write-Output ("{0} : {1} ({2})" -f $f.Name, $s.SignerCertificate.Subject, $s.Status)
+            if (-not $s.SignerCertificate) { Write-Output "::error::$($f.Name) n'est pas signé"; exit 1 }
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BJMPC-Toolbox-Setup
+          path: installer-out
+
+      - name: Release GitHub
+        if: github.ref == 'refs/heads/main' && steps.ver.outputs.new == 'true' && steps.sign.outputs.signe == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: BJMPC Toolbox v${{ steps.ver.outputs.version }}
+          files: installer-out/*
+          body: |
+            Boîte à outils de maintenance, réparation et optimisation de Windows 11 - BJMPC Informatique.
+
+            **Installation** : lancez `BJMPC-Toolbox-${{ steps.ver.outputs.version }}-Setup.exe` (droits administrateur),
+            puis « BJMPC Toolbox » dans le menu Démarrer. Version portable : le zip, puis `BJMPC-Toolbox.bat`.
+
+            Signé « BJMPC Informatique » : pour que Windows reconnaisse l'éditeur, lancez d'abord une fois
+            `Installer-certificat-BJMPC.cmd` (voir `LISEZMOI-certificat.txt`).

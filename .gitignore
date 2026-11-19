@@ -7,3 +7,5 @@ Apercu_sortie.txt
 
 # Script personnel, hors de la Toolbox publiée
 Diagnostic-Windows.ps1
+installer-out/
+staging/
