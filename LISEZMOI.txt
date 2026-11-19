@@ -1,5 +1,13 @@
-﻿BJMPC Toolbox 2.6 - interface graphique (Windows 11)
-=====================================================
+﻿BJMPC Toolbox 2.6.1 - interface graphique (Windows 11)
+=======================================================
+
+NOUVEAUTES 2.6.1
+  - Pilote NVMe natif (Optimiser > Stockage, carte Expert) : passer de la pile SCSI (stornvme + disk.sys) a
+    nvmedisk.sys. Microsoft a bloque en mars 2026 les 4 strategies d'origine ; la Toolbox ecrit en plus l'activation
+    dans le magasin de fonctionnalites de demarrage (FeatureManagement\Overrides\8, identifiants 60786016 et
+    48433719, la methode de ViVeTool, sans outil externe). Le demarrage suivant est marque "a valider" : s'il echoue,
+    Windows revient seul a la configuration precedente. "Verifier" affiche le nombre de disques NVMe encore sur
+    disk.sys. "Revenir au pilote standard" retire uniquement ce que la Toolbox a pose.
 
 NOUVEAUTES 2.6
   - Optimiser > Stockage (remplace "Disque") :

@@ -741,19 +741,71 @@ function Restore-StorageSettings {
     if ($n) { Write-Log "$n réglage(s) de stockage remis à l'origine." 'OK' } else { Write-Log 'Aucun réglage de stockage à annuler.' 'OK' }
 }
 
+# Deux méthodes, posées ensemble :
+#  1) les 4 valeurs de stratégie d'origine (Windows Server 2025 et premières versions de Windows 11 24H2/25H2) ;
+#  2) le magasin de fonctionnalités de démarrage (comme ViVeTool /enable : priorité « User », identifiants 60786016 et
+#     48433719), qui fonctionne encore après le blocage de mars 2026. Windows garde une configuration « dernière bonne
+#     connue » : si le démarrage échoue après la bascule, il revient de lui-même à l'état précédent.
+$Script:NvmeFeatureIds = @(60786016, 48433719)
+$Script:NvmeFeatureRoot = 'HKLM:\SYSTEM\CurrentControlSet\Control\FeatureManagement\Overrides\8'
+
+function Initialize-FeatureStoreApi {
+    if ('BJ.FeatureStore' -as [type]) { return $true }
+    try {
+        Add-Type -ErrorAction Stop -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace BJ {
+    public static class FeatureStore {
+        [DllImport("ntdll.dll")] static extern int RtlGetSystemBootStatus(int item, out int data, int len, IntPtr retLen);
+        [DllImport("ntdll.dll")] static extern int RtlSetSystemBootStatus(int item, ref int data, int len, IntPtr retLen);
+        [DllImport("ntdll.dll", CharSet = CharSet.Unicode)] static extern int RtlCreateBootStatusDataFile(string path);
+        const int BsdFeatureConfigurationState = 17;
+        static uint SwapBytes(uint x) { x = (x >> 16) | (x << 16); return ((x & 0xFF00FF00) >> 8) | ((x & 0x00FF00FF) << 8); }
+        static uint RotL1(uint v) { return (v << 1) | (v >> 31); }
+        static uint RotR1(uint v) { return (v >> 1) | (v << 31); }
+        // Même transformation que Windows (fcon.dll) et ViVeTool pour nommer les clés du magasin.
+        public static uint Obfuscate(uint id) { return RotL1(SwapBytes(id ^ 0x74161A4E) ^ 0x8FB23D4F) ^ 0x833EA8FF; }
+        public static uint Deobfuscate(uint id) { return SwapBytes(RotR1(id ^ 0x833EA8FF) ^ 0x8FB23D4F) ^ 0x74161A4E; }
+        // 1 = BootPending : la prochaine configuration de démarrage est à valider (retour « dernière bonne connue » si échec).
+        public static int MarkBootPending() {
+            int cur; int r = RtlGetSystemBootStatus(BsdFeatureConfigurationState, out cur, 4, IntPtr.Zero);
+            if (r != 0 && (uint)r == 0xC0000034) { r = RtlCreateBootStatusDataFile(null); if (r != 0) return r; cur = 0; }
+            if (cur == 1) return 0;
+            int v = 1; return RtlSetSystemBootStatus(BsdFeatureConfigurationState, ref v, 4, IntPtr.Zero);
+        }
+    }
+}
+'@
+        return $true
+    } catch { Write-Log "Accès au magasin de fonctionnalités impossible : $($_.Exception.Message)" 'WARN'; return $false }
+}
+
+function Get-NvmeFeatureKeys {
+    # Chemins des clés du magasin de démarrage pour les identifiants du pilote NVMe natif.
+    if (-not (Initialize-FeatureStoreApi)) { return @() }
+    return @($Script:NvmeFeatureIds | ForEach-Object { Join-Path $Script:NvmeFeatureRoot ([string][BJ.FeatureStore]::Obfuscate([uint32]$_)) })
+}
+
 function Get-NvmeState {
     # Lecture seule. Éligible seulement si : Windows 11 24H2 ou plus récent, pilote nvmedisk.sys présent, au moins un SSD
     # NVMe, et TOUS les contrôleurs NVMe sur le pilote Microsoft standard (stornvme). Un pilote de fabricant (Samsung, Intel
     # RST/VMD, RAID…) exclut la bascule : c'est le cas où un PC peut ne plus démarrer.
-    $s = [ordered]@{ Build = 0; HasDriver = $false; Controllers = @(); NativeRunning = $false; Overrides = @(); Eligible = $false; Reason = ''; BitLocker = $false }
+    $s = [ordered]@{ Build = 0; Ubr = 0; HasDriver = $false; Controllers = @(); NativeRunning = $false; NativeDisks = 0; ScsiNvmeDisks = 0
+        Overrides = @(); FeatureSet = $false; Eligible = $false; Reason = ''; BitLocker = $false }
     try { $s.Build = [int](Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).BuildNumber } catch {}
+    $s.Ubr = [int](Get-RegValue 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' 'UBR')
     $s.HasDriver = Test-Path -LiteralPath (Join-Path $env:SystemRoot 'System32\drivers\nvmedisk.sys')
-    try {
-        $s.Controllers = @(Get-CimInstance Win32_PnPEntity -ErrorAction Stop | Where-Object { @($_.CompatibleID) -match 'CC_010802' } |
-            ForEach-Object { [pscustomobject]@{ Name = [string]$_.Name; Service = [string]$_.Service } })
-    } catch {}
+    $pnp = @()
+    try { $pnp = @(Get-CimInstance Win32_PnPEntity -ErrorAction Stop) } catch {}
+    $s.Controllers = @($pnp | Where-Object { @($_.CompatibleID) -match 'CC_010802' } | ForEach-Object { [pscustomobject]@{ Name = [string]$_.Name; Service = [string]$_.Service } })
+    # Disques : pile native (service nvmedisk) ou pile SCSI (service disk) posée sur un SSD NVMe.
+    $s.NativeDisks = @($pnp | Where-Object { [string]$_.Service -eq 'nvmedisk' }).Count
+    $s.ScsiNvmeDisks = @($pnp | Where-Object { [string]$_.Service -eq 'disk' -and [string]$_.PNPDeviceID -match '^SCSI\\DISK&VEN_NVME|NVME' }).Count
     try { $nd = Get-CimInstance Win32_SystemDriver -Filter "Name='nvmedisk'" -ErrorAction Stop; $s.NativeRunning = ([string]$nd.State -eq 'Running') } catch {}
     foreach ($id in $Script:NvmeOverrideIds) { if ($null -ne (Get-RegValue $Script:NvmeOverrideKey $id)) { $s.Overrides += $id } }
+    $fk = @(Get-NvmeFeatureKeys)
+    $s.FeatureSet = ($fk.Count -gt 0 -and @($fk | Where-Object { (Get-RegValue $_ 'EnabledState') -eq 2 }).Count -eq $fk.Count)
     try { $bl = Get-BitLockerVolume -MountPoint $env:SystemDrive -ErrorAction Stop; $s.BitLocker = ([string]$bl.ProtectionStatus -eq 'On') } catch {}
     $vendor = @($s.Controllers | Where-Object { $_.Service -and $_.Service -ne 'stornvme' -and $_.Service -ne 'nvmedisk' })
     if ($s.Build -lt 26100) { $s.Reason = 'Windows 11 24H2 ou plus récent requis.' }
@@ -767,42 +819,68 @@ function Get-NvmeState {
 function Show-NvmeState {
     $s = Get-NvmeState
     Set-OptResult $s
-    Write-Log ("Windows build {0} · nvmedisk.sys {1} · pilote natif {2} · activation posée : {3}" -f $s.Build, $(if ($s.HasDriver) { 'présent' } else { 'absent' }), $(if ($s.NativeRunning) { 'ACTIF' } else { 'inactif' }), $(if ($s.Overrides.Count) { 'oui' } else { 'non' })) 'OK'
+    Write-Log ("Windows {0}.{1} · nvmedisk.sys {2} · pile native {3} ({4} disque(s)) · disques NVMe sur la pile SCSI (disk.sys) : {5}" -f $s.Build, $s.Ubr, $(if ($s.HasDriver) { 'présent' } else { 'absent' }), $(if ($s.NativeRunning) { 'ACTIVE' } else { 'inactive' }), $s.NativeDisks, $s.ScsiNvmeDisks) 'OK'
+    Write-Log ("Activation posée : stratégies {0} · magasin de démarrage {1}" -f $(if ($s.Overrides.Count) { 'oui' } else { 'non' }), $(if ($s.FeatureSet) { 'oui' } else { 'non' }))
     foreach ($c in $s.Controllers) { Write-Log ("Contrôleur : {0} (pilote {1})" -f $c.Name, $c.Service) }
     if (-not $s.Eligible) { Write-Log $s.Reason 'WARN' }
-    if ($s.Overrides.Count -and -not $s.NativeRunning) { Write-Log 'Activation posée mais pilote natif inactif : redémarrez, ou Windows l''a bloquée sur cette version (dans ce cas, « Revenir au pilote standard »).' 'WARN' }
+    if (($s.Overrides.Count -or $s.FeatureSet) -and -not $s.NativeRunning) { Write-Log 'Activation posée mais pile native inactive : redémarrez. Si rien ne change après redémarrage, Windows a bloqué la bascule sur cette version : revenez au pilote standard.' 'WARN' }
 }
 
 function Enable-NativeNvme {
     # Expérimental, non pris en charge par Microsoft sur Windows 11. Garde-fous : éligibilité stricte, point de restauration
-    # obligatoire et vérifié, BitLocker suspendu pour deux redémarrages, valeurs d'origine mémorisées.
+    # obligatoire et vérifié, BitLocker suspendu pour deux redémarrages, valeurs d'origine mémorisées, retour automatique
+    # de Windows à la dernière configuration bonne connue si le démarrage échoue.
     $s = Get-NvmeState
     if (-not $s.Eligible) { Write-Log ("Bascule refusée : " + $s.Reason) 'WARN'; return }
-    if ($s.NativeRunning) { Write-Log 'Le pilote NVMe natif est déjà actif.' 'OK'; return }
+    if ($s.NativeRunning -and $s.ScsiNvmeDisks -eq 0) { Write-Log 'La pile NVMe native est déjà active (nvmedisk.sys), plus aucun disque NVMe sur disk.sys.' 'OK'; return }
+    if (-not (Initialize-FeatureStoreApi)) { Write-Log 'Bascule annulée : magasin de fonctionnalités inaccessible.' 'WARN'; return }
     New-RestorePoint
     if (-not $Script:RestorePointOk) { Write-Log 'Bascule annulée : aucun point de restauration n''a pu être créé.' 'WARN'; return }
     if ($s.BitLocker) {
         try { Suspend-BitLocker -MountPoint $env:SystemDrive -RebootCount 2 -ErrorAction Stop | Out-Null; Write-Log 'BitLocker suspendu pour 2 redémarrages (reprise automatique ensuite).' 'OK' }
         catch { Write-Log ("Bascule annulée : BitLocker n'a pas pu être suspendu (" + $_.Exception.Message + '). Sans cela, Windows pourrait demander la clé de récupération.') 'WARN'; return }
     }
+    # Méthode 1 : stratégies d'origine
     foreach ($id in $Script:NvmeOverrideIds) { Set-Reg $Script:NvmeOverrideKey $id 1 'DWord' }
+    # Méthode 2 : magasin de démarrage (une clé par identifiant, créée seulement si absente, sinon valeurs mémorisées)
+    foreach ($k in @(Get-NvmeFeatureKeys)) {
+        if (-not (Test-Path -LiteralPath $k)) { Add-Orig "regkey|$k" @{ Type = 'regkey'; Path = $k } }
+        foreach ($v in 'EnabledState', 'EnabledStateOptions', 'Variant', 'VariantPayload', 'VariantPayloadKind') {
+            Set-Reg $k $v $(if ($v -eq 'EnabledState') { 2 } else { 0 }) 'DWord'
+        }
+    }
+    $r = [BJ.FeatureStore]::MarkBootPending()
+    if ($r -eq 0) { Write-Log 'Démarrage suivant marqué « à valider » : en cas d''échec, Windows revient seul à la configuration précédente.' 'OK' }
+    else { Write-Log ("Marquage du démarrage à valider refusé (code 0x{0:X8}) : la bascule s'appliquera quand même au redémarrage." -f $r) 'WARN' }
     $Script:RebootNeeded = $true
-    Write-Log 'Activation posée. Redémarrez, puis « Vérifier » : le pilote natif doit apparaître ACTIF. Sinon, revenez au pilote standard.' 'OK'
+    Write-Log 'Activation posée. Redémarrez, puis « Vérifier » : la pile native doit être ACTIVE et plus aucun disque NVMe sur disk.sys. Dans le Gestionnaire de périphériques, le SSD passe sous « Disques de stockage » avec nvmedisk.sys.' 'OK'
 }
 
 function Disable-NativeNvme {
-    # Retire uniquement les quatre valeurs posées (jamais la clé Overrides entière, qui peut contenir d'autres réglages de Windows).
+    # Retire uniquement ce que la Toolbox a posé (jamais la clé Overrides entière, qui contient d'autres réglages de Windows).
     $s = Get-NvmeState
-    if ($s.Overrides.Count -eq 0) { Write-Log 'Aucune activation du pilote natif n''est posée : rien à retirer.' 'OK'; return }
+    $keys = @(Get-NvmeFeatureKeys)
+    if ($s.Overrides.Count -eq 0 -and -not @($keys | Where-Object { Test-Path -LiteralPath $_ }).Count) { Write-Log 'Aucune activation du pilote natif n''est posée : rien à retirer.' 'OK'; return }
     if ($s.BitLocker) { try { Suspend-BitLocker -MountPoint $env:SystemDrive -RebootCount 2 -ErrorAction Stop | Out-Null; Write-Log 'BitLocker suspendu pour 2 redémarrages.' 'OK' } catch { Write-Log "BitLocker : $($_.Exception.Message)" 'WARN' } }
     foreach ($id in $Script:NvmeOverrideIds) {
         $k = "reg|$($Script:NvmeOverrideKey)|$id"
         if ($Script:Orig.Contains($k)) { Restore-Record $Script:Orig[$k]; $Script:Orig.Remove($k) }
-        else { Remove-ItemProperty -Path $Script:NvmeOverrideKey -Name $id -ErrorAction SilentlyContinue; Write-Log "Valeur retirée : $id" 'OK' }
+        else { Remove-ItemProperty -Path $Script:NvmeOverrideKey -Name $id -ErrorAction SilentlyContinue }
+    }
+    foreach ($fk in $keys) {
+        foreach ($v in 'EnabledState', 'EnabledStateOptions', 'Variant', 'VariantPayload', 'VariantPayloadKind') {
+            $k = "reg|$fk|$v"
+            if ($Script:Orig.Contains($k)) { Restore-Record $Script:Orig[$k]; $Script:Orig.Remove($k) }
+        }
+        $kk = "regkey|$fk"
+        if ($Script:Orig.Contains($kk)) { Restore-Record $Script:Orig[$kk]; $Script:Orig.Remove($kk) }
+        elseif ((Get-RegValue $fk 'EnabledState') -eq 2) { Remove-Item -LiteralPath $fk -Recurse -Force -ErrorAction SilentlyContinue }
+        Write-Log "Magasin de démarrage : $(Split-Path $fk -Leaf) retiré" 'OK'
     }
     Save-Orig
+    try { [void][BJ.FeatureStore]::MarkBootPending() } catch {}
     $Script:RebootNeeded = $true
-    Write-Log 'Retour au pilote standard (stornvme) au prochain redémarrage.' 'OK'
+    Write-Log 'Retour à la pile standard (stornvme + disk.sys) au prochain redémarrage.' 'OK'
 }
 
 # Retiré en 2.0 : désactivation de services ("niveau sûr" et "niveau avancé"). Sur Windows 11 la plupart ne

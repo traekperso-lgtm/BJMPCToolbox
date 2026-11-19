@@ -15,7 +15,7 @@
 #>
 
 $ErrorActionPreference = 'Continue'
-$Script:AppVersion = '2.6'
+$Script:AppVersion = '2.6.1'
 $Script:Root       = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $Script:LogDir     = Join-Path $env:SystemDrive 'BJMPC-Logs'
 $Script:BackupDir  = Join-Path $Script:LogDir 'Backup'
@@ -1557,10 +1557,12 @@ function Show-StorageReport {
 function Show-NvmeInfo {
     param($S)
     if (-not $S) { $Script:NvmeNote.Text = 'Vérification impossible.'; return }
-    $drv = $(if ($S.NativeRunning) { 'pilote natif nvmedisk ACTIF' } else { 'pilote standard (stornvme)' })
+    $drv = $(if ($S.NativeRunning -and $S.ScsiNvmeDisks -eq 0) { 'pile native nvmedisk.sys ACTIVE' }
+        elseif ($S.NativeRunning) { "pile native active, mais $($S.ScsiNvmeDisks) disque(s) NVMe encore sur disk.sys" }
+        else { 'pile SCSI standard (stornvme + disk.sys)' })
     $ctl = @($S.Controllers | ForEach-Object { "{0} [{1}]" -f $_.Name, $_.Service }) -join ' · '
     $txt = "État : {0}. Contrôleurs : {1}." -f $drv, $(if ($ctl) { $ctl } else { 'aucun NVMe' })
-    if ($S.Overrides.Count -and -not $S.NativeRunning) { $txt += ' Activation posée mais pas en service : redémarrez, sinon Windows l''a bloquée ; revenez alors au pilote standard.' }
+    if (($S.Overrides.Count -or $S.FeatureSet) -and -not $S.NativeRunning) { $txt += ' Activation posée mais pas en service : redémarrez. Si rien ne change, Windows l''a bloquée sur cette version : revenez au pilote standard.' }
     if (-not $S.Eligible -and -not $S.NativeRunning) { $txt += ' Non proposé sur ce PC : ' + [string]$S.Reason }
     if ($S.BitLocker) { $txt += ' BitLocker actif : il sera suspendu pour deux redémarrages.' }
     $Script:NvmeNote.Text = $txt
@@ -1595,7 +1597,7 @@ function Build-System {
     Add-Row $w.Body 'Revenir aux valeurs d''origine' 'Annule tous les réglages de cette page (alimentation, TRIM ReFS, optimisation planifiée).' '' 'n' @((New-Btn 'Revenir' (New-Spec 'opt' 'Restore-StorageSettings' 'Stockage : valeurs d''origine' @{} '' $Script:AfterChange)))
     [void]$p.Children.Add($w.Card)
 
-    $n = New-Card 'Pilote NVMe natif de Windows (nvmedisk)' 'Microsoft l''a conçu pour Windows Server 2025 : jusqu''à 10-15 % de débit en plus sur certains SSD. Sur Windows 11 il n''est PAS pris en charge : Microsoft le bloque déjà dans les versions de test, Samsung Magician, WD Dashboard et des logiciels de sauvegarde peuvent ne plus voir le disque, et l''identifiant du disque change. Proposé seulement si tous les SSD NVMe utilisent le pilote Microsoft standard ; point de restauration obligatoire, BitLocker suspendu automatiquement.' 'Expert' 'w'
+    $n = New-Card 'Pilote NVMe natif de Windows (nvmedisk.sys)' 'Remplace la pile SCSI (stornvme + disk.sys) par le pilote NVMe natif conçu pour Windows Server 2025 : moins de latence, surtout en accès aléatoires. Deux méthodes posées ensemble : les stratégies d''origine et le magasin de fonctionnalités de démarrage (celle qui fonctionne encore depuis le blocage de mars 2026). Non pris en charge par Microsoft sur Windows 11 : Samsung Magician, WD Dashboard et des logiciels de sauvegarde peuvent ne plus voir le disque, et son identifiant change. Proposé seulement si tous les SSD NVMe utilisent le pilote Microsoft standard ; point de restauration obligatoire, BitLocker suspendu, retour automatique de Windows à la configuration précédente si le démarrage échoue.' 'Expert' 'w'
     $Script:NvmeNote = New-Text 'Cliquez sur « Vérifier » pour savoir si ce PC est éligible.' 13 '#9298A3' 'Normal' -Wrap
     $Script:NvmeNote.Margin = '0,8,0,4'
     [void]$n.Body.Children.Add($Script:NvmeNote)

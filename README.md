@@ -2,7 +2,7 @@
 
 🇫🇷 [Français](#-français) · 🇬🇧 [English](#-english)
 
-> **Version 2.6** · Windows 11 · Windows PowerShell 5.1 (WPF) · by **BJMPC Informatique**
+> **Version 2.6.1** · Windows 11 · Windows PowerShell 5.1 (WPF) · by **BJMPC Informatique**
 
 ---
 
@@ -21,6 +21,10 @@ Elle est écrite en Windows PowerShell 5.1 (interface WPF), sans installation : 
 - **Sauvegarde automatique des fichiers du client** vers un autre disque, à la demande ou planifiée.
 - **Optimisations dépassées retirées** : Nagle, priorités MMCSS, SysMain désactivé, services « inutiles », Win32PrioritySeparation, compression mémoire, désactivation de HVCI… Elles n'apportent rien de mesurable sur Windows 11 aujourd'hui, ou retirent une protection.
 - **Pilotes revus en profondeur** : entre deux familles de pilotes d'une même puce, c'est la date qui départage (comme le fait Windows), plus le seul numéro de version ; retour arrière réel après une mise à jour.
+
+### Nouveautés de la version 2.6.1
+
+- **Pilote NVMe natif** : en plus des stratégies d'origine (bloquées par Microsoft depuis mars 2026), la Toolbox écrit l'activation dans le magasin de fonctionnalités de démarrage de Windows (identifiants 60786016 et 48433719, comme ViVeTool, sans outil externe). Le démarrage suivant est marqué « à valider » : en cas d'échec, Windows revient seul à la configuration précédente. « Vérifier » indique combien de disques NVMe sont encore sur la pile SCSI (disk.sys).
 
 ### Nouveautés de la version 2.6
 
@@ -145,7 +149,7 @@ BJMPC Toolbox est distribuée sous la licence [PolyForm Noncommercial 1.0.0](LIC
 
 ### Retours
 
-Ouvrez une *issue* en précisant la version de Windows, la version de l'outil (2.6) et, si possible, le journal de `C:\BJMPC-Logs\`.
+Ouvrez une *issue* en précisant la version de Windows, la version de l'outil (2.6.1) et, si possible, le journal de `C:\BJMPC-Logs\`.
 
 ---
 
@@ -164,6 +168,10 @@ It is written in Windows PowerShell 5.1 (WPF UI) and needs no installation: laun
 - **Automatic backup of the customer's files** to another disk, on demand or scheduled.
 - **Outdated tweaks removed**: Nagle, MMCSS priorities, disabling SysMain, "useless" services, Win32PrioritySeparation, memory compression, disabling HVCI… They bring nothing measurable on today's Windows 11, or remove a protection.
 - **Drivers reviewed in depth**: between two driver families for the same chip, the date decides (as Windows does), no longer the version number alone; a real rollback after an update.
+
+### What's new in version 2.6.1
+
+- **Native NVMe driver**: besides the original policies (blocked by Microsoft since March 2026), the Toolbox writes the activation to Windows' boot feature store (IDs 60786016 and 48433719, like ViVeTool, no external tool). The next boot is marked "pending": if it fails, Windows rolls back on its own. "Check" shows how many NVMe drives are still on the SCSI stack (disk.sys).
 
 ### What's new in version 2.6
 

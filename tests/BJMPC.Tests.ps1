@@ -199,6 +199,21 @@ $Sync.Result = @{ Bad = $bad; Keys = @($Script:DnsPresets.Keys); Old = ($all -ma
     }
 }
 
+Describe 'Pilote NVMe natif : magasin de fonctionnalités' {
+    It 'Transformation des identifiants identique à Windows (48433719 -> 1853569164) et réversible' {
+        $r = Invoke-Engine 'opt' @'
+$ok = Initialize-FeatureStoreApi
+$Sync.Result = @{ Ok = $ok; A = [BJ.FeatureStore]::Obfuscate([uint32]48433719); B = [BJ.FeatureStore]::Deobfuscate([BJ.FeatureStore]::Obfuscate([uint32]60786016)); Keys = @(Get-NvmeFeatureKeys) }
+'@
+        $r.Errors | Should -BeNullOrEmpty
+        $r.Result.Ok | Should -BeTrue
+        $r.Result.A | Should -Be 1853569164
+        $r.Result.B | Should -Be 60786016
+        @($r.Result.Keys).Count | Should -Be 2
+        @($r.Result.Keys)[0] | Should -Match 'FeatureManagement\\Overrides\\8\\3244671118$'
+    }
+}
+
 Describe 'Stockage (lecture seule)' {
     It 'Rapport de stockage, état du pilote NVMe et lecture des réglages d''alimentation sans erreur' {
         $r = Invoke-Engine 'opt' @'
