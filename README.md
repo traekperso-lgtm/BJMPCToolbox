@@ -2,7 +2,7 @@
 
 🇫🇷 [Français](#-français) · 🇬🇧 [English](#-english)
 
-> **Version 2.9** · Windows 11 · Windows PowerShell 5.1 (WPF) · by **BJMPC Informatique**
+> **Version 3.0** · Windows 11 · Windows PowerShell 5.1 (WPF) · by **BJMPC Informatique**
 
 ---
 
@@ -21,6 +21,11 @@ Elle est écrite en Windows PowerShell 5.1 (interface WPF), sans installation : 
 - **Sauvegarde automatique des fichiers du client** vers un autre disque, à la demande ou planifiée.
 - **Optimisations dépassées retirées** : Nagle, priorités MMCSS, SysMain désactivé, services « inutiles », Win32PrioritySeparation, compression mémoire, désactivation de HVCI… Elles n'apportent rien de mesurable sur Windows 11 aujourd'hui, ou retirent une protection.
 - **Pilotes revus en profondeur** : entre deux familles de pilotes d'une même puce, c'est la date qui départage (comme le fait Windows), plus le seul numéro de version ; retour arrière réel après une mise à jour.
+
+### Nouveautés de la version 3.0
+
+- **Nouvelle organisation** : section **Confidentialité** à part entière, entre Optimiser et Personnalisation (onglets « Télémétrie, publicités et IA » et « Pare-feu ») ; section **Imprimantes** qui regroupe la file d'impression, les imprimantes mortes, l'option d'impression et les pilotes ; le **Registre** devient une partie de Réparer > Réparer Windows.
+- **Interface affinée** : taille adaptée automatiquement à l'écran (92 % sur un grand écran, jusqu'à 76 % sur un petit portable, texte toujours net), réglable avec Ctrl + molette, Ctrl + / Ctrl − et Ctrl + 0, mémorisée ; menu et titres plus compacts.
 
 ### Nouveautés de la version 2.9
 
@@ -125,7 +130,9 @@ Prérequis : Windows 11, droits administrateur, Windows PowerShell 5.1 (inclus d
 | **Accueil** | Vue d'ensemble · Résumé pour le client |
 | **Réparer** | Réparation automatique · Réparer Windows · Nettoyage et dépannage · Registre · Diagnostics |
 | **Optimiser** | Jeux et alimentation · Réseau et DNS · Stockage |
-| **Personnalisation et divers** | Démarrage · Doublons de photos · Affichage et OLED · Confidentialité · Interface et Explorateur · Mises à jour et sécurité |
+| **Confidentialité** | Télémétrie, publicités et IA · Pare-feu |
+| **Personnalisation et divers** | Démarrage · Doublons de photos · Affichage et OLED · Interface et Explorateur · Mises à jour et sécurité |
+| **Imprimantes** | Blocages et nettoyage · Pilotes |
 | **Logiciels et pilotes** | Applications · Pilotes |
 | **Fichiers et restauration** | Sauvegarde des fichiers · Historique · Journal et points de restauration |
 
@@ -169,7 +176,7 @@ BJMPC Toolbox est distribuée sous la licence [PolyForm Noncommercial 1.0.0](LIC
 
 ### Retours
 
-Ouvrez une *issue* en précisant la version de Windows, la version de l'outil (2.9) et, si possible, le journal de `C:\BJMPC-Logs\`.
+Ouvrez une *issue* en précisant la version de Windows, la version de l'outil (3.0) et, si possible, le journal de `C:\BJMPC-Logs\`.
 
 ---
 
@@ -188,6 +195,11 @@ It is written in Windows PowerShell 5.1 (WPF UI) and needs no installation: laun
 - **Automatic backup of the customer's files** to another disk, on demand or scheduled.
 - **Outdated tweaks removed**: Nagle, MMCSS priorities, disabling SysMain, "useless" services, Win32PrioritySeparation, memory compression, disabling HVCI… They bring nothing measurable on today's Windows 11, or remove a protection.
 - **Drivers reviewed in depth**: between two driver families for the same chip, the date decides (as Windows does), no longer the version number alone; a real rollback after an update.
+
+### What's new in version 3.0
+
+- **New layout**: a standalone **Privacy** section between Optimise and Customisation ("Telemetry, ads & AI" and "Firewall" tabs); a **Printers** section grouping the print queue, dead printers, the printing option and drivers; **Registry** is now part of Repair > Repair Windows.
+- **Refined interface**: size adapted to the screen automatically (92 % on large screens, down to 76 % on small laptops, text always sharp), adjustable with Ctrl + wheel, Ctrl + / Ctrl − and Ctrl + 0, remembered; more compact menu and titles.
 
 ### What's new in version 2.9
 
@@ -285,7 +297,9 @@ Requirements: Windows 11, administrator rights, Windows PowerShell 5.1 (built in
 | **Home** | Overview · Customer summary |
 | **Repair** | Automatic repair · Repair Windows · Cleanup & troubleshooting · Registry · Diagnostics |
 | **Optimise** | Gaming & power · Network & DNS · Storage |
-| **Customisation & more** | Startup · Duplicate photos · Display & OLED · Privacy · Interface & Explorer · Updates & security |
+| **Privacy** | Telemetry, ads & AI · Firewall |
+| **Customisation & more** | Startup · Duplicate photos · Display & OLED · Interface & Explorer · Updates & security |
+| **Printers** | Blockages & clean-up · Drivers |
 | **Software & drivers** | Applications · Drivers |
 | **Files & restore** | File backup · History · Journal & restore points |
 

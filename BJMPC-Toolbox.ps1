@@ -15,7 +15,7 @@
 #>
 
 $ErrorActionPreference = 'Continue'
-$Script:AppVersion = '2.9'
+$Script:AppVersion = '3.0'
 $Script:Root       = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $Script:LogDir     = Join-Path $env:SystemDrive 'BJMPC-Logs'
 $Script:BackupDir  = Join-Path $Script:LogDir 'Backup'
@@ -409,9 +409,9 @@ $Script:Xaml = @'
       </Setter>
     </Style>
   </Window.Resources>
-  <Grid>
+  <Grid x:Name="RootGrid">
     <Grid.ColumnDefinitions>
-      <ColumnDefinition Width="280"/>
+      <ColumnDefinition Width="250"/>
       <ColumnDefinition Width="*"/>
     </Grid.ColumnDefinitions>
 
@@ -511,6 +511,7 @@ try {
 }
 $Script:NavPanel   = $Script:Window.FindName('NavPanel')
 $Script:PageHost   = $Script:Window.FindName('PageHost')
+$Script:RootGrid   = $Script:Window.FindName('RootGrid')
 $Script:TabHost    = $Script:Window.FindName('TabHost')
 $Script:Console    = $Script:Window.FindName('Console')
 $Script:StatusText = $Script:Window.FindName('StatusText')
@@ -640,20 +641,64 @@ function New-Check {
     return $c
 }
 
+$Script:UiZoomKey = 'HKCU:\Software\BJMPC\Toolbox'
+$Script:UiZoom = 1.0
+
+function Get-UiAutoScale {
+    # Échelle selon la zone utile de l'écran (déjà corrigée de la mise à l'échelle Windows) : 92 % sur un grand écran,
+    # jusqu'à 76 % sur un petit portable. Tout est vectoriel : le texte reste net.
+    $wa = [System.Windows.SystemParameters]::WorkArea
+    $s = [math]::Min($wa.Width / 1500, $wa.Height / 940)
+    return [math]::Max(0.76, [math]::Min(0.92, $s))
+}
+
+function Set-UiScale {
+    # Échelle appliquée = automatique × réglage de l'utilisateur (Ctrl + molette, Ctrl + = / -, Ctrl + 0), mémorisé.
+    param([double]$Zoom = $Script:UiZoom, [switch]$Save)
+    $Script:UiZoom = [math]::Max(0.7, [math]::Min(1.4, [math]::Round($Zoom, 2)))
+    $sc = (Get-UiAutoScale) * $Script:UiZoom
+    try { $Script:RootGrid.LayoutTransform = New-Object Windows.Media.ScaleTransform($sc, $sc) } catch {}
+    if ($Save) {
+        try {
+            if (-not (Test-Path $Script:UiZoomKey)) { New-Item -Path $Script:UiZoomKey -Force | Out-Null }
+            Set-ItemProperty -Path $Script:UiZoomKey -Name 'UiZoom' -Value ([string]$Script:UiZoom) -ErrorAction Stop
+        } catch {}
+        try { $Script:StatusText.Text = ('Taille de l''interface : {0} %' -f [int][math]::Round($sc * 100)) } catch {}
+    }
+}
+
 function Set-WindowToScreen {
     # La fenêtre ne dépasse jamais la zone utile de l'écran (barre des tâches exclue, mise à l'échelle Windows comprise) :
     # la barre de titre (réduire, agrandir, fermer) reste toujours accessible. Petit écran : ouverture agrandie.
     param($Win)
     try {
         $wa = [System.Windows.SystemParameters]::WorkArea
-        $Win.MinWidth = [math]::Min(1020, [math]::Max(640, $wa.Width - 16))
-        $Win.MinHeight = [math]::Min(640, [math]::Max(480, $wa.Height - 16))
-        $Win.Width = [math]::Min(1320, $wa.Width - 16)
-        $Win.Height = [math]::Min(860, $wa.Height - 16)
+        try { $z = [double]::Parse([string](Get-ItemProperty -Path $Script:UiZoomKey -Name 'UiZoom' -ErrorAction Stop).UiZoom, [Globalization.CultureInfo]::InvariantCulture); if ($z -gt 0) { $Script:UiZoom = $z } } catch {}
+        Set-UiScale
+        $k = (Get-UiAutoScale) * $Script:UiZoom
+        $Win.MinWidth = [math]::Min([math]::Round(1000 * $k), [math]::Max(640, $wa.Width - 16))
+        $Win.MinHeight = [math]::Min([math]::Round(620 * $k), [math]::Max(480, $wa.Height - 16))
+        $Win.Width = [math]::Min([math]::Round(1360 * $k), $wa.Width - 16)
+        $Win.Height = [math]::Min([math]::Round(900 * $k), $wa.Height - 16)
         $Win.WindowStartupLocation = 'Manual'
         $Win.Left = $wa.Left + [math]::Max(0, ($wa.Width - $Win.Width) / 2)
         $Win.Top = $wa.Top + [math]::Max(0, ($wa.Height - $Win.Height) / 2)
-        if ($wa.Width -lt 1100 -or $wa.Height -lt 720) { $Win.WindowState = 'Maximized' }
+        if ($wa.Width -lt 1000 -or $wa.Height -lt 660) { $Win.WindowState = 'Maximized' }
+        $Win.Add_PreviewMouseWheel({
+                param($s, $e)
+                if (([Windows.Input.Keyboard]::Modifiers -band [Windows.Input.ModifierKeys]::Control) -eq 0) { return }
+                Set-UiScale ($Script:UiZoom + $(if ($e.Delta -gt 0) { 0.05 } else { -0.05 })) -Save
+                $e.Handled = $true
+            })
+        $Win.Add_PreviewKeyDown({
+                param($s, $e)
+                if (([Windows.Input.Keyboard]::Modifiers -band [Windows.Input.ModifierKeys]::Control) -eq 0) { return }
+                switch ([string]$e.Key) {
+                    { $_ -in 'OemPlus', 'Add' } { Set-UiScale ($Script:UiZoom + 0.05) -Save; $e.Handled = $true }
+                    { $_ -in 'OemMinus', 'Subtract' } { Set-UiScale ($Script:UiZoom - 0.05) -Save; $e.Handled = $true }
+                    { $_ -in 'D0', 'NumPad0' } { Set-UiScale 1.0 -Save; $e.Handled = $true }
+                }
+            })
         # Changement d'écran ou de mise à l'échelle en cours de route : on remet la fenêtre dans l'écran
         $Win.Add_LocationChanged({
                 param($s, $e)
@@ -685,11 +730,11 @@ function New-Page {
     $sv.HorizontalScrollBarVisibility = 'Disabled'
     $sv.Visibility = 'Collapsed'
     $sp = New-Object Windows.Controls.StackPanel
-    $sp.Margin = '36,30,36,40'
+    $sp.Margin = '30,24,30,32'
     $sp.MaxWidth = 1120
     $sp.HorizontalAlignment = 'Stretch'
     $sv.Content = $sp
-    $h = New-Text $Title 28 '#ECEDEF' 'SemiBold'
+    $h = New-Text $Title 25 '#ECEDEF' 'SemiBold'
     [void]$sp.Children.Add($h)
     $s = New-Text $Sub 14 '#9298A3' 'Normal' -Wrap
     $s.Margin = '0,4,0,24'
@@ -711,7 +756,7 @@ function Add-Section {
     $rb.GroupName = 'nav'
     $rb.Style = $Script:Window.FindResource('Nav')
     $rb.Tag = $Key
-    $rb.Height = 48
+    $rb.Height = 44
     $sp = New-Object Windows.Controls.StackPanel
     $sp.Orientation = 'Horizontal'
     $ic = New-Object Windows.Controls.TextBlock
@@ -1106,7 +1151,7 @@ if ($sm -and $sm.StartType -eq 'Disabled') { $old += 'SysMain' }
 foreach ($ad in @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })) {
     if ((Get-RegVal "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$($ad.InterfaceGuid)" 'TCPNoDelay') -eq 1) { $old += 'Nagle'; break }
 }
-if ($old.Count -gt 0) { Chk 'Aucun ancien réglage dépassé' $false (($old -join ', ') + ' : Réparer > Registre > Comparer avec Windows 11') }
+if ($old.Count -gt 0) { Chk 'Aucun ancien réglage dépassé' $false (($old -join ', ') + ' : Réparer > Réparer Windows > Registre > Comparer avec Windows 11') }
 $Sync.Result = @{ Info = $i; Checks = @($list) }
 '@
 
@@ -1324,12 +1369,16 @@ function Build-Maintenance {
     $dp = New-Card 'Dépannage rapide' 'Petites actions courantes en atelier.' 'Modifie le système' 'w'
     Add-Row $dp.Body 'Redémarrer l''Explorateur' 'Règle les problèmes de barre des tâches, de menu Démarrage ou de bureau figé. L''écran clignote une seconde.' '' 'n' @((New-Btn 'Redémarrer' (New-Spec 'tools' 'Restart-ExplorerShell' 'Explorateur Windows')))
     Add-Row $dp.Body 'Redémarrer les services audio' 'Si le son disparaît ou crépite sans raison.' '' 'n' @((New-Btn 'Redémarrer' (New-Spec 'tools' 'Restart-AudioServices' 'Services audio')))
-    Add-Row $dp.Body 'Vider la file d''impression' 'Supprime les travaux bloqués puis relance le spouleur.' '' 'n' @((New-Btn 'Vider' (New-Spec 'tools' 'Clear-PrintQueue' 'File d''impression' @{} 'Supprimer tous les travaux d''impression en attente ?')))
     Add-Row $dp.Body 'Synchroniser l''horloge' 'Recale l''heure sur le serveur de temps Windows.' '' 'n' @((New-Btn 'Synchroniser' (New-Spec 'tools' 'Sync-Clock' 'Horloge')))
     Add-Row $dp.Body 'Diagnostic de la mémoire (RAM)' 'Ouvre l''outil Windows, qui propose de redémarrer le PC pour tester la mémoire.' 'Redémarrage' 'n' @((New-Btn 'Ouvrir' (New-Spec 'tools' 'Start-MemoryDiagnostic' 'Diagnostic de la mémoire')))
     Add-Row $dp.Body 'Vider le cache DNS' 'Utile après un changement de DNS ou un site inaccessible.' '' 'n' @((New-Btn 'Vider' (New-Spec 'tools' 'Clear-DnsCache' 'Cache DNS')))
     [void]$p.Children.Add($dp.Card)
 
+    # ---- Section Imprimantes : page « Blocages et nettoyage »
+    $pp = New-Page 'printers' 'Imprimantes' 'File d''impression bloquée, Word ou Excel figés par une imprimante disparue, imprimantes et ports morts. Une sauvegarde complète des imprimantes est faite avant toute suppression.'
+    $pq = New-Card 'File d''impression' 'Travaux bloqués qui empêchent toute impression.' 'Modifie le système' 'w'
+    Add-Row $pq.Body 'Vider la file d''impression' 'Supprime les travaux bloqués puis relance le spouleur.' '' 'n' @((New-Btn 'Vider' (New-Spec 'tools' 'Clear-PrintQueue' 'File d''impression' @{} 'Supprimer tous les travaux d''impression en attente ?')))
+    [void]$pp.Children.Add($pq.Card)
     # Blocages à l'ouverture de Word/Excel et à l'impression : imprimantes réseau (TCP/IP, WSD, IPP) mortes
     $pc = New-Card 'Imprimantes et blocages d''impression' 'Word, Excel ou l''impression qui restent figés jusqu''à un clic sur « Annuler » viennent presque toujours d''une imprimante réseau éteinte ou déplacée, que Windows attend. L''analyse teste chaque adresse (lecture seule). Les imprimantes USB, virtuelles (PDF, XPS, OneNote) et partagées ne sont jamais touchées ; une sauvegarde complète est faite avant tout retrait.' 'Modifie le système' 'w'
     $ps = New-Spec 'tools' 'Get-PrinterDiagnostic' 'Analyse des imprimantes' @{} '' { param($r) Show-PrinterList $r }
@@ -1376,9 +1425,11 @@ function Build-Maintenance {
     [void]$prow.Children.Add((New-Btn 'Restaurer cette sauvegarde' $prs))
     [void]$pc.Body.Children.Add($prow)
     Refresh-PrinterBackups
-    [void]$p.Children.Add($pc.Card)
-    [void](New-TweakCard $p 'Impression' 'Option contre les blocages liés à l''imprimante par défaut choisie automatiquement par Windows.')
+    [void]$pp.Children.Add($pc.Card)
+    [void](New-TweakCard $pp 'Impression' 'Option contre les blocages liés à l''imprimante par défaut choisie automatiquement par Windows.')
     # Pilotes d'imprimante : universel Microsoft (IPP, « Windows Ready Print ») ou pilote du fabricant
+    # ---- Section Imprimantes : page « Pilotes »
+    $pd = New-Page 'prndrv' 'Pilotes d''imprimante' 'Pilote universel de Microsoft (IPP) ou pilote du fabricant, et mode d''impression protégé de Windows 11.'
     $dc = New-Card 'Pilotes d''imprimante : Microsoft ou fabricant' 'Depuis juillet 2026, Windows installe les imprimantes réseau avec le pilote universel de Microsoft (IPP) : bacs, recto verso, qualité, numérisation ou agrafage peuvent disparaître, et le mode d''impression protégé refuse les pilotes du fabricant. L''analyse (lecture seule) indique le pilote de chaque imprimante et le pilote du fabricant déjà présent sur le PC. La bascule garde la même imprimante (nom, par défaut, partage), lui redonne le pilote du fabricant sur un port réseau TCP/IP classique, après une sauvegarde ; retour en un clic.' 'Modifie le système' 'w'
     $db = New-Object Windows.Controls.WrapPanel
     $db.Margin = '0,14,0,8'
@@ -1392,7 +1443,7 @@ function Build-Maintenance {
     $dn = New-Text 'Le pilote du fabricant n''est jamais téléchargé par la Toolbox : installez-le depuis le site du constructeur (pilote complet), puis relancez l''analyse.' 12 '#9298A3' 'Normal' -Wrap
     $dn.Margin = '0,8,0,0'
     [void]$dc.Body.Children.Add($dn)
-    [void]$p.Children.Add($dc.Card)
+    [void]$pd.Children.Add($dc.Card)
 
     # Lecture automatique des CD audio et des DVD (Windows Media Player hérité ou Lecteur multimédia)
     $ac = New-Card 'Lecture automatique des CD audio et DVD' 'Rétablit l''ouverture automatique d''un disque inséré. L''analyse (lecture seule) cherche ce qui la bloque : réglage désactivé, stratégie, détection du lecteur ou service arrêté, et propose les lecteurs que Windows connaît pour chaque type de disque. Toute modification est annulable depuis le Journal.' 'Modifie le système' 'w'
@@ -1945,7 +1996,14 @@ function Show-DefaultsRows {
 }
 
 function Build-Registry {
-    $p = New-Page 'registry' 'Registre' 'Remettre le registre et les services aux valeurs standard de Windows 11 : utile après un logiciel d''optimisation, un « debloater » ou un réglage oublié. La comparaison ne modifie rien ; le rétablissement s''annule.'
+    # Sous-partie de « Réparer Windows » (plus d'onglet séparé)
+    $p = $Script:Pages['maint'].Content
+    $rh = New-Text 'Registre' 22 '#ECEDEF' 'SemiBold'
+    $rh.Margin = '0,26,0,0'
+    [void]$p.Children.Add($rh)
+    $rs = New-Text 'Remettre le registre et les services aux valeurs standard de Windows 11 : utile après un logiciel d''optimisation, un « debloater » ou un réglage oublié. La comparaison ne modifie rien ; le rétablissement s''annule.' 13.5 '#9298A3' 'Normal' -Wrap
+    $rs.Margin = '0,4,0,16'
+    [void]$p.Children.Add($rs)
     # ---- Retour aux valeurs par défaut de Windows 11
     $d = New-Card 'Rétablir les valeurs par défaut de Windows 11' 'Compare ce PC aux valeurs d''origine de Windows 11 (24H2 à 26H2, même base système) : services, sécurité et contrôle de compte, mémoire et priorités, réseau, télémétrie, tâches planifiées, et toute stratégie posée par un outil d''optimisation ou un logiciel. Les écarts sont remis à leur valeur standard, quel que soit l''outil qui les a posés. Les pilotes, les logiciels installés et les stratégies d''un PC en domaine ne sont pas touchés. Un point de restauration est créé et les valeurs actuelles sont enregistrées : tout s''annule.' 'Annulable' 'g'
     $dc = New-Spec 'tools' 'Get-Win11DefaultsState' 'Comparaison avec Windows 11'
@@ -2127,7 +2185,7 @@ function Show-History {
 }
 
 function Build-Journal {
-    $p = New-Page 'journal' 'Restauration' 'Revenir en arrière : annuler ce que la Toolbox a modifié, ou utiliser un point de restauration. Le retour aux valeurs standard de Windows 11 est dans Réparer > Registre.'
+    $p = New-Page 'journal' 'Restauration' 'Revenir en arrière : annuler ce que la Toolbox a modifié, ou utiliser un point de restauration. Le retour aux valeurs standard de Windows 11 est dans Réparer > Réparer Windows > Registre.'
     $c = New-Card 'Journal : annuler les modifications de la Toolbox' 'Chaque modification a gardé sa valeur d''origine. Cochez les catégories à annuler ; les valeurs sont restaurées dans l''ordre inverse des modifications.'
     $Script:JournalPanel = New-Object Windows.Controls.StackPanel
     $Script:JournalPanel.Margin = '0,10,0,0'
@@ -2881,6 +2939,7 @@ function Build-Privacy {
         @{ Name = 'Navigateurs et logiciels tiers'; Sub = 'Collecte de données d''Edge, Brave, Office, NVIDIA, Visual Studio… Les réglages d''un logiciel absent sont ignorés.' },
         @{ Name = 'Autorisations des applications'; Sub = 'Retire l''accès par défaut des applications à la caméra, au micro, aux contacts, etc.' })
     if (-not $p -or $Script:CatalogError) { return }
+    $p = New-Page 'privfw' 'Pare-feu' 'Couper l''accès à Internet des programmes de collecte de Windows, des jeux et des logiciels, et des programmes inconnus que vous choisissez. Tout se retire en un clic.'
     $f = New-Card 'Pare-feu : couper Internet aux programmes de télémétrie' 'Règle sortante de blocage pour chaque programme de collecte présent sur ce PC : service DiagTrack (lui seul, pas tout svchost), inventaire de compatibilité, recensement de l''appareil, programme d''amélioration, rapports d''erreurs, agents de télémétrie Office et NVIDIA, et les rapporteurs de plantage copiés dans chaque jeu ou logiciel (Unreal Engine, Unity, BugSplat, CrashRpt, Crashpad), trouvés dans les bibliothèques Steam, Epic, GOG, EA, Ubisoft, Xbox, Riot, Battle.net et Program Files. Windows Update, Defender, le Store, l''activation, les anti-triche et les lanceurs de jeux ne sont jamais touchés. Toutes les règles sont dans le groupe « BJMPC Confidentialité » et se retirent en un clic.' 'Pare-feu' 'a'
     $fb = New-Object Windows.Controls.WrapPanel
     $fb.Margin = '-8,10,0,6'
@@ -5171,9 +5230,11 @@ function Test-SummarySelf {
 try {
     # Sections ; chaque onglet est une page (clé de page, libellé).
     Add-Section 'home' 'Accueil' ([string][char]0xE80F) @(@('dash', 'Vue d''ensemble'), @('summary', 'Résumé pour le client'))
-    Add-Section 'repair' 'Réparer' ([string][char]0xE90F) @(@('events', 'Réparation automatique'), @('maint', 'Réparer Windows'), @('care', 'Nettoyage et dépannage'), @('registry', 'Registre'), @('tools', 'Diagnostics'))
+    Add-Section 'repair' 'Réparer' ([string][char]0xE90F) @(@('events', 'Réparation automatique'), @('maint', 'Réparer Windows'), @('care', 'Nettoyage et dépannage'), @('tools', 'Diagnostics'))
     Add-Section 'optim' 'Optimiser' ([string][char]0xE945) @(@('gaming', 'Jeux et alimentation'), @('net', 'Réseau et DNS'), @('sys', 'Stockage'))
-    Add-Section 'perso' 'Personnalisation et divers' ([string][char]0xE771) @(@('boot', 'Démarrage'), @('photos', 'Doublons de photos'), @('display', 'Affichage et OLED'), @('priv', 'Confidentialité'), @('ui', 'Interface et Explorateur'), @('winset', 'Mises à jour et sécurité'))
+    Add-Section 'privacy' 'Confidentialité' ([string][char]0xE72E) @(@('priv', 'Télémétrie, publicités et IA'), @('privfw', 'Pare-feu'))
+    Add-Section 'perso' 'Personnalisation et divers' ([string][char]0xE771) @(@('boot', 'Démarrage'), @('photos', 'Doublons de photos'), @('display', 'Affichage et OLED'), @('ui', 'Interface et Explorateur'), @('winset', 'Mises à jour et sécurité'))
+    Add-Section 'print' 'Imprimantes' ([string][char]0xE749) @(@('printers', 'Blocages et nettoyage'), @('prndrv', 'Pilotes'))
     Add-Section 'soft' 'Logiciels et pilotes' ([string][char]0xE71D) @(@('apps', 'Applications'), @('drivers', 'Pilotes'))
     Add-Section 'backup' 'Fichiers et restauration' ([string][char]0xE81C) @(@('files', 'Sauvegarde des fichiers'), @('history', 'Historique'), @('journal', 'Journal et points de restauration'))
 
@@ -5317,7 +5378,7 @@ if ($env:BJMPC_SELFTEST -and $env:BJMPC_SELFTEST -ne 'PREVIEW') {
         T 'PowerShell' $true ($PSVersionTable.PSVersion.ToString())
         T 'Moteurs chargés' (-not $Script:EngineError) ([string]$Script:EngineError)
         T 'Catalogues' (-not $Script:CatalogError -and $Script:TweakCatalog.Count -gt 50 -and $Script:AppCatalog.Count -gt 300) ("réglages={0} apps={1} {2}" -f $Script:TweakCatalog.Count, $Script:AppCatalog.Count, $Script:CatalogError)
-        T 'Pages' ($Script:Pages.Count -ge 15 -and $Script:Sections.Count -eq 6) ("pages={0} onglets={1} sections={2}" -f $Script:Pages.Count, $Script:NavItems.Count, $Script:Sections.Count)
+        T 'Pages' ($Script:Pages.Count -ge 15 -and $Script:Sections.Count -eq 8 -and -not $Script:Pages.ContainsKey('registry') -and $Script:Pages.ContainsKey('privfw') -and $Script:Pages.ContainsKey('prndrv')) ("pages={0} onglets={1} sections={2}" -f $Script:Pages.Count, $Script:NavItems.Count, $Script:Sections.Count)
         foreach ($k in @($Script:Pages.Keys | Sort-Object)) { if (-not $Script:NavItems.ContainsKey($k)) { T "Navigation $k" $false 'page sans onglet' } }
         foreach ($k in @($Script:NavItems.Keys | Sort-Object)) { if (-not $Script:Pages.ContainsKey($k)) { T "Navigation $k" $false 'onglet sans page' } }
         # Chaque onglet s'ouvre et affiche bien sa page

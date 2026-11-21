@@ -1,5 +1,17 @@
-﻿BJMPC Toolbox 2.9 - interface graphique (Windows 11)
+﻿BJMPC Toolbox 3.0 - interface graphique (Windows 11)
 =====================================================
+
+NOUVEAUTES 3.0
+  - Nouvelle organisation du menu :
+       Accueil | Reparer | Optimiser | Confidentialite | Personnalisation et divers | Imprimantes |
+       Logiciels et pilotes | Fichiers et restauration
+    Confidentialite (section a part) : "Telemetrie, publicites et IA" et "Pare-feu".
+    Imprimantes (section qui regroupe tout) : "Blocages et nettoyage" (file d'impression, imprimantes et ports
+      morts, sauvegardes, option d'imprimante par defaut) et "Pilotes" (Microsoft ou fabricant, mode protege).
+    Registre : n'est plus un onglet ; il est en bas de Reparer > Reparer Windows.
+  - Interface affinee pour toutes les tailles d'ecran : echelle automatique (92 % sur grand ecran, jusqu'a 76 %
+    sur petit portable, texte net), reglable avec Ctrl + molette, Ctrl + / Ctrl - et Ctrl + 0 (memorise) ;
+    menu, titres et marges plus compacts.
 
 NOUVEAUTES 2.9
   - Confidentialite > Pare-feu, jeux et logiciels connus : recherche des rapporteurs de plantage et de telemetrie
