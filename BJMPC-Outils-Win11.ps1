@@ -2268,7 +2268,7 @@ function Switch-PrinterToVendor {
     if (-not $Driver) { Write-Log "Aucun pilote du fabricant trouvé sur ce PC pour « $Name ». Installez-le depuis le site du constructeur (pilote complet, pas l'application mobile), puis relancez." 'WARN'; Set-SyncResult $res; return }
     $bk = Export-PrintersBackup
     if (-not $bk) { Write-Log 'Sauvegarde des imprimantes impossible : rien n''a été modifié.' 'ERROR'; Set-SyncResult $res; return }
-    Write-Log ("Sauvegarde faite : {0}" -f $bk.Base) 'OK'
+    Write-Log $(if ($bk.ExportOk) { "Sauvegarde complète faite : $($bk.Base)" } else { "Liste des imprimantes sauvegardée ($($bk.Base)) ; export complet PrintBrm indisponible : le retour se fait avec « Revenir au pilote d'avant »." }) $(if ($bk.ExportOk) { 'OK' } else { 'WARN' })
     if (-not (Get-PrinterDriver -Name $Driver -ErrorAction SilentlyContinue)) {
         try { Add-PrinterDriver -Name $Driver -ErrorAction Stop; Write-Log "Pilote installé depuis le magasin de Windows : $Driver" 'OK' }
         catch { Write-Log ("Installation du pilote « $Driver » refusée : " + $_.Exception.Message) 'ERROR'; Set-SyncResult $res; return }
