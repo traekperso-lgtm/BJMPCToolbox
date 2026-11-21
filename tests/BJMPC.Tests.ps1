@@ -243,6 +243,49 @@ $Sync.Result = @{ Present = @($before.Items | Where-Object { $_.Present }).Count
     }
 }
 
+Describe 'Imprimantes : pilote Microsoft vers pilote du fabricant' {
+    It 'Reconnaissance des modèles, bascule réelle (pilote + port TCP/IP) puis retour exact' {
+        $r = Invoke-Engine 'tools' @'
+$Script:LogFile = Join-Path $env:TEMP 'bjmpc-test-prn.log'
+$Script:PrnDir = Join-Path $env:TEMP ('bjmpc-prn-' + [guid]::NewGuid().ToString('N'))
+$Script:PrnSwapFile = Join-Path $Script:PrnDir 'Bascules-pilote.json'
+$m1 = Find-VendorDriverFor 'HP LaserJet Pro M404dn' @('HP Universal Printing PCL 6', 'HP LaserJet Pro M404-M405 PCL 6 (V3)')
+$m2 = Find-VendorDriverFor 'Brother MFC-J5330DW' @('Brother MFC-J5330DW FAX', 'Brother MFC-J5330DW Printer')
+$cls = $null
+foreach ($d in 'Microsoft IPP Class Driver', 'Microsoft PCL6 Class Driver', 'Microsoft PS Class Driver') {
+    if (-not (Get-PrinterDriver -Name $d -ErrorAction SilentlyContinue)) { try { Add-PrinterDriver -Name $d -ErrorAction Stop } catch {} }
+    if (Get-PrinterDriver -Name $d -ErrorAction SilentlyContinue) { $cls = $d; break }
+}
+$vend = 'Generic / Text Only'
+if (-not (Get-PrinterDriver -Name $vend -ErrorAction SilentlyContinue)) { Add-PrinterDriver -Name $vend -ErrorAction Stop }
+Add-PrinterPort -Name 'BJTEST_PORT' -PrinterHostAddress '192.0.2.77' -ErrorAction Stop
+Add-Printer -Name 'BJMPC Test IPP' -DriverName $cls -PortName 'BJTEST_PORT' -ErrorAction Stop
+Get-PrinterDriverReport
+$rep = @($Sync.Result.Rows | Where-Object { $_.Name -eq 'BJMPC Test IPP' })
+Switch-PrinterToVendor -Name 'BJMPC Test IPP' -Driver $vend
+$mid = Get-Printer -Name 'BJMPC Test IPP'
+$swOk = @($Sync.Result.Ok)
+Restore-PrinterDriver -Name 'BJMPC Test IPP'
+$end = Get-Printer -Name 'BJMPC Test IPP'
+$portLeft = [bool](Get-PrinterPort -Name 'IP_192.0.2.77' -ErrorAction SilentlyContinue)
+Remove-Printer -Name 'BJMPC Test IPP' -ErrorAction SilentlyContinue; Remove-PrinterPort -Name 'BJTEST_PORT' -ErrorAction SilentlyContinue
+$Sync.Result = @{ M1 = $m1; M2 = $m2; Cls = $cls; RepClass = $(if ($rep) { $rep[0].Class } else { $null }); SwOk = $swOk
+    MidDrv = [string]$mid.DriverName; MidPort = [string]$mid.PortName; EndDrv = [string]$end.DriverName; EndPort = [string]$end.PortName; PortLeft = $portLeft }
+'@
+        $r.Errors | Should -BeNullOrEmpty
+        $r.Result.M1 | Should -Be 'HP LaserJet Pro M404-M405 PCL 6 (V3)'
+        $r.Result.M2 | Should -Be 'Brother MFC-J5330DW Printer'
+        $r.Result.Cls | Should -Not -BeNullOrEmpty
+        $r.Result.RepClass | Should -BeTrue
+        $r.Result.SwOk | Should -Contain 'BJMPC Test IPP'
+        $r.Result.MidDrv | Should -Be 'Generic / Text Only'
+        $r.Result.MidPort | Should -Be 'IP_192.0.2.77'
+        $r.Result.EndDrv | Should -Be $r.Result.Cls
+        $r.Result.EndPort | Should -Be 'BJTEST_PORT'
+        $r.Result.PortLeft | Should -BeFalse
+    }
+}
+
 Describe 'Stockage (lecture seule)' {
     It 'Rapport de stockage, état du pilote NVMe et lecture des réglages d''alimentation sans erreur' {
         $r = Invoke-Engine 'opt' @'

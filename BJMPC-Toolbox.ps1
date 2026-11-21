@@ -15,7 +15,7 @@
 #>
 
 $ErrorActionPreference = 'Continue'
-$Script:AppVersion = '2.7'
+$Script:AppVersion = '2.8'
 $Script:Root       = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $Script:LogDir     = Join-Path $env:SystemDrive 'BJMPC-Logs'
 $Script:BackupDir  = Join-Path $Script:LogDir 'Backup'
@@ -1378,6 +1378,21 @@ function Build-Maintenance {
     Refresh-PrinterBackups
     [void]$p.Children.Add($pc.Card)
     [void](New-TweakCard $p 'Impression' 'Option contre les blocages liés à l''imprimante par défaut choisie automatiquement par Windows.')
+    # Pilotes d'imprimante : universel Microsoft (IPP, « Windows Ready Print ») ou pilote du fabricant
+    $dc = New-Card 'Pilotes d''imprimante : Microsoft ou fabricant' 'Depuis juillet 2026, Windows installe les imprimantes réseau avec le pilote universel de Microsoft (IPP) : bacs, recto verso, qualité, numérisation ou agrafage peuvent disparaître, et le mode d''impression protégé refuse les pilotes du fabricant. L''analyse (lecture seule) indique le pilote de chaque imprimante et le pilote du fabricant déjà présent sur le PC. La bascule garde la même imprimante (nom, par défaut, partage), lui redonne le pilote du fabricant sur un port réseau TCP/IP classique, après une sauvegarde ; retour en un clic.' 'Modifie le système' 'w'
+    $db = New-Object Windows.Controls.WrapPanel
+    $db.Margin = '0,14,0,8'
+    $d1 = New-Btn 'Analyser les pilotes' (New-Spec 'tools' 'Get-PrinterDriverReport' 'Analyse des pilotes d''imprimante' @{} '' { param($r) Show-PrinterDrivers $r }) -Primary; $d1.Margin = '0,4,0,4'
+    [void]$db.Children.Add($d1)
+    [void]$db.Children.Add((New-Btn 'Désactiver le mode d''impression protégé' (New-Spec 'tools' 'Set-ProtectedPrintMode -Mode Off' 'Mode d''impression protégé désactivé' @{} 'Désactiver le mode d''impression protégé de Windows ? Il refuse les pilotes de fabricant ; le désactiver les autorise de nouveau (comme avant Windows 11 24H2). Réversible depuis cette carte.' { param($r) Show-PrinterDriversStale })))
+    [void]$db.Children.Add((New-Btn 'Remettre le mode protégé comme avant' (New-Spec 'tools' 'Set-ProtectedPrintMode -Mode Restore' 'Mode d''impression protégé rétabli' @{} '' { param($r) Show-PrinterDriversStale })))
+    [void]$dc.Body.Children.Add($db)
+    $Script:PrnDrvPanel = New-Object Windows.Controls.StackPanel
+    [void]$dc.Body.Children.Add($Script:PrnDrvPanel)
+    $dn = New-Text 'Le pilote du fabricant n''est jamais téléchargé par la Toolbox : installez-le depuis le site du constructeur (pilote complet), puis relancez l''analyse.' 12 '#9298A3' 'Normal' -Wrap
+    $dn.Margin = '0,8,0,0'
+    [void]$dc.Body.Children.Add($dn)
+    [void]$p.Children.Add($dc.Card)
 
     # Lecture automatique des CD audio et des DVD (Windows Media Player hérité ou Lecteur multimédia)
     $ac = New-Card 'Lecture automatique des CD audio et DVD' 'Rétablit l''ouverture automatique d''un disque inséré. L''analyse (lecture seule) cherche ce qui la bloque : réglage désactivé, stratégie, détection du lecteur ou service arrêté, et propose les lecteurs que Windows connaît pour chaque type de disque. Toute modification est annulable depuis le Journal.' 'Modifie le système' 'w'
@@ -2881,6 +2896,36 @@ function Build-Privacy {
     [void]$p.Children.Add($f.Card)
 }
 
+function Show-PrinterDriversStale {
+    try { $Script:PrnDrvPanel.Children.Clear(); [void]$Script:PrnDrvPanel.Children.Add((New-Text 'Terminé. Relancez l''analyse pour actualiser.' 13 '#9298A3')) } catch {}
+}
+
+function Show-PrinterDrivers {
+    param($Res)
+    $Script:PrnDrvPanel.Children.Clear()
+    if (-not $Res) { [void]$Script:PrnDrvPanel.Children.Add((New-Text 'Analyse impossible.' 13 '#FF8A80' 'Normal' -Wrap)); return }
+    $q = { param($v) "'" + (([string]$v) -replace "(['\u2018\u2019\u201A\u201B])", '$1$1' -replace '[\x00-\x1F]', '') + "'" }
+    $w = $Res.Wpp
+    $wt = $(if ($w -and $w.On) { '⚠  Mode d''impression protégé ACTIF' + $(if ($w.Managed) { ' (imposé par une stratégie)' } else { '' }) + ' : les pilotes de fabricant sont refusés. Désactivez-le avant une bascule.' } else { '✔  Mode d''impression protégé inactif : pilotes de fabricant autorisés.' })
+    [void]$Script:PrnDrvPanel.Children.Add((New-Text $wt 13 $(if ($w -and $w.On) { '#F5B94A' } else { '#7CE3A1' }) 'Normal' -Wrap))
+    $rows = @($Res.Rows)
+    if ($rows.Count -eq 0) { [void]$Script:PrnDrvPanel.Children.Add((New-Text 'Aucune imprimante physique trouvée.' 13 '#9298A3')); return }
+    foreach ($r in $rows) {
+        $sub = '{0} · {1}{2}' -f $r.Kind, $r.Driver, $(if ($r.Host) { ' · ' + $r.Host } else { '' })
+        $btns = @()
+        if ($r.Swapped) {
+            $btns += New-Btn 'Revenir au pilote d''avant' (New-Spec 'tools' ('Restore-PrinterDriver -Name ' + (& $q $r.Name)) ('Pilote d''origine : ' + $r.Name) @{} '' { param($x) Show-PrinterDriversStale })
+        }
+        if ($r.Class -and $r.Vendor) {
+            $sub += ' · pilote du fabricant disponible : ' + $r.Vendor
+            $btns += New-Btn 'Passer au pilote du fabricant' (New-Spec 'tools' ('Switch-PrinterToVendor -Name ' + (& $q $r.Name) + ' -Driver ' + (& $q $r.Vendor)) ('Pilote du fabricant : ' + $r.Name) @{} ("Donner à « {0} » le pilote « {1} »{2} ? Une sauvegarde des imprimantes est faite d'abord ; retour en un clic." -f $r.Name, $r.Vendor, $(if ($r.Kind -in 'WSD', 'IPP') { ' sur un port TCP/IP classique' } else { '' })) { param($x) Show-PrinterDriversStale })
+        } elseif ($r.Class) { $sub += ' · aucun pilote du fabricant sur ce PC' }
+        $tag = $(if ($r.Class) { 'Pilote Microsoft' } else { 'Pilote fabricant' })
+        foreach ($b in $btns) { [void]$Script:ActionButtons.Remove($b) }   # recréés à chaque analyse
+        Add-Row $Script:PrnDrvPanel $r.Name $sub $tag $(if ($r.Class) { 'w' } else { 'g' }) $btns
+    }
+}
+
 function Show-FirewallReport {
     param($Res)
     $Script:FwPanel.Children.Clear()
@@ -3980,6 +4025,8 @@ $Script:PlainMap = @(
     @{ K = '^Get-PrinterDiagnostic'; C = 'skip'; T = '' }
     @{ K = '^Get-StorageReport|^Show-NvmeState'; C = 'skip'; T = '' }
     @{ K = '^Get-TelemetryFirewallReport'; C = 'skip'; T = '' }
+    @{ K = '^Get-PrinterDriverReport'; C = 'skip'; T = '' }
+    @{ K = '^Switch-PrinterToVendor|^Restore-PrinterDriver|^Set-ProtectedPrintMode'; C = 'repar'; T = 'Nous avons réglé le pilote de votre imprimante pour retrouver toutes ses fonctions.' }
     @{ K = '^Unblock-TelemetryFirewall'; C = 'prive'; T = 'Nous avons retiré les blocages de télémétrie du pare-feu.' }
     @{ K = '^Block-TelemetryFirewall'; C = 'prive'; T = 'Le pare-feu empêche désormais les programmes de collecte de données de Windows et de certains logiciels d''envoyer des informations.' }
     @{ K = '^Restore-StorageSettings|^Disable-NativeNvme'; C = 'vitesse'; T = 'Nous avons remis les réglages d''origine du stockage de votre ordinateur.' }

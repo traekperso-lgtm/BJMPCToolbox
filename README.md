@@ -2,7 +2,7 @@
 
 🇫🇷 [Français](#-français) · 🇬🇧 [English](#-english)
 
-> **Version 2.7** · Windows 11 · Windows PowerShell 5.1 (WPF) · by **BJMPC Informatique**
+> **Version 2.8** · Windows 11 · Windows PowerShell 5.1 (WPF) · by **BJMPC Informatique**
 
 ---
 
@@ -21,6 +21,10 @@ Elle est écrite en Windows PowerShell 5.1 (interface WPF), sans installation : 
 - **Sauvegarde automatique des fichiers du client** vers un autre disque, à la demande ou planifiée.
 - **Optimisations dépassées retirées** : Nagle, priorités MMCSS, SysMain désactivé, services « inutiles », Win32PrioritySeparation, compression mémoire, désactivation de HVCI… Elles n'apportent rien de mesurable sur Windows 11 aujourd'hui, ou retirent une protection.
 - **Pilotes revus en profondeur** : entre deux familles de pilotes d'une même puce, c'est la date qui départage (comme le fait Windows), plus le seul numéro de version ; retour arrière réel après une mise à jour.
+
+### Nouveautés de la version 2.8
+
+- **Réparer > Pilotes d'imprimante : Microsoft ou fabricant**. Depuis juillet 2026, Windows installe les imprimantes réseau avec le pilote universel IPP de Microsoft (« Windows Ready Print ») et le mode d'impression protégé refuse les pilotes de fabricant. Analyse de chaque imprimante (pilote Microsoft ou fabricant, pilote du fabricant déjà présent sur le PC, état du mode protégé), puis bascule en un clic : même file (nom, imprimante par défaut, partage), pilote du fabricant sur un port TCP/IP classique, sauvegarde avant, retour exact en un clic. Désactivation réversible du mode d'impression protégé.
 
 ### Nouveautés de la version 2.7
 
@@ -160,7 +164,7 @@ BJMPC Toolbox est distribuée sous la licence [PolyForm Noncommercial 1.0.0](LIC
 
 ### Retours
 
-Ouvrez une *issue* en précisant la version de Windows, la version de l'outil (2.7) et, si possible, le journal de `C:\BJMPC-Logs\`.
+Ouvrez une *issue* en précisant la version de Windows, la version de l'outil (2.8) et, si possible, le journal de `C:\BJMPC-Logs\`.
 
 ---
 
@@ -179,6 +183,10 @@ It is written in Windows PowerShell 5.1 (WPF UI) and needs no installation: laun
 - **Automatic backup of the customer's files** to another disk, on demand or scheduled.
 - **Outdated tweaks removed**: Nagle, MMCSS priorities, disabling SysMain, "useless" services, Win32PrioritySeparation, memory compression, disabling HVCI… They bring nothing measurable on today's Windows 11, or remove a protection.
 - **Drivers reviewed in depth**: between two driver families for the same chip, the date decides (as Windows does), no longer the version number alone; a real rollback after an update.
+
+### What's new in version 2.8
+
+- **Repair > Printer drivers: Microsoft or manufacturer**. Since July 2026 Windows installs network printers with Microsoft's universal IPP driver ("Windows Ready Print") and protected print mode refuses manufacturer drivers. Per-printer analysis (Microsoft or manufacturer driver, manufacturer driver already on the PC, protected mode state), then one-click switch: same queue (name, default printer, sharing), manufacturer driver on a classic TCP/IP port, backup first, exact one-click rollback. Reversible switch-off of protected print mode.
 
 ### What's new in version 2.7
 

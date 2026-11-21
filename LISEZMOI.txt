@@ -1,5 +1,22 @@
-﻿BJMPC Toolbox 2.7 - interface graphique (Windows 11)
+﻿BJMPC Toolbox 2.8 - interface graphique (Windows 11)
 =====================================================
+
+NOUVEAUTES 2.8
+  - Reparer > carte "Pilotes d'imprimante : Microsoft ou fabricant".
+    Contexte : depuis le 1er juillet 2026, Windows 11 installe les imprimantes compatibles IPP avec le pilote
+    universel de Microsoft ("Windows Ready Print") ; des fonctions du modele disparaissent (bacs, recto verso,
+    qualite, numerisation, agrafage). Avec le mode d'impression protege, les pilotes de fabricant sont refuses.
+       Analyser les pilotes (lecture seule) : pilote de chaque imprimante (Microsoft ou fabricant), pilote du
+         fabricant deja present sur le PC (installe ou copie dans le magasin de pilotes par son installateur,
+         reconnu par la reference du modele), etat du mode d'impression protege.
+       Passer au pilote du fabricant : meme imprimante (nom, par defaut, partage conserves), pilote du fabricant,
+         et pour une imprimante reseau un port TCP/IP standard (IP_adresse, RAW 9100) a la place du port WSD/IPP.
+         Sauvegarde PrintBrm avant ; verification apres ; en cas de refus, l'imprimante est remise comme avant.
+       Revenir au pilote d'avant : pilote et port d'origine, port cree retire s'il ne sert plus.
+       Desactiver / remettre le mode d'impression protege (valeur d'origine memorisee).
+       Le pilote du fabricant n'est jamais telecharge par la Toolbox : site du constructeur, puis relancer l'analyse.
+       Si Windows recree une copie IPP : Parametres > Bluetooth et appareils > Imprimantes et scanners >
+         desactiver l'installation avec Windows Ready Print.
 
 NOUVEAUTES 2.7
   - Personnalisation et divers > Confidentialite > carte "Pare-feu : couper Internet aux programmes de telemetrie" :

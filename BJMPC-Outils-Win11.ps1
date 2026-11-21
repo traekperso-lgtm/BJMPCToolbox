@@ -2115,6 +2115,231 @@ function Restore-PrintersBackup {
     else { Set-SyncResult @{ Ok = @(); Bad = @($Name); Backup = $Name } }
 }
 
+# ---------------------------------------------------------------- Pilotes d'imprimante : IPP Microsoft ou fabricant
+# Depuis juillet 2026, Windows installe d'office les imprimantes compatibles IPP avec le pilote universel de Microsoft
+# (« Windows Ready Print ») : certaines fonctions du modèle disparaissent (bacs, recto verso, agrafage, qualité…), et
+# avec le mode d'impression protégé les pilotes du fabricant sont refusés. Ici : on garde la même file (nom, imprimante
+# par défaut, partage) et on lui redonne le pilote du fabricant sur un port réseau TCP/IP classique. Tout est mémorisé
+# pour revenir en arrière.
+$Script:WppKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\WPP'
+$Script:PrnSwapFile = Join-Path $Script:PrnDir 'Bascules-pilote.json'
+
+function Get-WppState {
+    # Mode d'impression protégé : actif seulement si WindowsProtectedPrintMode = 1 ; « Géré » si une stratégie l'impose.
+    $m = Get-RegVal $Script:WppKey 'WindowsProtectedPrintMode'
+    $g = Get-RegVal $Script:WppKey 'WindowsProtectedPrintGroupPolicyState'
+    return [pscustomobject]@{ On = ([int]$m -eq 1); Managed = ([int]$g -eq 1 -and [int]$m -eq 1); Raw = $m }
+}
+
+function Get-PrnSwaps {
+    if (-not (Test-Path -LiteralPath $Script:PrnSwapFile)) { return @{} }
+    try {
+        $o = Get-Content -LiteralPath $Script:PrnSwapFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        $h = @{}; foreach ($p in $o.PSObject.Properties) { $h[$p.Name] = $p.Value }; return $h
+    } catch { return @{} }
+}
+
+function Save-PrnSwaps {
+    param($Swaps)
+    New-Item -ItemType Directory -Path $Script:PrnDir -Force -ErrorAction SilentlyContinue | Out-Null
+    Set-Content -LiteralPath $Script:PrnSwapFile -Value (ConvertTo-Json -InputObject $Swaps -Depth 4) -Encoding UTF8
+}
+
+function Test-ClassDriver {
+    # Pilotes génériques de Microsoft (IPP / Mopria / « Windows Ready Print », classe universelle).
+    param([string]$Driver)
+    return ($Driver -match '^Microsoft (IPP Class Driver|Print Class Driver|PCL6 Class Driver|PS Class Driver|Mopria|Universal)' -or $Driver -match 'Microsoft.*Class Driver')
+}
+
+function Get-PrinterModelTokens {
+    # Références de modèle reconnaissables dans un nom (« HL-L2350DW », « MFC-J5330DW », « LaserJet M404 », « TS5150 »…).
+    # Chaque référence donne aussi ses morceaux (« M404-M405 » -> M404, M405) et son cœur sans suffixe (« M404DN » -> M404).
+    param([string]$Text, [switch]$Core)
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($m in [regex]::Matches(([string]$Text).ToUpperInvariant(), '[A-Z]*[A-Z\-]?\d{2,}[A-Z0-9\-]*')) {
+        foreach ($part in @($m.Value.Trim('-')) + @($m.Value.Trim('-') -split '-')) {
+            if ($part.Length -lt 3 -or $part -notmatch '\d' -or ($part -notmatch '[A-Z]' -and $part.Length -lt 4)) { continue }
+            if ($Core) { if ($part -match '^([A-Z]*\d+)') { $part = $Matches[1] } else { continue } }
+            if (-not $out.Contains($part)) { $out.Add($part) }
+        }
+    }
+    return @($out)
+}
+
+function Find-VendorDriverFor {
+    # Meilleur pilote de fabricant pour une imprimante : même référence de modèle que son nom (ou celui de son port WSD).
+    # Préférence : pilote complet du modèle (PCL ou natif) > PostScript ; jamais un pilote de fax.
+    param([string]$PrinterName, [string[]]$Candidates)
+    $tok = @(Get-PrinterModelTokens $PrinterName); $core = @(Get-PrinterModelTokens $PrinterName -Core)
+    if ($tok.Count -eq 0) { return $null }
+    $brand = [regex]::Match($PrinterName, '^\s*(\w+)').Groups[1].Value
+    $best = $null; $score = 0
+    foreach ($c in @($Candidates)) {
+        $ct = @(Get-PrinterModelTokens $c); $cc = @(Get-PrinterModelTokens $c -Core)
+        $s = 10 * @($tok | Where-Object { $ct -contains $_ }).Count
+        if ($s -eq 0) { $s = 6 * @($core | Where-Object { $cc -contains $_ }).Count }
+        if ($s -eq 0) { continue }
+        if ($brand -and $c -match [regex]::Escape($brand)) { $s += 3 }
+        if ($c -match '(?i)\bPCL ?6\b|\bPCL-?XL\b') { $s += 2 } elseif ($c -match '(?i)\bPS\b|PostScript|BR-Script|KX-?PS') { $s -= 1 }
+        if ($c -match '(?i)\bFAX\b') { $s -= 20 }
+        if ($s -gt $score) { $score = $s; $best = $c }
+    }
+    return $best
+}
+
+function Get-StoreVendorPrinterDrivers {
+    # Pilotes d'imprimante de fabricants déjà présents sur le PC : installés, ou seulement copiés dans le magasin de pilotes
+    # (après un programme d'installation du fabricant). Lecture des .inf de classe Printer, sans rien installer.
+    $names = New-Object System.Collections.Generic.HashSet[string]
+    try { foreach ($d in @(Get-PrinterDriver -ErrorAction Stop)) { if (-not (Test-ClassDriver ([string]$d.Name)) -and [string]$d.Manufacturer -notmatch '^Microsoft') { [void]$names.Add([string]$d.Name) } } } catch {}
+    $repo = Join-Path $env:windir 'System32\DriverStore\FileRepository'
+    foreach ($inf in @(Get-ChildItem -Path $repo -Filter '*.inf' -Recurse -Depth 1 -ErrorAction SilentlyContinue)) {
+        try {
+            $txt = [IO.File]::ReadAllText($inf.FullName)
+            if ($txt -notmatch '(?im)^\s*Class\s*=\s*Printer\b' -and $txt -notmatch '(?i)4D36E979-E325-11CE-BFC1-08002BE10318') { continue }
+            if ($txt -match '(?im)^\s*Provider\s*=\s*"?%?(MS|Microsoft)') { continue }
+            $str = @{}
+            $sm = [regex]::Match($txt, '(?ims)^\s*\[Strings\]\s*$(.*?)(?=^\s*\[|\z)')
+            if ($sm.Success) { foreach ($l in ($sm.Groups[1].Value -split "`r?`n")) { if ($l -match '^\s*([^=;\s]+)\s*=\s*"?([^"]*)"?') { $str[$Matches[1].ToLowerInvariant()] = $Matches[2].Trim() } } }
+            foreach ($m in [regex]::Matches($txt, '(?im)^\s*("[^"]+"|%[^%]+%)\s*=\s*[^,;\r\n]+,\s*\S+')) {
+                $n = $m.Groups[1].Value.Trim('"')
+                if ($n -match '^%(.+)%$') { $k = $Matches[1].ToLowerInvariant(); if ($str.ContainsKey($k)) { $n = $str[$k] } else { continue } }
+                if ($n -and $n -notmatch '^(Manufacturer|Provider|DiskName|ClassName)$' -and $n -match '\d') { [void]$names.Add($n) }
+            }
+        } catch {}
+    }
+    return @($names)
+}
+
+function Get-PrinterDriverReport {
+    # Lecture seule : pilote de chaque imprimante (Microsoft universel ou fabricant), pilote du fabricant disponible, mode protégé.
+    Write-Log '=== Pilotes d''imprimante (lecture seule) ==='
+    $wpp = Get-WppState
+    $swaps = Get-PrnSwaps
+    $cands = @(Get-StoreVendorPrinterDrivers)
+    $ports = @{}; try { foreach ($p in @(Get-PrinterPort -ErrorAction Stop)) { $ports[[string]$p.Name] = $p } } catch {}
+    $rows = @()
+    $printers = @(); try { $printers = @(Get-Printer -ErrorAction Stop) } catch { Write-Log ("Lecture des imprimantes impossible : " + $_.Exception.Message) 'ERROR' }
+    foreach ($pr in $printers) {
+        $port = $ports[[string]$pr.PortName]
+        $kind = Get-PrinterKind ([string]$pr.Name) ([string]$pr.PortName) ([string]$pr.DriverName) $port
+        if ($kind -in 'Virtuelle', 'Partagée') { continue }
+        $isClass = Test-ClassDriver ([string]$pr.DriverName)
+        $hint = [string]$pr.Name
+        if ($port -and [string]$port.Description) { $hint += ' ' + [string]$port.Description }
+        $vend = $(if ($isClass) { Find-VendorDriverFor $hint $cands } else { $null })
+        $hostName = ''
+        if ($port -and [string]$port.PrinterHostAddress) { $hostName = [string]$port.PrinterHostAddress }
+        elseif ([string]$pr.PortName -match '^(https?|ipps?)://([^/:]+)') { $hostName = $Matches[2] }
+        $rows += [pscustomobject]@{ Name = [string]$pr.Name; Driver = [string]$pr.DriverName; Class = $isClass; Kind = $kind; Port = [string]$pr.PortName
+            Host = $hostName; Vendor = $vend; Swapped = $swaps.ContainsKey([string]$pr.Name) }
+        Write-Row ("{0}  [{1}]" -f $pr.Name, $kind) ("{0}{1}" -f $pr.DriverName, $(if ($isClass -and $vend) { " · pilote du fabricant disponible : $vend" } elseif ($isClass) { ' · aucun pilote du fabricant sur ce PC' } else { '' })) $(if ($isClass -and -not $vend) { 'warn' } elseif ($isClass) { '' } else { 'ok' })
+    }
+    if ($wpp.On) { Write-Log ("Mode d'impression protégé ACTIF{0} : Windows refuse les pilotes de fabricant." -f $(if ($wpp.Managed) { ' (imposé par une stratégie)' } else { '' })) 'WARN' }
+    else { Write-Log 'Mode d''impression protégé : inactif (pilotes de fabricant autorisés).' 'OK' }
+    $nClass = @($rows | Where-Object { $_.Class }).Count
+    if ($nClass) { Write-Log ("{0} imprimante(s) avec le pilote universel de Microsoft. Si une fonction manque (bacs, recto verso, qualité, numérisation), installez le pilote du fabricant (site du constructeur), puis « Passer au pilote du fabricant »." -f $nClass) }
+    Set-SyncResult @{ Rows = @($rows); Wpp = $wpp; Candidates = $cands.Count }
+}
+
+function Switch-PrinterToVendor {
+    # Même file d'impression (nom, par défaut, partage conservés) : pilote du fabricant + port TCP/IP standard pour une
+    # imprimante réseau. Une imprimante USB garde son port. Rien n'est téléchargé : le pilote doit déjà être sur le PC.
+    param([string]$Name, [string]$Driver = '')
+    $res = @{ Ok = @(); Bad = @($Name) }
+    $wpp = Get-WppState
+    if ($wpp.On) { Write-Log 'Refusé : le mode d''impression protégé bloque les pilotes de fabricant. Désactivez-le d''abord (bouton de cette carte).' 'WARN'; Set-SyncResult $res; return }
+    $pr = $null; try { $pr = Get-Printer -Name $Name -ErrorAction Stop } catch { Write-Log "Imprimante introuvable : $Name" 'ERROR'; Set-SyncResult $res; return }
+    if (-not (Test-ClassDriver ([string]$pr.DriverName))) { Write-Log "« $Name » utilise déjà un pilote de fabricant ($($pr.DriverName))." 'OK'; Set-SyncResult @{ Ok = @($Name); Bad = @() }; return }
+    $port = $null; try { $port = Get-PrinterPort -Name $pr.PortName -ErrorAction Stop } catch {}
+    if (-not $Driver) {
+        $hint = $Name; if ($port -and [string]$port.Description) { $hint += ' ' + [string]$port.Description }
+        $Driver = Find-VendorDriverFor $hint (Get-StoreVendorPrinterDrivers)
+    }
+    if (-not $Driver) { Write-Log "Aucun pilote du fabricant trouvé sur ce PC pour « $Name ». Installez-le depuis le site du constructeur (pilote complet, pas l'application mobile), puis relancez." 'WARN'; Set-SyncResult $res; return }
+    $bk = Export-PrintersBackup
+    if (-not $bk) { Write-Log 'Sauvegarde des imprimantes impossible : rien n''a été modifié.' 'ERROR'; Set-SyncResult $res; return }
+    Write-Log ("Sauvegarde faite : {0}" -f $bk.Base) 'OK'
+    if (-not (Get-PrinterDriver -Name $Driver -ErrorAction SilentlyContinue)) {
+        try { Add-PrinterDriver -Name $Driver -ErrorAction Stop; Write-Log "Pilote installé depuis le magasin de Windows : $Driver" 'OK' }
+        catch { Write-Log ("Installation du pilote « $Driver » refusée : " + $_.Exception.Message) 'ERROR'; Set-SyncResult $res; return }
+    }
+    $kind = Get-PrinterKind $Name ([string]$pr.PortName) ([string]$pr.DriverName) $port
+    $hostName = ''
+    if ($port -and [string]$port.PrinterHostAddress) { $hostName = [string]$port.PrinterHostAddress }
+    elseif ([string]$pr.PortName -match '^(https?|ipps?)://([^/:]+)') { $hostName = $Matches[2] }
+    $newPort = [string]$pr.PortName; $createdPort = $false
+    if ($kind -in 'WSD', 'IPP' -or ($kind -eq 'TCP/IP' -and $hostName)) {
+        if (-not $hostName) { Write-Log "Adresse réseau de « $Name » inconnue (port $($pr.PortName)) : le port est conservé, seul le pilote change." 'WARN' }
+        else {
+            $newPort = "IP_$hostName"
+            if (-not (Get-PrinterPort -Name $newPort -ErrorAction SilentlyContinue)) {
+                try { Add-PrinterPort -Name $newPort -PrinterHostAddress $hostName -ErrorAction Stop; $createdPort = $true; Write-Log "Port TCP/IP standard créé : $newPort (RAW 9100)" 'OK' }
+                catch { Write-Log ("Port TCP/IP impossible : " + $_.Exception.Message) 'ERROR'; Set-SyncResult $res; return }
+            }
+        }
+    }
+    $swaps = Get-PrnSwaps
+    $swaps[$Name] = @{ Driver = [string]$pr.DriverName; Port = [string]$pr.PortName; NewPort = $newPort; CreatedPort = $createdPort; NewDriver = $Driver; Date = (Get-Date).ToString('s'); Backup = $bk.Base }
+    try {
+        Set-Printer -Name $Name -DriverName $Driver -PortName $newPort -ErrorAction Stop
+        $chk = Get-Printer -Name $Name -ErrorAction Stop
+        if ([string]$chk.DriverName -ne $Driver) { throw "Windows a gardé le pilote $($chk.DriverName)" }
+        Save-PrnSwaps $swaps
+        Write-Log ("« {0} » : pilote du fabricant « {1} » sur le port {2}. Nom, imprimante par défaut et partage conservés. Faites une page de test." -f $Name, $Driver, $newPort) 'OK'
+        Write-Log 'Si Windows recrée une copie « IPP » de l''imprimante : Paramètres > Bluetooth et appareils > Imprimantes et scanners > désactiver « installer les imprimantes avec Windows Ready Print ».' 'INFO'
+        Set-SyncResult @{ Ok = @($Name); Bad = @() }
+    } catch {
+        Write-Log ("Bascule refusée : " + $_.Exception.Message + ' (imprimante laissée comme avant)') 'ERROR'
+        try { Set-Printer -Name $Name -DriverName ([string]$pr.DriverName) -PortName ([string]$pr.PortName) -ErrorAction SilentlyContinue } catch {}
+        if ($createdPort) { Remove-PrinterPort -Name $newPort -ErrorAction SilentlyContinue }
+        Set-SyncResult $res
+    }
+}
+
+function Restore-PrinterDriver {
+    # Remet le pilote et le port d'origine d'une imprimante basculée par la Toolbox.
+    param([string]$Name)
+    $swaps = Get-PrnSwaps
+    if (-not $swaps.ContainsKey($Name)) { Write-Log "Aucune bascule enregistrée pour « $Name »." 'WARN'; Set-SyncResult @{ Ok = @(); Bad = @($Name) }; return }
+    $s = $swaps[$Name]
+    try {
+        if (-not (Get-PrinterPort -Name ([string]$s.Port) -ErrorAction SilentlyContinue)) { throw "le port d'origine $($s.Port) n'existe plus : utilisez « Restaurer cette sauvegarde » ($($s.Backup))" }
+        Set-Printer -Name $Name -DriverName ([string]$s.Driver) -PortName ([string]$s.Port) -ErrorAction Stop
+        Write-Log ("« {0} » : retour au pilote {1} sur le port {2}." -f $Name, $s.Driver, $s.Port) 'OK'
+        if ([bool]$s.CreatedPort) {
+            $used = @(Get-Printer -ErrorAction SilentlyContinue | Where-Object { [string]$_.PortName -eq [string]$s.NewPort }).Count
+            if ($used -eq 0) { Remove-PrinterPort -Name ([string]$s.NewPort) -ErrorAction SilentlyContinue; Write-Log "Port retiré : $($s.NewPort)" 'OK' }
+        }
+        $swaps.Remove($Name); Save-PrnSwaps $swaps
+        Set-SyncResult @{ Ok = @($Name); Bad = @() }
+    } catch { Write-Log ("Retour impossible : " + $_.Exception.Message) 'ERROR'; Set-SyncResult @{ Ok = @(); Bad = @($Name) } }
+}
+
+function Set-ProtectedPrintMode {
+    # Active/désactive le mode d'impression protégé ; la valeur d'origine est gardée dans le fichier des bascules.
+    param([ValidateSet('Off', 'Restore')][string]$Mode)
+    $swaps = Get-PrnSwaps
+    if ($Mode -eq 'Off') {
+        $w = Get-WppState
+        if (-not $w.On) { Write-Log 'Le mode d''impression protégé est déjà inactif.' 'OK'; Set-SyncResult @{ Ok = @('wpp'); Bad = @() }; return }
+        if (-not $swaps.ContainsKey('__WPP__')) { $swaps['__WPP__'] = @{ Mode = $w.Raw; Policy = (Get-RegVal $Script:WppKey 'WindowsProtectedPrintGroupPolicyState') } }
+        try { New-ItemProperty -Path $Script:WppKey -Name 'WindowsProtectedPrintMode' -Value 0 -PropertyType DWord -Force -ErrorAction Stop | Out-Null }
+        catch { Write-Log ("Désactivation refusée : " + $_.Exception.Message) 'ERROR'; Set-SyncResult @{ Ok = @(); Bad = @('wpp') }; return }
+        Save-PrnSwaps $swaps
+        Write-Log 'Mode d''impression protégé désactivé : les pilotes de fabricant sont de nouveau acceptés.' 'OK'
+    } else {
+        if (-not $swaps.ContainsKey('__WPP__')) { Write-Log 'Le mode d''impression protégé n''a pas été modifié par la Toolbox.' 'OK'; Set-SyncResult @{ Ok = @('wpp'); Bad = @() }; return }
+        $o = $swaps['__WPP__']
+        if ($null -eq $o.Mode) { Remove-ItemProperty -Path $Script:WppKey -Name 'WindowsProtectedPrintMode' -ErrorAction SilentlyContinue }
+        else { New-ItemProperty -Path $Script:WppKey -Name 'WindowsProtectedPrintMode' -Value ([int]$o.Mode) -PropertyType DWord -Force | Out-Null }
+        $swaps.Remove('__WPP__'); Save-PrnSwaps $swaps
+        Write-Log 'Mode d''impression protégé remis comme avant.' 'OK'
+    }
+    try { Restart-Service -Name Spooler -Force -ErrorAction Stop; Write-Log 'Spouleur redémarré.' 'OK' } catch { Write-Log 'Redémarrez le PC pour appliquer.' 'WARN' }
+    Set-SyncResult @{ Ok = @('wpp'); Bad = @() }
+}
+
 function Sync-Clock {
     Write-Log "Synchronisation de l'horloge"
     try {
