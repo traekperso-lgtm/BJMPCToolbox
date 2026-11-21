@@ -1284,6 +1284,7 @@ function Restore-Record {
             'mma'    { if ($r.Enabled) { Enable-MMAgent -MemoryCompression -ErrorAction Stop } }
             'dpi'    { Restore-DpiRecord $r }
             'regkey' { if (Test-Path -LiteralPath $r.Path) { Remove-Item -LiteralPath $r.Path -Recurse -Force -ErrorAction Stop } }
+            'fwgroup' { Get-NetFirewallRule -Group $r.Group -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue }
             'pwr'    { & powercfg.exe /setacvalueindex ([string]$r.Scheme) ([string]$r.Sub) ([string]$r.Setting) ([int]$r.Ac) | Out-Null; if ((Get-ActivePlanGuid) -eq [string]$r.Scheme) { & powercfg.exe /setactive ([string]$r.Scheme) | Out-Null } }
             'fsutilrefs' { & fsutil.exe behavior set DisableDeleteNotify ReFS ([int]$r.Value) | Out-Null }
             'taskon' { Disable-ScheduledTask -TaskPath $r.TaskPath -TaskName $r.TaskName -ErrorAction Stop | Out-Null }

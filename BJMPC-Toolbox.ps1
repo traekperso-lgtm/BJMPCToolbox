@@ -15,7 +15,7 @@
 #>
 
 $ErrorActionPreference = 'Continue'
-$Script:AppVersion = '2.6.1'
+$Script:AppVersion = '2.7'
 $Script:Root       = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $Script:LogDir     = Join-Path $env:SystemDrive 'BJMPC-Logs'
 $Script:BackupDir  = Join-Path $Script:LogDir 'Backup'
@@ -2855,27 +2855,59 @@ function Build-TweakPage {
         return
     }
     foreach ($g in $Groups) { [void](New-TweakCard $p $g.Name $g.Sub) }
+    return $p
 }
 
 function Build-Privacy {
-    Build-TweakPage 'priv' 'Confidentialité' 'Réduit la collecte de données de Windows et des logiciels tiers. Les cases déjà cochées sont les réglages recommandés ; rien n''est appliqué avant que vous cliquiez.' @(
+    $p = Build-TweakPage 'priv' 'Confidentialité' 'Réduit la collecte de données de Windows et des logiciels tiers. Les cases déjà cochées sont les réglages recommandés ; rien n''est appliqué avant que vous cliquiez.' @(
         @{ Name = 'Télémétrie et diagnostics'; Sub = 'Données envoyées à Microsoft. Windows reste pleinement fonctionnel.' },
         @{ Name = 'Publicités, recherche et suggestions'; Sub = 'Suggestions du menu Démarrage, publicités dans Windows, recherche web.' },
         @{ Name = 'IA et Copilot'; Sub = 'Copilot, Recall et les fonctions d''IA de Windows.' },
         @{ Name = 'Navigateurs et logiciels tiers'; Sub = 'Collecte de données d''Edge, Brave, Office, NVIDIA, Visual Studio… Les réglages d''un logiciel absent sont ignorés.' },
         @{ Name = 'Autorisations des applications'; Sub = 'Retire l''accès par défaut des applications à la caméra, au micro, aux contacts, etc.' })
+    if (-not $p -or $Script:CatalogError) { return }
+    $f = New-Card 'Pare-feu : couper Internet aux programmes de télémétrie' 'Règle sortante de blocage pour chaque programme de collecte présent sur ce PC : service DiagTrack (lui seul, pas tout svchost), inventaire de compatibilité, recensement de l''appareil, programme d''amélioration, rapports d''erreurs, agents de télémétrie Office et NVIDIA. Windows Update, Defender, le Store et l''activation ne sont pas touchés. Toutes les règles sont dans le groupe « BJMPC Confidentialité » et se retirent en un clic.' 'Pare-feu' 'a'
+    $fb = New-Object Windows.Controls.WrapPanel
+    $fb.Margin = '-8,10,0,6'
+    [void]$fb.Children.Add((New-Btn 'Analyser' (New-Spec 'opt' 'Get-TelemetryFirewallReport' 'Pare-feu : analyse' @{} '' { param($r) Show-FirewallReport $r }) -Primary))
+    [void]$fb.Children.Add((New-Btn 'Bloquer la télémétrie' (New-Spec 'opt' 'Block-TelemetryFirewall' 'Pare-feu : télémétrie bloquée' @{} '' $Script:AfterChange)))
+    [void]$fb.Children.Add((New-Btn 'Retirer les blocages' (New-Spec 'opt' 'Unblock-TelemetryFirewall' 'Pare-feu : blocages retirés' @{} '' $Script:AfterChange)))
+    [void]$f.Body.Children.Add($fb)
+    $Script:FwPanel = New-Object Windows.Controls.StackPanel
+    [void]$f.Body.Children.Add($Script:FwPanel)
+    $ft = New-Text 'Volontairement absent : blocage de listes d''adresses IP ou de domaines Microsoft (fichier hosts, listes « anti-espionnage ») : ces adresses changent sans cesse et servent aussi à Windows Update, Defender et l''activation ; les bloquer casse les mises à jour de sécurité.' 12.5 '#9298A3' 'Normal' -Wrap
+    $ft.Margin = '0,8,0,0'
+    [void]$f.Body.Children.Add($ft)
+    [void]$p.Children.Add($f.Card)
+}
+
+function Show-FirewallReport {
+    param($Res)
+    $Script:FwPanel.Children.Clear()
+    if (-not $Res) { [void]$Script:FwPanel.Children.Add((New-Text 'Analyse impossible.' 13 '#FF8A80' 'Normal' -Wrap)); return }
+    $present = @($Res.Items | Where-Object { $_.Present })
+    foreach ($i in $present) {
+        $txt = '{0}  {1} : {2}' -f $(if ($i.Blocked) { '✔' } else { '•' }), $i.Name, $(if ($i.Blocked) { 'bloqué' } else { 'autorisé' })
+        if (@($i.Live).Count) { $txt += ' · connecté maintenant à ' + (@($i.Live) -join ', ') }
+        [void]$Script:FwPanel.Children.Add((New-Text $txt 13 $(if ($i.Blocked) { '#7CE3A1' } elseif (@($i.Live).Count) { '#F5B94A' } else { '#C5C9D0' }) 'Normal' -Wrap))
+    }
+    $absent = @($Res.Items | Where-Object { -not $_.Present } | ForEach-Object { $_.Name })
+    if ($absent.Count) { $t = New-Text ('Absents de ce PC (ignorés) : ' + ($absent -join ' · ')) 12 '#9298A3' 'Normal' -Wrap; $t.Margin = '0,4,0,0'; [void]$Script:FwPanel.Children.Add($t) }
+    foreach ($w in @(@($Res.Firewall.ProfilesOff) | ForEach-Object { "Pare-feu Windows désactivé (profil $_) : les blocages n'y ont aucun effet." }) + @(@($Res.Firewall.ThirdParty) | ForEach-Object { "Pare-feu tiers actif ($_) : il peut remplacer celui de Windows ; refaites les blocages dans ce logiciel." })) {
+        $t = New-Text ('⚠  ' + $w) 13 '#F5B94A' 'Normal' -Wrap; $t.Margin = '0,6,0,0'; [void]$Script:FwPanel.Children.Add($t)
+    }
 }
 
 function Build-Interface {
-    Build-TweakPage 'ui' 'Interface et Explorateur' 'Confort d''utilisation de Windows 11. Tous ces réglages sont réversibles depuis le Journal.' @(
-        @{ Name = 'Interface et Explorateur'; Sub = 'Menu contextuel, barre des tâches, fichiers cachés, démarrage, notifications…' })
+    [void](Build-TweakPage 'ui' 'Interface et Explorateur' 'Confort d''utilisation de Windows 11. Tous ces réglages sont réversibles depuis le Journal.' @(
+        @{ Name = 'Interface et Explorateur'; Sub = 'Menu contextuel, barre des tâches, fichiers cachés, démarrage, notifications…' }))
 }
 
 function Build-WinSettings {
-    Build-TweakPage 'winset' 'Mises à jour et sécurité' 'Windows Update, sécurité et fonctionnalités facultatives.' @(
+    [void](Build-TweakPage 'winset' 'Mises à jour et sécurité' 'Windows Update, sécurité et fonctionnalités facultatives.' @(
         @{ Name = 'Mises à jour Windows'; Sub = 'Les mises à jour de sécurité restent installées.' },
         @{ Name = 'Sécurité'; Sub = 'Réglages à lire avant de cocher : certains retirent une protection ou en ajoutent une.' },
-        @{ Name = 'Fonctionnalités Windows facultatives'; Sub = 'Composants anciens rarement utiles. Désactivation réversible depuis le Journal.' })
+        @{ Name = 'Fonctionnalités Windows facultatives'; Sub = 'Composants anciens rarement utiles. Désactivation réversible depuis le Journal.' }))
 }
 
 #endregion
@@ -3947,6 +3979,9 @@ $Script:PlainMap = @(
     @{ K = '^Restart-AudioServices|¦Services audio'; C = 'repar'; T = 'Nous avons relancé le son de votre ordinateur.' }
     @{ K = '^Get-PrinterDiagnostic'; C = 'skip'; T = '' }
     @{ K = '^Get-StorageReport|^Show-NvmeState'; C = 'skip'; T = '' }
+    @{ K = '^Get-TelemetryFirewallReport'; C = 'skip'; T = '' }
+    @{ K = '^Unblock-TelemetryFirewall'; C = 'prive'; T = 'Nous avons retiré les blocages de télémétrie du pare-feu.' }
+    @{ K = '^Block-TelemetryFirewall'; C = 'prive'; T = 'Le pare-feu empêche désormais les programmes de collecte de données de Windows et de certains logiciels d''envoyer des informations.' }
     @{ K = '^Restore-StorageSettings|^Disable-NativeNvme'; C = 'vitesse'; T = 'Nous avons remis les réglages d''origine du stockage de votre ordinateur.' }
     @{ K = '^Enable-NativeNvme'; C = 'vitesse'; T = 'Nous avons activé le pilote Windows le plus récent pour votre disque NVMe, après avoir créé un point de restauration.' }
     @{ K = '^Invoke-StorageMaintenance|^Set-StoragePower'; C = 'vitesse'; T = 'Nous avons entretenu vos disques (SSD, disque dur, USB) pour qu''ils restent rapides et stables.' }

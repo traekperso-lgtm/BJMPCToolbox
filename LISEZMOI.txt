@@ -1,5 +1,19 @@
-﻿BJMPC Toolbox 2.6.1 - interface graphique (Windows 11)
-=======================================================
+﻿BJMPC Toolbox 2.7 - interface graphique (Windows 11)
+=====================================================
+
+NOUVEAUTES 2.7
+  - Personnalisation et divers > Confidentialite > carte "Pare-feu : couper Internet aux programmes de telemetrie" :
+       Analyser : pour chaque programme de collecte present (service DiagTrack, CompatTelRunner, DeviceCensus,
+         wsqmcons, aitstatic, wermgr, WerFault, msoia d'Office, NvTelemetryContainer de NVIDIA) : bloque ou non,
+         connexions Internet en cours ; signale un pare-feu Windows desactive ou remplace par celui d'un antivirus
+         (cas ou les regles n'ont aucun effet).
+       Bloquer la telemetrie : une regle sortante par programme present ; DiagTrack est vise par son service, pas
+         tout svchost. Chaque regle est verifiee apres creation.
+       Retirer les blocages : supprime tout le groupe "BJMPC Confidentialite" (aussi depuis le Journal).
+       Volontairement absent : listes d'adresses IP ou de domaines Microsoft (hosts, listes "anti-espionnage") :
+         elles servent aussi a Windows Update, Defender et l'activation.
+  - Test automatique sous Windows : creation reelle des regles, verification (sortant, blocage, service DiagTrack)
+    puis retrait complet.
 
 NOUVEAUTES 2.6.1
   - Pilote NVMe natif (Optimiser > Stockage, carte Expert) : passer de la pile SCSI (stornvme + disk.sys) a

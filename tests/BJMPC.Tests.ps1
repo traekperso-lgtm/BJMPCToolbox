@@ -214,6 +214,35 @@ $Sync.Result = @{ Ok = $ok; A = [BJ.FeatureStore]::Obfuscate([uint32]48433719); 
     }
 }
 
+Describe 'Pare-feu : télémétrie' {
+    It 'Analyse, blocage réel puis retrait complet des règles du groupe BJMPC' {
+        $r = Invoke-Engine 'opt' @'
+$Script:LogFile = Join-Path $env:TEMP 'bjmpc-test-fw.log'
+$Script:StateFile = Join-Path $env:TEMP ('bjmpc-test-orig-' + [guid]::NewGuid().ToString('N') + '.json')
+Get-TelemetryFirewallReport
+$before = $Sync.Result
+Block-TelemetryFirewall
+$rules = @(Get-NetFirewallRule -Group $Script:FwGroup -ErrorAction SilentlyContinue)
+$diag = $rules | Where-Object { $_.Name -eq 'BJMPC-Tel-diagtrack' }
+$svc = $(if ($diag) { [string]($diag | Get-NetFirewallServiceFilter).Service } else { '' })
+$dir = @($rules | ForEach-Object { [string]$_.Direction + '/' + [string]$_.Action } | Select-Object -Unique)
+Get-TelemetryFirewallReport
+$mid = $Sync.Result
+Unblock-TelemetryFirewall
+$after = @(Get-NetFirewallRule -Group $Script:FwGroup -ErrorAction SilentlyContinue).Count
+$Sync.Result = @{ Present = @($before.Items | Where-Object { $_.Present }).Count; Rules = $rules.Count; Svc = $svc; Dir = $dir
+    Blocked = @($mid.Items | Where-Object { $_.Blocked }).Count; After = $after }
+'@
+        $r.Errors | Should -BeNullOrEmpty
+        $r.Result.Present | Should -BeGreaterThan 0
+        $r.Result.Rules | Should -Be $r.Result.Present
+        $r.Result.Svc | Should -Be 'DiagTrack'
+        $r.Result.Dir | Should -Be @('Outbound/Block')
+        $r.Result.Blocked | Should -Be $r.Result.Present
+        $r.Result.After | Should -Be 0
+    }
+}
+
 Describe 'Stockage (lecture seule)' {
     It 'Rapport de stockage, état du pilote NVMe et lecture des réglages d''alimentation sans erreur' {
         $r = Invoke-Engine 'opt' @'

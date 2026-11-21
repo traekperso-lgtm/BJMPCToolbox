@@ -1296,6 +1296,100 @@ function Set-Tweaks {
     Write-Log ("{0} réglage(s) appliqué(s), {1} ignoré(s). Annulation possible depuis l'onglet Restauration." -f $ok, $skipped) 'OK'
 }
 
+# ---------------------------------------------------------------- Pare-feu : programmes de télémétrie
+# Blocage SORTANT par programme ou par service (jamais par listes d'adresses IP : celles de Microsoft changent sans cesse
+# et sont partagées avec Windows Update, Defender et le Store). Toutes les règles portent le groupe ci-dessous : un clic
+# les retire toutes. Une cible absente du PC est ignorée.
+$Script:FwGroup = 'BJMPC Confidentialité'
+$Script:FwTargets = @(
+    @{ Id = 'diagtrack'; Name = 'Service de télémétrie (DiagTrack)'; Service = 'DiagTrack'; Path = '%SystemRoot%\System32\svchost.exe' }
+    @{ Id = 'compattel'; Name = 'Inventaire de compatibilité (CompatTelRunner)'; Path = '%SystemRoot%\System32\CompatTelRunner.exe' }
+    @{ Id = 'census'; Name = 'Recensement de l''appareil (DeviceCensus)'; Path = '%SystemRoot%\System32\DeviceCensus.exe' }
+    @{ Id = 'sqm'; Name = 'Programme d''amélioration (wsqmcons)'; Path = '%SystemRoot%\System32\wsqmcons.exe' }
+    @{ Id = 'aitstatic'; Name = 'Télémétrie des applications (aitstatic)'; Path = '%SystemRoot%\System32\aitstatic.exe' }
+    @{ Id = 'wermgr'; Name = 'Envoi des rapports d''erreurs (wermgr)'; Path = '%SystemRoot%\System32\wermgr.exe' }
+    @{ Id = 'werfault'; Name = 'Rapports de plantage (WerFault)'; Path = '%SystemRoot%\System32\WerFault.exe' }
+    @{ Id = 'office'; Name = 'Agent de télémétrie Office (msoia)'; Path = '%ProgramFiles%\Microsoft Office\root\Office16\msoia.exe' }
+    @{ Id = 'office86'; Name = 'Agent de télémétrie Office 32 bits (msoia)'; Path = '%ProgramFiles(x86)%\Microsoft Office\root\Office16\msoia.exe' }
+    @{ Id = 'nvtelem'; Name = 'Télémétrie NVIDIA (NvTelemetryContainer)'; Path = '%ProgramFiles(x86)%\NVIDIA Corporation\NvTelemetry\NvTelemetryContainer.exe' }
+)
+
+function Resolve-FwPath {
+    param([string]$Path)
+    return [Environment]::ExpandEnvironmentVariables($Path)
+}
+
+function Get-FirewallStatus {
+    # Le pare-feu Windows applique-t-il réellement les règles ? (profils actifs, pare-feu d'un antivirus tiers)
+    $st = [ordered]@{ ProfilesOff = @(); ThirdParty = @() }
+    try { $st.ProfilesOff = @(Get-NetFirewallProfile -ErrorAction Stop | Where-Object { -not $_.Enabled } | ForEach-Object { [string]$_.Name }) } catch {}
+    try {
+        $st.ThirdParty = @(Get-CimInstance -Namespace root/SecurityCenter2 -ClassName FirewallProduct -ErrorAction Stop |
+            Where-Object { [string]$_.displayName -notmatch 'Windows' } | ForEach-Object { [string]$_.displayName })
+    } catch {}
+    return [pscustomobject]$st
+}
+
+function Get-TelemetryFirewallReport {
+    # Lecture seule : pour chaque programme de télémétrie, présence sur le PC, règle de blocage, connexions en cours.
+    $rules = @{}
+    try { foreach ($r in @(Get-NetFirewallRule -Group $Script:FwGroup -ErrorAction SilentlyContinue)) { $rules[[string]$r.Name] = $r } } catch {}
+    $conns = @(); try { $conns = @(Get-NetTCPConnection -State Established -ErrorAction Stop | Where-Object { $_.RemoteAddress -notmatch '^(127\.|::1$|0\.0\.0\.0)' }) } catch {}
+    $diagPid = 0; try { $diagPid = [int](Get-CimInstance Win32_Service -Filter "Name='DiagTrack'" -ErrorAction Stop).ProcessId } catch {}
+    $procs = @{}; foreach ($p in @(Get-Process -ErrorAction SilentlyContinue)) { try { if ($p.Path) { $procs[$p.Id] = $p.Path } } catch {} }
+    $items = @()
+    foreach ($t in $Script:FwTargets) {
+        $path = Resolve-FwPath $t.Path
+        $exists = Test-Path -LiteralPath $path
+        $pids = @()
+        if ($t.Service) { if ($diagPid -gt 0) { $pids = @($diagPid) } }
+        else { $pids = @($procs.Keys | Where-Object { [string]$procs[$_] -ieq $path }) }
+        $live = @($conns | Where-Object { $pids -contains [int]$_.OwningProcess } | ForEach-Object { "$($_.RemoteAddress):$($_.RemotePort)" } | Select-Object -Unique)
+        $rule = $rules["BJMPC-Tel-$($t.Id)"]
+        $items += [pscustomobject]@{ Id = $t.Id; Name = $t.Name; Present = $exists; Blocked = [bool]($rule -and [string]$rule.Enabled -eq 'True'); Live = $live }
+    }
+    $res = [pscustomobject]@{ Items = $items; Firewall = (Get-FirewallStatus) }
+    Set-OptResult $res
+    foreach ($i in $items | Where-Object { $_.Present }) {
+        Write-Log ("{0} : {1}{2}" -f $i.Name, $(if ($i.Blocked) { 'bloqué' } else { 'autorisé' }), $(if ($i.Live.Count) { ' · connecté à ' + ($i.Live -join ', ') } else { '' })) $(if ($i.Blocked) { 'OK' } else { 'INFO' })
+    }
+    if ($res.Firewall.ProfilesOff.Count) { Write-Log ("Pare-feu Windows désactivé pour : " + ($res.Firewall.ProfilesOff -join ', ') + ' : les règles n''y ont aucun effet.') 'WARN' }
+    if ($res.Firewall.ThirdParty.Count) { Write-Log ("Pare-feu tiers actif (" + ($res.Firewall.ThirdParty -join ', ') + ') : il peut remplacer celui de Windows ; les règles de Windows risquent d''être ignorées.') 'WARN' }
+}
+
+function Block-TelemetryFirewall {
+    # Une règle sortante de blocage par programme présent (le service DiagTrack est visé seul, pas tout svchost).
+    $fw = Get-FirewallStatus
+    if (-not $Script:Orig.Contains('fwgroup|' + $Script:FwGroup)) { Add-Orig ('fwgroup|' + $Script:FwGroup) @{ Type = 'fwgroup'; Group = $Script:FwGroup } }
+    $n = 0
+    foreach ($t in $Script:FwTargets) {
+        $path = Resolve-FwPath $t.Path
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        $name = "BJMPC-Tel-$($t.Id)"
+        try {
+            Remove-NetFirewallRule -Name $name -ErrorAction SilentlyContinue
+            $prm = @{ Name = $name; DisplayName = "BJMPC - Télémétrie : $($t.Name)"; Group = $Script:FwGroup; Direction = 'Outbound'; Action = 'Block'
+                Program = $path; Profile = 'Any'; Enabled = 'True'; Description = 'Ajoutée par BJMPC Toolbox (Confidentialité). Retrait : bouton « Retirer les blocages ».' }
+            if ($t.Service) { $prm.Service = $t.Service }
+            New-NetFirewallRule @prm -ErrorAction Stop | Out-Null
+            if (Get-NetFirewallRule -Name $name -ErrorAction SilentlyContinue) { Write-Log "Bloqué : $($t.Name)" 'OK'; $n++ }
+            else { Write-Log "Règle non retrouvée après création : $($t.Name)" 'WARN' }
+        } catch { Write-Log "$($t.Name) : $($_.Exception.Message)" 'WARN' }
+    }
+    Save-Orig
+    Write-Log ("{0} programme(s) de télémétrie bloqué(s) dans le pare-feu (groupe « {1} »)." -f $n, $Script:FwGroup) 'OK'
+    if ($fw.ProfilesOff.Count) { Write-Log ("Attention : le pare-feu Windows est désactivé pour " + ($fw.ProfilesOff -join ', ') + ' : ces blocages n''y ont aucun effet.') 'WARN' }
+    if ($fw.ThirdParty.Count) { Write-Log ("Attention : pare-feu tiers (" + ($fw.ThirdParty -join ', ') + ') : ajoutez les mêmes blocages dans ce logiciel si celui de Windows est remplacé.') 'WARN' }
+}
+
+function Unblock-TelemetryFirewall {
+    $r = @(Get-NetFirewallRule -Group $Script:FwGroup -ErrorAction SilentlyContinue)
+    if ($r.Count -eq 0) { Write-Log 'Aucun blocage de la Toolbox dans le pare-feu.' 'OK' }
+    else { $r | Remove-NetFirewallRule -ErrorAction SilentlyContinue; Write-Log ("{0} règle(s) retirée(s) du pare-feu." -f $r.Count) 'OK' }
+    $k = 'fwgroup|' + $Script:FwGroup
+    if ($Script:Orig.Contains($k)) { $Script:Orig.Remove($k); Save-Orig }
+}
+
 # ---------------------------------------------------------------- DNS chiffré (DNS over HTTPS)
 # Servers : adresse -> modèle DoH, dans l'ordre d'utilisation (IPv4 puis IPv6). Strict : le fournisseur ne répond qu'en chiffré.
 $Script:DnsPresets = [ordered]@{
