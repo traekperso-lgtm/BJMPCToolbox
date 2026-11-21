@@ -267,6 +267,7 @@ $mid = Get-Printer -Name 'BJMPC Test IPP'
 $swOk = @($Sync.Result.Ok)
 Restore-PrinterDriver -Name 'BJMPC Test IPP'
 $end = Get-Printer -Name 'BJMPC Test IPP'
+if (Get-PrinterPort -Name 'IP_192.0.2.77' -ErrorAction SilentlyContinue) { Start-Sleep -Seconds 5; Get-PrinterDriverReport }   # nettoyage différé
 $portLeft = [bool](Get-PrinterPort -Name 'IP_192.0.2.77' -ErrorAction SilentlyContinue)
 Remove-Printer -Name 'BJMPC Test IPP' -ErrorAction SilentlyContinue; Remove-PrinterPort -Name 'BJTEST_PORT' -ErrorAction SilentlyContinue
 $Sync.Result = @{ M1 = $m1; M2 = $m2; Cls = $cls; RepClass = $(if ($rep) { $rep[0].Class } else { $null }); SwOk = $swOk

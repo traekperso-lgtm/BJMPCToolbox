@@ -2216,6 +2216,15 @@ function Get-PrinterDriverReport {
     Write-Log '=== Pilotes d''imprimante (lecture seule) ==='
     $wpp = Get-WppState
     $swaps = Get-PrnSwaps
+    if ($swaps.ContainsKey('__PORTS__')) {
+        $keep = @()
+        foreach ($pn in @($swaps['__PORTS__'])) {
+            $inUse = @(Get-Printer -ErrorAction SilentlyContinue | Where-Object { [string]$_.PortName -eq [string]$pn }).Count
+            if ($inUse -eq 0 -and (Get-PrinterPort -Name $pn -ErrorAction SilentlyContinue)) { try { Remove-PrinterPort -Name $pn -ErrorAction Stop; Write-Log "Port inutilisé retiré : $pn" 'OK' } catch { $keep += $pn } }
+        }
+        if ($keep.Count) { $swaps['__PORTS__'] = $keep } else { $swaps.Remove('__PORTS__') }
+        Save-PrnSwaps $swaps
+    }
     $cands = @(Get-StoreVendorPrinterDrivers)
     $ports = @{}; try { foreach ($p in @(Get-PrinterPort -ErrorAction Stop)) { $ports[[string]$p.Name] = $p } } catch {}
     $rows = @()
@@ -2311,10 +2320,15 @@ function Restore-PrinterDriver {
             $used = @(Get-Printer -ErrorAction SilentlyContinue | Where-Object { [string]$_.PortName -eq [string]$s.NewPort }).Count
             if ($used -eq 0) {
                 # Le spouleur garde le port ouvert quelques instants après le changement : plusieurs essais.
-                for ($t = 0; $t -lt 10 -and (Get-PrinterPort -Name ([string]$s.NewPort) -ErrorAction SilentlyContinue); $t++) {
-                    try { Remove-PrinterPort -Name ([string]$s.NewPort) -ErrorAction Stop } catch { Start-Sleep -Milliseconds 700 }
+                for ($t = 0; $t -lt 30 -and (Get-PrinterPort -Name ([string]$s.NewPort) -ErrorAction SilentlyContinue); $t++) {
+                    try { Remove-PrinterPort -Name ([string]$s.NewPort) -ErrorAction Stop } catch { Start-Sleep -Milliseconds 1000 }
                 }
-                if (Get-PrinterPort -Name ([string]$s.NewPort) -ErrorAction SilentlyContinue) { Write-Log "Port $($s.NewPort) encore utilisé par le spouleur : il sera inutilisé (sans effet) ; retirez-le plus tard depuis l'analyse des imprimantes." 'WARN' }
+                if (Get-PrinterPort -Name ([string]$s.NewPort) -ErrorAction SilentlyContinue) {
+                    # Retiré à la prochaine analyse des pilotes (le spouleur l'aura relâché).
+                    $sw2 = Get-PrnSwaps; $pend = @(); if ($sw2.ContainsKey('__PORTS__')) { $pend = @($sw2['__PORTS__']) }
+                    $sw2['__PORTS__'] = @($pend + [string]$s.NewPort | Select-Object -Unique); Save-PrnSwaps $sw2; $swaps = $sw2
+                    Write-Log "Port $($s.NewPort) encore tenu par le spouleur : il sera retiré à la prochaine analyse (il ne sert plus à rien)." 'WARN'
+                }
                 else { Write-Log "Port retiré : $($s.NewPort)" 'OK' }
             }
         }
