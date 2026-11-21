@@ -273,6 +273,7 @@ $Sync.Result = @{ M1 = $m1; M2 = $m2; Cls = $cls; RepClass = $(if ($rep) { $rep[
     MidDrv = [string]$mid.DriverName; MidPort = [string]$mid.PortName; EndDrv = [string]$end.DriverName; EndPort = [string]$end.PortName; PortLeft = $portLeft }
 '@
         $r.Errors | Should -BeNullOrEmpty
+        Write-Host ('::warning::PRN ' + ((@{ Errors = @($r.Errors | ForEach-Object { [string]$_ }); Result = $r.Result } | ConvertTo-Json -Depth 4 -Compress) -replace '[\r\n]', ' '))
         $r.Result.M1 | Should -Be 'HP LaserJet Pro M404-M405 PCL 6 (V3)'
         $r.Result.M2 | Should -Be 'Brother MFC-J5330DW Printer'
         $r.Result.Cls | Should -Not -BeNullOrEmpty
