@@ -2320,9 +2320,17 @@ function Restore-PrinterDriver {
             $used = @(Get-Printer -ErrorAction SilentlyContinue | Where-Object { [string]$_.PortName -eq [string]$s.NewPort }).Count
             if ($used -eq 0) {
                 # Le spouleur garde le port ouvert quelques instants après le changement : plusieurs essais.
-                for ($t = 0; $t -lt 30 -and (Get-PrinterPort -Name ([string]$s.NewPort) -ErrorAction SilentlyContinue); $t++) {
-                    try { Remove-PrinterPort -Name ([string]$s.NewPort) -ErrorAction Stop } catch { Start-Sleep -Milliseconds 1000 }
+                $err = ''
+                for ($t = 0; $t -lt 12 -and (Get-PrinterPort -Name ([string]$s.NewPort) -ErrorAction SilentlyContinue); $t++) {
+                    # Le moniteur TCP/IP garde le port tant que le spouleur a la file ouverte : après quelques essais, on
+                    # redémarre le spouleur une seule fois, et seulement si aucun travail d'impression n'attend.
+                    if ($t -eq 5) {
+                        $jobs = 0; try { $jobs = @(Get-CimInstance -ClassName Win32_PrintJob -ErrorAction Stop).Count } catch {}
+                        if ($jobs -eq 0) { try { Restart-Service -Name Spooler -Force -ErrorAction Stop; Start-Sleep -Seconds 2 } catch {} }
+                    }
+                    try { Remove-PrinterPort -Name ([string]$s.NewPort) -ErrorAction Stop } catch { $err = $_.Exception.Message; Start-Sleep -Milliseconds 1000 }
                 }
+                if ($err) { Write-Log "Retrait du port $($s.NewPort) : $err" }
                 if (Get-PrinterPort -Name ([string]$s.NewPort) -ErrorAction SilentlyContinue) {
                     # Retiré à la prochaine analyse des pilotes (le spouleur l'aura relâché).
                     $sw2 = Get-PrnSwaps; $pend = @(); if ($sw2.ContainsKey('__PORTS__')) { $pend = @($sw2['__PORTS__']) }

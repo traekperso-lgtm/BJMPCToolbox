@@ -270,7 +270,8 @@ $end = Get-Printer -Name 'BJMPC Test IPP'
 if (Get-PrinterPort -Name 'IP_192.0.2.77' -ErrorAction SilentlyContinue) { Start-Sleep -Seconds 5; Get-PrinterDriverReport }   # nettoyage différé
 $portLeft = [bool](Get-PrinterPort -Name 'IP_192.0.2.77' -ErrorAction SilentlyContinue)
 Remove-Printer -Name 'BJMPC Test IPP' -ErrorAction SilentlyContinue; Remove-PrinterPort -Name 'BJTEST_PORT' -ErrorAction SilentlyContinue
-$Sync.Result = @{ M1 = $m1; M2 = $m2; Cls = $cls; RepClass = $(if ($rep) { $rep[0].Class } else { $null }); SwOk = $swOk
+$logTail = @(Get-Content -LiteralPath $Script:LogFile -ErrorAction SilentlyContinue | Select-Object -Last 8)
+$Sync.Result = @{ Log = $logTail; M1 = $m1; M2 = $m2; Cls = $cls; RepClass = $(if ($rep) { $rep[0].Class } else { $null }); SwOk = $swOk
     MidDrv = [string]$mid.DriverName; MidPort = [string]$mid.PortName; EndDrv = [string]$end.DriverName; EndPort = [string]$end.PortName; PortLeft = $portLeft }
 '@
         $r.Errors | Should -BeNullOrEmpty
