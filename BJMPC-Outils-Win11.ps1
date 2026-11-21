@@ -2309,7 +2309,14 @@ function Restore-PrinterDriver {
         Write-Log ("« {0} » : retour au pilote {1} sur le port {2}." -f $Name, $s.Driver, $s.Port) 'OK'
         if ([bool]$s.CreatedPort) {
             $used = @(Get-Printer -ErrorAction SilentlyContinue | Where-Object { [string]$_.PortName -eq [string]$s.NewPort }).Count
-            if ($used -eq 0) { Remove-PrinterPort -Name ([string]$s.NewPort) -ErrorAction SilentlyContinue; Write-Log "Port retiré : $($s.NewPort)" 'OK' }
+            if ($used -eq 0) {
+                # Le spouleur garde le port ouvert quelques instants après le changement : plusieurs essais.
+                for ($t = 0; $t -lt 10 -and (Get-PrinterPort -Name ([string]$s.NewPort) -ErrorAction SilentlyContinue); $t++) {
+                    try { Remove-PrinterPort -Name ([string]$s.NewPort) -ErrorAction Stop } catch { Start-Sleep -Milliseconds 700 }
+                }
+                if (Get-PrinterPort -Name ([string]$s.NewPort) -ErrorAction SilentlyContinue) { Write-Log "Port $($s.NewPort) encore utilisé par le spouleur : il sera inutilisé (sans effet) ; retirez-le plus tard depuis l'analyse des imprimantes." 'WARN' }
+                else { Write-Log "Port retiré : $($s.NewPort)" 'OK' }
+            }
         }
         $swaps.Remove($Name); Save-PrnSwaps $swaps
         Set-SyncResult @{ Ok = @($Name); Bad = @() }
