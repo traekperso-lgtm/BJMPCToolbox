@@ -287,6 +287,35 @@ $Sync.Result = @{ M1 = $m1; M2 = $m2; Cls = $cls; RepClass = $(if ($rep) { $rep[
     }
 }
 
+Describe 'Pare-feu : jeux et programmes inconnus' {
+    It 'Trouve un rapporteur de plantage dans un jeu, refuse anti-triche et Windows, bloque puis retire' {
+        $r = Invoke-Engine 'opt' @'
+$Script:LogFile = Join-Path $env:TEMP 'bjmpc-test-fw2.log'
+$Script:StateFile = Join-Path $env:TEMP ('bjmpc-test-orig-' + [guid]::NewGuid().ToString('N') + '.json')
+$g = Join-Path $env:LOCALAPPDATA 'Programs\BJTestGame\Binaries\Win64'
+$ac = Join-Path $env:LOCALAPPDATA 'Programs\BJTestGame\EasyAntiCheat'
+New-Item -ItemType Directory -Path $g, $ac -Force | Out-Null
+Copy-Item (Join-Path $env:SystemRoot 'System32\where.exe') (Join-Path $g 'CrashReportClient.exe') -Force
+Copy-Item (Join-Path $env:SystemRoot 'System32\where.exe') (Join-Path $ac 'CrashReportClient.exe') -Force
+Copy-Item (Join-Path $env:SystemRoot 'System32\where.exe') (Join-Path $g 'BJTestGame.exe') -Force
+$found = @(Find-TelemetryReporters)
+$tg = @(Get-FwAllTargets | Where-Object { $_.Path -like '*BJTestGame*' })
+Block-ProgramsOutbound -Paths @((Join-Path $g 'BJTestGame.exe'), (Join-Path $ac 'CrashReportClient.exe'), (Join-Path $env:SystemRoot 'System32\where.exe'))
+$rules = @(Get-NetFirewallRule -Group $Script:FwGroup -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'BJMPC-App-*' })
+Unblock-TelemetryFirewall
+$left = @(Get-NetFirewallRule -Group $Script:FwGroup -ErrorAction SilentlyContinue).Count
+Remove-Item (Join-Path $env:LOCALAPPDATA 'Programs\BJTestGame') -Recurse -Force -ErrorAction SilentlyContinue
+$Sync.Result = @{ Found = @($found | Where-Object { $_ -like '*BJTestGame*' }); Targets = $tg.Count; Rules = $rules.Count; Left = $left }
+'@
+        $r.Errors | Should -BeNullOrEmpty
+        @($r.Result.Found).Count | Should -Be 1
+        @($r.Result.Found)[0] | Should -Match 'Binaries\\Win64\\CrashReportClient\.exe$'
+        $r.Result.Targets | Should -Be 1
+        $r.Result.Rules | Should -Be 1
+        $r.Result.Left | Should -Be 0
+    }
+}
+
 Describe 'Stockage (lecture seule)' {
     It 'Rapport de stockage, état du pilote NVMe et lecture des réglages d''alimentation sans erreur' {
         $r = Invoke-Engine 'opt' @'

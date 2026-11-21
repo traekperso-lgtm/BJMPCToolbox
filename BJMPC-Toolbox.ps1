@@ -15,7 +15,7 @@
 #>
 
 $ErrorActionPreference = 'Continue'
-$Script:AppVersion = '2.8'
+$Script:AppVersion = '2.9'
 $Script:Root       = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $Script:LogDir     = Join-Path $env:SystemDrive 'BJMPC-Logs'
 $Script:BackupDir  = Join-Path $Script:LogDir 'Backup'
@@ -2881,7 +2881,7 @@ function Build-Privacy {
         @{ Name = 'Navigateurs et logiciels tiers'; Sub = 'Collecte de données d''Edge, Brave, Office, NVIDIA, Visual Studio… Les réglages d''un logiciel absent sont ignorés.' },
         @{ Name = 'Autorisations des applications'; Sub = 'Retire l''accès par défaut des applications à la caméra, au micro, aux contacts, etc.' })
     if (-not $p -or $Script:CatalogError) { return }
-    $f = New-Card 'Pare-feu : couper Internet aux programmes de télémétrie' 'Règle sortante de blocage pour chaque programme de collecte présent sur ce PC : service DiagTrack (lui seul, pas tout svchost), inventaire de compatibilité, recensement de l''appareil, programme d''amélioration, rapports d''erreurs, agents de télémétrie Office et NVIDIA. Windows Update, Defender, le Store et l''activation ne sont pas touchés. Toutes les règles sont dans le groupe « BJMPC Confidentialité » et se retirent en un clic.' 'Pare-feu' 'a'
+    $f = New-Card 'Pare-feu : couper Internet aux programmes de télémétrie' 'Règle sortante de blocage pour chaque programme de collecte présent sur ce PC : service DiagTrack (lui seul, pas tout svchost), inventaire de compatibilité, recensement de l''appareil, programme d''amélioration, rapports d''erreurs, agents de télémétrie Office et NVIDIA, et les rapporteurs de plantage copiés dans chaque jeu ou logiciel (Unreal Engine, Unity, BugSplat, CrashRpt, Crashpad), trouvés dans les bibliothèques Steam, Epic, GOG, EA, Ubisoft, Xbox, Riot, Battle.net et Program Files. Windows Update, Defender, le Store, l''activation, les anti-triche et les lanceurs de jeux ne sont jamais touchés. Toutes les règles sont dans le groupe « BJMPC Confidentialité » et se retirent en un clic.' 'Pare-feu' 'a'
     $fb = New-Object Windows.Controls.WrapPanel
     $fb.Margin = '-8,10,0,6'
     [void]$fb.Children.Add((New-Btn 'Analyser' (New-Spec 'opt' 'Get-TelemetryFirewallReport' 'Pare-feu : analyse' @{} '' { param($r) Show-FirewallReport $r }) -Primary))
@@ -2889,7 +2889,26 @@ function Build-Privacy {
     [void]$fb.Children.Add((New-Btn 'Retirer les blocages' (New-Spec 'opt' 'Unblock-TelemetryFirewall' 'Pare-feu : blocages retirés' @{} '' $Script:AfterChange)))
     [void]$f.Body.Children.Add($fb)
     $Script:FwPanel = New-Object Windows.Controls.StackPanel
-    [void]$f.Body.Children.Add($Script:FwPanel)
+    [void]$f.Body.Children.Add((New-ScrollList $Script:FwPanel 260))
+    $ot = New-Text 'Programmes inconnus : observez qui se connecte à Internet (hors composants de Windows), puis cochez ceux à couper. Couper un jeu ou un logiciel lui retire aussi ses fonctions en ligne (multijoueur, mises à jour, licence) : à réserver à ce que vous connaissez.' 13 '#C5C9D0' 'Normal' -Wrap
+    $ot.Margin = '0,14,0,0'
+    [void]$f.Body.Children.Add($ot)
+    $Script:FwAppChecks = New-Object System.Collections.ArrayList
+    $ob = New-Object Windows.Controls.WrapPanel
+    $ob.Margin = '-8,6,0,6'
+    [void]$ob.Children.Add((New-Btn 'Observer 30 secondes' (New-Spec 'opt' 'Get-OutboundAppsReport -Seconds 30' 'Pare-feu : programmes connectés' @{} '' { param($r) Show-OutboundApps $r })))
+    $obs = New-Spec 'opt' '' 'Pare-feu : programmes coupés' @{} '' $Script:AfterChange
+    $obs.CodeFn = {
+        $q = { param($v) "'" + (([string]$v) -replace "(['\u2018\u2019\u201A\u201B])", '$1$1' -replace '[\x00-\x1F]', '') + "'" }
+        $sel = @($Script:FwAppChecks | Where-Object { $_.IsChecked -and $_.Tag } | ForEach-Object { & $q $_.Tag })
+        if ($sel.Count -eq 0) { return '' }
+        return ('Block-ProgramsOutbound -Paths @(' + ($sel -join ',') + ')')
+    }
+    $obs.ConfirmFn = { "Couper Internet à {0} programme(s) ? Ils perdront leurs fonctions en ligne. Retrait en un clic avec « Retirer les blocages »." -f @($Script:FwAppChecks | Where-Object { $_.IsChecked }).Count }
+    [void]$ob.Children.Add((New-Btn 'Couper Internet aux programmes cochés' $obs))
+    [void]$f.Body.Children.Add($ob)
+    $Script:FwAppPanel = New-Object Windows.Controls.StackPanel
+    [void]$f.Body.Children.Add((New-ScrollList $Script:FwAppPanel 240))
     $ft = New-Text 'Volontairement absent : blocage de listes d''adresses IP ou de domaines Microsoft (fichier hosts, listes « anti-espionnage ») : ces adresses changent sans cesse et servent aussi à Windows Update, Defender et l''activation ; les bloquer casse les mises à jour de sécurité.' 12.5 '#9298A3' 'Normal' -Wrap
     $ft.Margin = '0,8,0,0'
     [void]$f.Body.Children.Add($ft)
@@ -2923,6 +2942,23 @@ function Show-PrinterDrivers {
         $tag = $(if ($r.Class) { 'Pilote Microsoft' } else { 'Pilote fabricant' })
         foreach ($b in $btns) { [void]$Script:ActionButtons.Remove($b) }   # recréés à chaque analyse
         Add-Row $Script:PrnDrvPanel $r.Name $sub $tag $(if ($r.Class) { 'w' } else { 'g' }) $btns
+    }
+}
+
+function Show-OutboundApps {
+    param($Res)
+    $Script:FwAppPanel.Children.Clear(); $Script:FwAppChecks.Clear()
+    $items = @(); if ($Res) { $items = @($Res.Items) }
+    if ($items.Count -eq 0) { [void]$Script:FwAppPanel.Children.Add((New-Text 'Aucun programme hors Windows ne s''est connecté à Internet pendant l''observation.' 13 '#9298A3' 'Normal' -Wrap)); return }
+    foreach ($i in $items) {
+        $cb = New-Object Windows.Controls.CheckBox
+        $cb.Tag = [string]$i.Path; $cb.Margin = '0,4,0,4'; $cb.Foreground = '#E6E8EC'
+        $lbl = '{0} · {1} · {2} adresse(s){3}' -f $i.Name, $(if ($i.Publisher) { $i.Publisher } else { 'éditeur inconnu' }), $i.Hosts, $(if ($i.Blocked) { ' · déjà coupé' } elseif ($i.Protected) { ' · anti-triche ou lanceur : jamais coupé' } elseif (-not $i.Signed) { ' · non signé' } else { '' })
+        $cb.Content = (New-Text $lbl 13 $(if (-not $i.Signed -and -not $i.Blocked) { '#F5B94A' } else { '#C5C9D0' }) 'Normal' -Wrap)
+        $cb.ToolTip = [string]$i.Path
+        if ($i.Blocked -or $i.Protected) { $cb.IsEnabled = $false }
+        [void]$Script:FwAppChecks.Add($cb)
+        [void]$Script:FwAppPanel.Children.Add($cb)
     }
 }
 
@@ -4024,7 +4060,8 @@ $Script:PlainMap = @(
     @{ K = '^Restart-AudioServices|¦Services audio'; C = 'repar'; T = 'Nous avons relancé le son de votre ordinateur.' }
     @{ K = '^Get-PrinterDiagnostic'; C = 'skip'; T = '' }
     @{ K = '^Get-StorageReport|^Show-NvmeState'; C = 'skip'; T = '' }
-    @{ K = '^Get-TelemetryFirewallReport'; C = 'skip'; T = '' }
+    @{ K = '^Get-TelemetryFirewallReport|^Get-OutboundAppsReport'; C = 'skip'; T = '' }
+    @{ K = '^Block-ProgramsOutbound'; C = 'prive'; T = 'Nous avons coupé l''accès à Internet de programmes que vous avez choisis.' }
     @{ K = '^Get-PrinterDriverReport'; C = 'skip'; T = '' }
     @{ K = '^Switch-PrinterToVendor|^Restore-PrinterDriver|^Set-ProtectedPrintMode'; C = 'repar'; T = 'Nous avons réglé le pilote de votre imprimante pour retrouver toutes ses fonctions.' }
     @{ K = '^Unblock-TelemetryFirewall'; C = 'prive'; T = 'Nous avons retiré les blocages de télémétrie du pare-feu.' }

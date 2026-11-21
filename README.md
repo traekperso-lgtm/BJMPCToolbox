@@ -2,7 +2,7 @@
 
 🇫🇷 [Français](#-français) · 🇬🇧 [English](#-english)
 
-> **Version 2.8** · Windows 11 · Windows PowerShell 5.1 (WPF) · by **BJMPC Informatique**
+> **Version 2.9** · Windows 11 · Windows PowerShell 5.1 (WPF) · by **BJMPC Informatique**
 
 ---
 
@@ -21,6 +21,11 @@ Elle est écrite en Windows PowerShell 5.1 (interface WPF), sans installation : 
 - **Sauvegarde automatique des fichiers du client** vers un autre disque, à la demande ou planifiée.
 - **Optimisations dépassées retirées** : Nagle, priorités MMCSS, SysMain désactivé, services « inutiles », Win32PrioritySeparation, compression mémoire, désactivation de HVCI… Elles n'apportent rien de mesurable sur Windows 11 aujourd'hui, ou retirent une protection.
 - **Pilotes revus en profondeur** : entre deux familles de pilotes d'une même puce, c'est la date qui départage (comme le fait Windows), plus le seul numéro de version ; retour arrière réel après une mise à jour.
+
+### Nouveautés de la version 2.9
+
+- **Télémétrie des jeux et logiciels** (Confidentialité > Pare-feu) : recherche des rapporteurs de plantage copiés dans chaque jeu ou logiciel (Unreal Engine, Unity, BugSplat, CrashRpt, Crashpad) dans les bibliothèques Steam, Epic, GOG, EA, Ubisoft, Xbox, Riot, Battle.net et Program Files, bloqués avec le reste. Anti-triche et lanceurs jamais touchés.
+- **Programmes inconnus** : observation de 30 secondes des programmes (hors Windows) qui se connectent à Internet, avec éditeur et signature ; ceux que vous cochez sont coupés d'Internet, retrait en un clic.
 
 ### Nouveautés de la version 2.8
 
@@ -164,7 +169,7 @@ BJMPC Toolbox est distribuée sous la licence [PolyForm Noncommercial 1.0.0](LIC
 
 ### Retours
 
-Ouvrez une *issue* en précisant la version de Windows, la version de l'outil (2.8) et, si possible, le journal de `C:\BJMPC-Logs\`.
+Ouvrez une *issue* en précisant la version de Windows, la version de l'outil (2.9) et, si possible, le journal de `C:\BJMPC-Logs\`.
 
 ---
 
@@ -183,6 +188,11 @@ It is written in Windows PowerShell 5.1 (WPF UI) and needs no installation: laun
 - **Automatic backup of the customer's files** to another disk, on demand or scheduled.
 - **Outdated tweaks removed**: Nagle, MMCSS priorities, disabling SysMain, "useless" services, Win32PrioritySeparation, memory compression, disabling HVCI… They bring nothing measurable on today's Windows 11, or remove a protection.
 - **Drivers reviewed in depth**: between two driver families for the same chip, the date decides (as Windows does), no longer the version number alone; a real rollback after an update.
+
+### What's new in version 2.9
+
+- **Game and software telemetry** (Privacy > Firewall): finds crash reporters shipped inside each game or program (Unreal Engine, Unity, BugSplat, CrashRpt, Crashpad) in Steam, Epic, GOG, EA, Ubisoft, Xbox, Riot, Battle.net libraries and Program Files, blocked with the rest. Anti-cheat and launchers never touched.
+- **Unknown programs**: 30-second watch of non-Windows programs connecting to the Internet, with publisher and signature; the ones you tick are cut off, removed in one click.
 
 ### What's new in version 2.8
 

@@ -1319,6 +1319,129 @@ function Resolve-FwPath {
     return [Environment]::ExpandEnvironmentVariables($Path)
 }
 
+# Rapporteurs de plantage et de télémétrie des jeux et logiciels : un exécutable séparé, copié dans le dossier de chaque
+# jeu (Unreal Engine, Unity, BugSplat, CrashRpt, Crashpad). Les bloquer n'empêche ni de jouer ni le jeu en ligne.
+$Script:FwReporterNames = @('CrashReportClient.exe', 'CrashReportClientEditor.exe', 'UnityCrashHandler64.exe', 'UnityCrashHandler32.exe',
+    'BsSndRpt.exe', 'BsSndRpt64.exe', 'BugSplatHD.exe', 'BugSplatHD64.exe', 'crashpad_handler.exe', 'CrashSender1402.exe', 'CrashSender1403.exe')
+# Jamais bloqués (anti-triche, lanceurs, services de jeu) : leur blocage empêcherait de jouer.
+$Script:FwNeverBlock = '(?i)\\(EasyAntiCheat|BattlEye|Riot Vanguard|Vanguard|PunkBuster|FACEIT|nProtect|XignCode|Denuvo)\\|\\(Steam|EpicGamesLauncher|EADesktop|Origin|UbisoftConnect|upc|Battle\.net|GalaxyClient|RiotClientServices)\.exe$'
+
+function Get-GameLibraryRoots {
+    # Dossiers de jeux connus : bibliothèques Steam (libraryfolders.vdf), Epic, GOG, EA, Ubisoft, Xbox, Riot, Battle.net.
+    $roots = New-Object System.Collections.Generic.List[string]
+    $pf = $env:ProgramFiles; $pf86 = ${env:ProgramFiles(x86)}
+    foreach ($s in @((Join-Path $pf86 'Steam'), (Join-Path $pf 'Steam'))) {
+        $vdf = Join-Path $s 'steamapps\libraryfolders.vdf'
+        if (Test-Path -LiteralPath $vdf) {
+            foreach ($m in [regex]::Matches((Get-Content -LiteralPath $vdf -Raw -ErrorAction SilentlyContinue), '"path"\s+"([^"]+)"')) {
+                $roots.Add((Join-Path ($m.Groups[1].Value -replace '\\\\', '\') 'steamapps\common'))
+            }
+            $roots.Add((Join-Path $s 'steamapps\common'))
+        }
+    }
+    foreach ($d in @((Join-Path $pf 'Epic Games'), (Join-Path $pf86 'GOG Galaxy\Games'), 'C:\GOG Games', (Join-Path $pf 'EA Games'), (Join-Path $pf 'Electronic Arts'),
+            (Join-Path $pf86 'Ubisoft\Ubisoft Game Launcher\games'), (Join-Path $pf 'Riot Games'), (Join-Path $pf86 'Battle.net'), (Join-Path $pf86 'Blizzard Entertainment'))) { $roots.Add($d) }
+    foreach ($dr in @(Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue | Where-Object { $_.Root -match '^[A-Z]:\\$' })) {
+        foreach ($n in 'XboxGames', 'Games', 'SteamLibrary\steamapps\common', 'Epic Games', 'GOG Games') { $roots.Add((Join-Path $dr.Root $n)) }
+    }
+    return @($roots | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Sort-Object -Unique)
+}
+
+function Find-TelemetryReporters {
+    # Parcours limité (profondeur 7, dossiers illisibles ignorés) des bibliothèques de jeux, puis de Program Files sur 4 niveaux.
+    $names = @{}; foreach ($n in $Script:FwReporterNames) { $names[$n.ToLowerInvariant()] = $true }
+    $found = New-Object System.Collections.Generic.List[string]
+    $plan = @(); foreach ($r in @(Get-GameLibraryRoots)) { $plan += , @($r, 7) }
+    foreach ($r in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, (Join-Path $env:LOCALAPPDATA 'Programs'))) { if ($r -and (Test-Path -LiteralPath $r)) { $plan += , @($r, 4) } }
+    $seen = @{}
+    foreach ($p in $plan) {
+        $stack = New-Object System.Collections.Stack
+        $stack.Push(@([string]$p[0], 0))
+        while ($stack.Count) {
+            $cur = $stack.Pop(); $dir = [string]$cur[0]; $depth = [int]$cur[1]
+            if ($seen.ContainsKey($dir.ToLowerInvariant())) { continue }
+            $seen[$dir.ToLowerInvariant()] = $true
+            try { foreach ($f in [IO.Directory]::GetFiles($dir, '*.exe')) { if ($names.ContainsKey([IO.Path]::GetFileName($f).ToLowerInvariant()) -and $f -notmatch $Script:FwNeverBlock) { $found.Add($f) } } } catch {}
+            if ($depth -ge [int]$p[1]) { continue }
+            try {
+                foreach ($d in [IO.Directory]::GetDirectories($dir)) {
+                    $a = [IO.File]::GetAttributes($d)
+                    if (($a -band [IO.FileAttributes]::ReparsePoint) -eq 0) { $stack.Push(@($d, $depth + 1)) }
+                }
+            } catch {}
+        }
+    }
+    return @($found | Sort-Object -Unique)
+}
+
+function Get-FwAllTargets {
+    # Cibles fixes (Windows, Office, NVIDIA) + rapporteurs trouvés dans les jeux et logiciels installés.
+    $all = @()
+    foreach ($t in $Script:FwTargets) { $all += [pscustomobject]@{ Id = $t.Id; Name = $t.Name; Path = (Resolve-FwPath $t.Path); Service = $t.Service } }
+    foreach ($f in @(Find-TelemetryReporters)) {
+        $h = [BitConverter]::ToString([Security.Cryptography.MD5]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($f.ToLowerInvariant()))).Replace('-', '').Substring(0, 12)
+        $app = Split-Path (Split-Path $f -Parent) -Leaf
+        foreach ($skip in 'Binaries', 'Win64', 'Win32', 'Engine', 'bin', 'x64', 'CrashReportClient') { if ($app -ieq $skip) { $app = Split-Path (Split-Path (Split-Path $f -Parent) -Parent) -Leaf } }
+        $all += [pscustomobject]@{ Id = "rep-$h"; Name = ("Rapporteur de plantage : {0} ({1})" -f $app, [IO.Path]::GetFileName($f)); Path = $f; Service = $null }
+    }
+    return $all
+}
+
+function Get-OutboundAppsReport {
+    # « Inconnus » : observe pendant quelques secondes quels programmes ouvrent des connexions Internet, hors Windows.
+    # Rien n'est bloqué ici : la liste sert à choisir.
+    param([int]$Seconds = 30)
+    $Seconds = [math]::Max(5, [math]::Min(120, $Seconds))
+    Write-Log ("Observation des connexions Internet pendant {0} s…" -f $Seconds)
+    $hits = @{}
+    $end = (Get-Date).AddSeconds($Seconds)
+    do {
+        $procs = @{}; foreach ($p in @(Get-Process -ErrorAction SilentlyContinue)) { try { if ($p.Path) { $procs[$p.Id] = $p.Path } } catch {} }
+        foreach ($c in @(Get-NetTCPConnection -ErrorAction SilentlyContinue | Where-Object { $_.State -in 'Established', 'SynSent' -and $_.RemoteAddress -notmatch '^(127\.|::1$|0\.0\.0\.0|::$|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|fe80:)' })) {
+            $path = $procs[[int]$c.OwningProcess]
+            if (-not $path) { continue }
+            if (-not $hits.ContainsKey($path)) { $hits[$path] = New-Object System.Collections.Generic.HashSet[string] }
+            [void]$hits[$path].Add([string]$c.RemoteAddress)
+        }
+        Start-Sleep -Seconds 2
+    } while ((Get-Date) -lt $end)
+    $blocked = @{}
+    foreach ($r in @(Get-NetFirewallRule -Group $Script:FwGroup -ErrorAction SilentlyContinue)) { try { $blocked[([string]($r | Get-NetFirewallApplicationFilter).Program).ToLowerInvariant()] = $true } catch {} }
+    $win = [regex]::Escape($env:SystemRoot)
+    $items = @()
+    foreach ($path in @($hits.Keys | Sort-Object)) {
+        if ($path -match "^$win\\") { continue }   # composants de Windows : traités par la liste de télémétrie, jamais ici
+        $sig = $null; try { $sig = Get-AuthenticodeSignature -LiteralPath $path -ErrorAction Stop } catch {}
+        $pub = ''; if ($sig -and $sig.SignerCertificate) { $pub = ([string]$sig.SignerCertificate.Subject -replace '^.*?CN="?([^",]+).*$', '$1') }
+        $items += [pscustomobject]@{ Path = $path; Name = [IO.Path]::GetFileName($path); Publisher = $pub; Signed = [bool]($sig -and $sig.Status -eq 'Valid')
+            Hosts = $hits[$path].Count; Blocked = $blocked.ContainsKey($path.ToLowerInvariant()); Protected = ($path -match $Script:FwNeverBlock) }
+        Write-Log ("{0} · {1} · {2} adresse(s){3}" -f [IO.Path]::GetFileName($path), $(if ($pub) { $pub } else { 'éditeur inconnu' }), $hits[$path].Count, $(if ($blocked.ContainsKey($path.ToLowerInvariant())) { ' · déjà bloqué' } else { '' }))
+    }
+    if ($items.Count -eq 0) { Write-Log 'Aucun programme hors Windows ne s''est connecté à Internet pendant l''observation.' 'OK' }
+    Set-OptResult ([pscustomobject]@{ Items = $items; Seconds = $Seconds })
+}
+
+function Block-ProgramsOutbound {
+    # Bloque la sortie Internet des programmes cochés (même groupe : retrait en un clic). Anti-triche et lanceurs refusés.
+    param([string[]]$Paths = @())
+    if (-not $Script:Orig.Contains('fwgroup|' + $Script:FwGroup)) { Add-Orig ('fwgroup|' + $Script:FwGroup) @{ Type = 'fwgroup'; Group = $Script:FwGroup } }
+    $n = 0
+    foreach ($p in @($Paths)) {
+        if (-not $p -or -not (Test-Path -LiteralPath $p)) { Write-Log "Introuvable : $p" 'WARN'; continue }
+        if ($p -match $Script:FwNeverBlock) { Write-Log "Refusé (anti-triche ou lanceur de jeux) : $p" 'WARN'; continue }
+        if ($p -match ("^" + [regex]::Escape($env:SystemRoot) + "\\")) { Write-Log "Refusé (composant de Windows) : $p" 'WARN'; continue }
+        $h = [BitConverter]::ToString([Security.Cryptography.MD5]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($p.ToLowerInvariant()))).Replace('-', '').Substring(0, 12)
+        $name = "BJMPC-App-$h"
+        try {
+            Remove-NetFirewallRule -Name $name -ErrorAction SilentlyContinue
+            New-NetFirewallRule -Name $name -DisplayName ("BJMPC - Internet coupé : " + [IO.Path]::GetFileName($p)) -Group $Script:FwGroup -Direction Outbound -Action Block -Program $p -Profile Any -Enabled True -Description ("Ajoutée par BJMPC Toolbox pour " + $p) -ErrorAction Stop | Out-Null
+            Write-Log ("Internet coupé : " + $p) 'OK'; $n++
+        } catch { Write-Log ("$p : " + $_.Exception.Message) 'WARN' }
+    }
+    Save-Orig
+    Write-Log ("{0} programme(s) bloqué(s). Retrait : « Retirer les blocages »." -f $n) 'OK'
+}
+
 function Get-FirewallStatus {
     # Le pare-feu Windows applique-t-il réellement les règles ? (profils actifs, pare-feu d'un antivirus tiers)
     $st = [ordered]@{ ProfilesOff = @(); ThirdParty = @() }
@@ -1338,8 +1461,8 @@ function Get-TelemetryFirewallReport {
     $diagPid = 0; try { $diagPid = [int](Get-CimInstance Win32_Service -Filter "Name='DiagTrack'" -ErrorAction Stop).ProcessId } catch {}
     $procs = @{}; foreach ($p in @(Get-Process -ErrorAction SilentlyContinue)) { try { if ($p.Path) { $procs[$p.Id] = $p.Path } } catch {} }
     $items = @()
-    foreach ($t in $Script:FwTargets) {
-        $path = Resolve-FwPath $t.Path
+    foreach ($t in @(Get-FwAllTargets)) {
+        $path = $t.Path
         $exists = Test-Path -LiteralPath $path
         $pids = @()
         if ($t.Service) { if ($diagPid -gt 0) { $pids = @($diagPid) } }
@@ -1362,8 +1485,8 @@ function Block-TelemetryFirewall {
     $fw = Get-FirewallStatus
     if (-not $Script:Orig.Contains('fwgroup|' + $Script:FwGroup)) { Add-Orig ('fwgroup|' + $Script:FwGroup) @{ Type = 'fwgroup'; Group = $Script:FwGroup } }
     $n = 0
-    foreach ($t in $Script:FwTargets) {
-        $path = Resolve-FwPath $t.Path
+    foreach ($t in @(Get-FwAllTargets)) {
+        $path = $t.Path
         if (-not (Test-Path -LiteralPath $path)) { continue }
         $name = "BJMPC-Tel-$($t.Id)"
         try {
@@ -1377,7 +1500,7 @@ function Block-TelemetryFirewall {
         } catch { Write-Log "$($t.Name) : $($_.Exception.Message)" 'WARN' }
     }
     Save-Orig
-    Write-Log ("{0} programme(s) de télémétrie bloqué(s) dans le pare-feu (groupe « {1} »)." -f $n, $Script:FwGroup) 'OK'
+    Write-Log ("{0} programme(s) de télémétrie ou rapporteur(s) de plantage bloqué(s) dans le pare-feu (groupe « {1} »)." -f $n, $Script:FwGroup) 'OK'
     if ($fw.ProfilesOff.Count) { Write-Log ("Attention : le pare-feu Windows est désactivé pour " + ($fw.ProfilesOff -join ', ') + ' : ces blocages n''y ont aucun effet.') 'WARN' }
     if ($fw.ThirdParty.Count) { Write-Log ("Attention : pare-feu tiers (" + ($fw.ThirdParty -join ', ') + ') : ajoutez les mêmes blocages dans ce logiciel si celui de Windows est remplacé.') 'WARN' }
 }

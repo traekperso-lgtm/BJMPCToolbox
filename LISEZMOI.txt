@@ -1,5 +1,17 @@
-﻿BJMPC Toolbox 2.8 - interface graphique (Windows 11)
+﻿BJMPC Toolbox 2.9 - interface graphique (Windows 11)
 =====================================================
+
+NOUVEAUTES 2.9
+  - Confidentialite > Pare-feu, jeux et logiciels connus : recherche des rapporteurs de plantage et de telemetrie
+    copies dans chaque jeu ou logiciel (CrashReportClient d'Unreal Engine, UnityCrashHandler, BugSplat, CrashRpt,
+    crashpad_handler) dans les bibliotheques Steam (toutes, via libraryfolders.vdf), Epic, GOG, EA, Ubisoft, Xbox,
+    Riot, Battle.net et Program Files. "Bloquer la telemetrie" les coupe avec le reste. Jouer et le jeu en ligne
+    ne sont pas touches. Anti-triche (EasyAntiCheat, BattlEye, Vanguard, FACEIT...) et lanceurs jamais bloques.
+  - Programmes inconnus : "Observer 30 secondes" liste les programmes hors Windows qui se connectent a Internet
+    (editeur, signature, nombre d'adresses) ; "Couper Internet aux programmes coches" les bloque. Les composants
+    de Windows, anti-triche et lanceurs sont refuses. Meme groupe : "Retirer les blocages" retire tout.
+  - Limite assumee : la telemetrie integree au programme principal d'un jeu (meme connexion que le jeu en ligne)
+    ne peut pas etre separee par le pare-feu ; seule la coupure complete du programme l'arrete.
 
 NOUVEAUTES 2.8
   - Reparer > carte "Pilotes d'imprimante : Microsoft ou fabricant".
