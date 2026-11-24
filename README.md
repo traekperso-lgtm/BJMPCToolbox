@@ -2,7 +2,7 @@
 
 🇫🇷 [Français](#-français) · 🇬🇧 [English](#-english)
 
-> **Version 3.0** · Windows 11 · Windows PowerShell 5.1 (WPF) · by **BJMPC Informatique**
+> **Version 3.1** · Windows 11 · Windows PowerShell 5.1 (WPF) · by **BJMPC Informatique**
 
 ---
 
@@ -21,6 +21,10 @@ Elle est écrite en Windows PowerShell 5.1 (interface WPF), sans installation : 
 - **Sauvegarde automatique des fichiers du client** vers un autre disque, à la demande ou planifiée.
 - **Optimisations dépassées retirées** : Nagle, priorités MMCSS, SysMain désactivé, services « inutiles », Win32PrioritySeparation, compression mémoire, désactivation de HVCI… Elles n'apportent rien de mesurable sur Windows 11 aujourd'hui, ou retirent une protection.
 - **Pilotes revus en profondeur** : entre deux familles de pilotes d'une même puce, c'est la date qui départage (comme le fait Windows), plus le seul numéro de version ; retour arrière réel après une mise à jour.
+
+### Nouveautés de la version 3.1
+
+- **NVIDIA** (Optimiser > Jeux et alimentation) : analyse (pilote, services, écritures réelles de NVDisplay.Container.exe sur 20 s) ; correctif ciblé du bogue des pilotes 621.14/621.24 qui réécrit sans cesse le journal nvlog.nvlgstg (jusqu'à 30 Go/h) en coupant le seul greffon nvtopps ; **mode à la demande** : services NVIDIA en démarrage manuel, lancés par « Ouvrir NVIDIA App » ou « Ouvrir le Panneau de configuration », arrêtés ensuite. Tout s'annule.
 
 ### Nouveautés de la version 3.0
 
@@ -176,7 +180,7 @@ BJMPC Toolbox est distribuée sous la licence [PolyForm Noncommercial 1.0.0](LIC
 
 ### Retours
 
-Ouvrez une *issue* en précisant la version de Windows, la version de l'outil (3.0) et, si possible, le journal de `C:\BJMPC-Logs\`.
+Ouvrez une *issue* en précisant la version de Windows, la version de l'outil (3.1) et, si possible, le journal de `C:\BJMPC-Logs\`.
 
 ---
 
@@ -195,6 +199,10 @@ It is written in Windows PowerShell 5.1 (WPF UI) and needs no installation: laun
 - **Automatic backup of the customer's files** to another disk, on demand or scheduled.
 - **Outdated tweaks removed**: Nagle, MMCSS priorities, disabling SysMain, "useless" services, Win32PrioritySeparation, memory compression, disabling HVCI… They bring nothing measurable on today's Windows 11, or remove a protection.
 - **Drivers reviewed in depth**: between two driver families for the same chip, the date decides (as Windows does), no longer the version number alone; a real rollback after an update.
+
+### What's new in version 3.1
+
+- **NVIDIA** (Optimise > Gaming & power): analysis (driver, services, real NVDisplay.Container.exe writes over 20 s); targeted fix for the 621.14/621.24 bug that keeps rewriting nvlog.nvlgstg (up to 30 GB/h) by disabling only the nvtopps plugin; **on-demand mode**: NVIDIA services set to manual, started by "Open NVIDIA App" or "Open Control Panel", stopped afterwards. Everything is reversible.
 
 ### What's new in version 3.0
 

@@ -317,6 +317,22 @@ $Sync.Result = @{ Found = @($found | Where-Object { $_ -like '*BJTestGame*' }); 
     }
 }
 
+Describe 'NVIDIA : services et journal' {
+    It 'Analyse et actions sans erreur sur un PC sans carte NVIDIA, rien n''est modifié' {
+        $r = Invoke-Engine 'opt' @'
+$Script:LogFile = Join-Path $env:TEMP 'bjmpc-test-nv.log'
+$Script:StateFile = Join-Path $env:TEMP ('bjmpc-test-orig-' + [guid]::NewGuid().ToString('N') + '.json')
+Get-NvidiaState -Seconds 1
+$st = $Sync.Result
+Set-NvidiaLogFix
+Set-NvidiaOnDemand
+$Sync.Result = @{ Svc = @($st.Services).Count; Key = (Test-Path $Script:NvToppsKey); Orig = $Script:Orig.Count }
+'@
+        $r.Errors | Should -BeNullOrEmpty
+        if ($r.Result.Svc -eq 0) { $r.Result.Key | Should -BeFalse; $r.Result.Orig | Should -Be 0 }
+    }
+}
+
 Describe 'Stockage (lecture seule)' {
     It 'Rapport de stockage, état du pilote NVMe et lecture des réglages d''alimentation sans erreur' {
         $r = Invoke-Engine 'opt' @'

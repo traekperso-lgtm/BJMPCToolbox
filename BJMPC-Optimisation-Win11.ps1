@@ -601,6 +601,143 @@ function Optimize-Storage {
     Write-Log "Disque et démarrage : terminé" 'OK'
 }
 
+# ---------------------------------------------------------------- NVIDIA : écritures sur le SSD et services en arrière-plan
+# Pilotes 621.14 / 621.24 (novembre 2026) : le greffon « nvtopps » de NVIDIA Display Container LS réécrit sans cesse
+# C:\ProgramData\NVIDIA Corporation\nvtopps\nct\nvlog.nvlgstg (jusqu'à ~30 Go/h). Correctif ciblé : DisableLoad = 1 sur ce
+# seul greffon (le service continue, Panneau de configuration et NVIDIA App fonctionnent). Mode « à la demande » : les
+# services NVIDIA passent en démarrage manuel, la Toolbox les lance quand on ouvre l'application NVIDIA.
+$Script:NvSvc = @(
+    @{ Name = 'NVDisplay.ContainerLocalSystem'; Label = 'NVIDIA Display Container LS (Panneau de configuration, réglages d''affichage)' }
+    @{ Name = 'NvContainerLocalSystem'; Label = 'NVIDIA LocalSystem Container (NVIDIA App : mises à jour, superposition Alt+Z)' }
+    @{ Name = 'FvSvc'; Label = 'NVIDIA FrameView SDK (mesures de performances)' }
+    @{ Name = 'NvTelemetryContainer'; Label = 'NVIDIA Telemetry Container (anciens pilotes)' }
+)
+$Script:NvToppsKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\NVDisplay.ContainerLocalSystem\Parameters\LocalSystem\_nvtopps'
+$Script:NvLog = "$env:ProgramData\NVIDIA Corporation\nvtopps\nct\nvlog.nvlgstg"
+
+function Get-NvidiaDriverVersion {
+    # 32.0.15.6214 -> 562.14 (les 5 derniers chiffres de la version Windows)
+    try {
+        $v = @(Get-CimInstance Win32_VideoController -ErrorAction Stop | Where-Object { [string]$_.Name -match 'NVIDIA' } | Select-Object -First 1)
+        if (-not $v) { return '' }
+        $d = ([string]$v[0].DriverVersion) -replace '\.', ''
+        if ($d.Length -ge 5) { $t = $d.Substring($d.Length - 5); return ('{0}.{1}' -f [int]$t.Substring(0, 3), $t.Substring(3)) }
+    } catch {}
+    return ''
+}
+
+function Find-NvidiaAppExe {
+    foreach ($root in @((Join-Path $env:ProgramFiles 'NVIDIA Corporation\NVIDIA App'), (Join-Path $env:ProgramFiles 'NVIDIA Corporation\NVIDIA app'))) {
+        if (-not (Test-Path -LiteralPath $root)) { continue }
+        $f = @(Get-ChildItem -LiteralPath $root -Filter 'NVIDIA App.exe' -Recurse -Depth 3 -ErrorAction SilentlyContinue | Select-Object -First 1)
+        if ($f) { return $f[0].FullName }
+    }
+    return ''
+}
+
+function Measure-NvidiaWrites {
+    # Octets écrits par NVDisplay.Container.exe pendant $Seconds secondes (compteur Windows WriteTransferCount).
+    param([int]$Seconds = 20)
+    $get = { [double](@(Get-CimInstance Win32_Process -Filter "Name='NVDisplay.Container.exe'" -ErrorAction SilentlyContinue) | Measure-Object -Property WriteTransferCount -Sum).Sum }
+    $a = & $get; Start-Sleep -Seconds $Seconds; $b = & $get
+    if ($b -lt $a) { return 0 }
+    return [math]::Round(($b - $a) / 1MB * (3600 / $Seconds))   # Mo par heure
+}
+
+function Get-NvidiaState {
+    param([int]$Seconds = 20)
+    $svc = @()
+    foreach ($s in $Script:NvSvc) {
+        $o = Get-Service -Name $s.Name -ErrorAction SilentlyContinue
+        if ($o) { $svc += [pscustomobject]@{ Name = $s.Name; Label = $s.Label; Status = [string]$o.Status; Mode = (Get-SvcMode $s.Name) } }
+    }
+    $log = Get-Item -LiteralPath $Script:NvLog -ErrorAction SilentlyContinue
+    $st = [pscustomobject]@{
+        Driver = Get-NvidiaDriverVersion; Services = $svc; App = Find-NvidiaAppExe
+        LogFix = ((Get-RegValue $Script:NvToppsKey 'DisableLoad') -eq 1)
+        LogMB = $(if ($log) { [math]::Round($log.Length / 1MB, 1) } else { $null })
+        LogAgeSec = $(if ($log) { [int]((Get-Date) - $log.LastWriteTime).TotalSeconds } else { $null })
+        WritesMBh = $(if (@($svc | Where-Object { $_.Name -eq 'NVDisplay.ContainerLocalSystem' -and $_.Status -eq 'Running' }).Count) { Measure-NvidiaWrites $Seconds } else { 0 })
+        OnDemand = (@($svc | Where-Object { $_.Mode -eq 'demand' }).Count -gt 0 -and $Script:Orig.Contains('svc|NVDisplay.ContainerLocalSystem'))
+    }
+    Set-OptResult $st
+    if (-not $svc.Count) { Write-Log 'Aucun service NVIDIA sur ce PC.' 'OK'; return }
+    Write-Log ("Pilote NVIDIA {0} · écritures de NVDisplay.Container.exe : environ {1} Mo/h · correctif du journal : {2}" -f $(if ($st.Driver) { $st.Driver } else { '?' }), $st.WritesMBh, $(if ($st.LogFix) { 'posé' } else { 'non' })) $(if ($st.WritesMBh -gt 500) { 'WARN' } else { 'OK' })
+    foreach ($s in $svc) { Write-Log ("{0} : {1}, démarrage {2}" -f $s.Label, $s.Status, $s.Mode) }
+    if ($st.Driver -in '621.14', '621.24' -and -not $st.LogFix) { Write-Log 'Pilote touché par le bogue d''écritures sur le SSD : appliquez « Couper les écritures du journal ».' 'WARN' }
+}
+
+function Set-NvidiaLogFix {
+    # Désactive le seul greffon nvtopps (journal qui use le SSD) ; le service et l'application continuent.
+    param([switch]$Off)
+    if (-not (Get-Service -Name 'NVDisplay.ContainerLocalSystem' -ErrorAction SilentlyContinue)) { Write-Log 'Service NVIDIA Display Container LS absent : rien à faire.' 'OK'; return }
+    if ($Off) {
+        foreach ($k in @("reg|$($Script:NvToppsKey)|DisableLoad", "regkey|$($Script:NvToppsKey)")) { if ($Script:Orig.Contains($k)) { Restore-Record $Script:Orig[$k]; $Script:Orig.Remove($k) } }
+        Save-Orig
+        Write-Log 'Greffon nvtopps réactivé (comportement d''origine du pilote).' 'OK'
+    } else {
+        if (-not (Test-Path -LiteralPath $Script:NvToppsKey)) { Add-Orig "regkey|$($Script:NvToppsKey)" @{ Type = 'regkey'; Path = $Script:NvToppsKey }; New-Item -Path $Script:NvToppsKey -Force | Out-Null }
+        Set-Reg $Script:NvToppsKey 'DisableLoad' 1 'DWord'
+        if ((Get-RegValue $Script:NvToppsKey 'DisableLoad') -ne 1) { Write-Log 'Valeur non retrouvée après écriture.' 'WARN'; return }
+    }
+    $svc = Get-Service -Name 'NVDisplay.ContainerLocalSystem' -ErrorAction SilentlyContinue
+    if ($svc.Status -eq 'Running') {
+        try { Restart-Service -Name 'NVDisplay.ContainerLocalSystem' -Force -ErrorAction Stop; Write-Log 'NVIDIA Display Container LS redémarré (l''écran peut clignoter une seconde).' 'OK' } catch { Write-Log "Redémarrage du service : $($_.Exception.Message) ; prise en compte au prochain démarrage." 'WARN' }
+    }
+    if (-not $Off) {
+        Write-Log 'Mesure des écritures pendant 20 s…'
+        $m = Measure-NvidiaWrites 20
+        Write-Log ("Écritures de NVDisplay.Container.exe : environ {0} Mo/h." -f $m) $(if ($m -gt 500) { 'WARN' } else { 'OK' })
+        Write-Log 'Une mise à jour ou une réinstallation du pilote peut retirer ce correctif : relancez l''analyse après chaque pilote.' 'INFO'
+    }
+}
+
+function Set-NvidiaOnDemand {
+    # Services NVIDIA en démarrage manuel et arrêtés : plus rien ne tourne en arrière-plan. Les réglages appliqués
+    # (G-SYNC, couleurs, profils 3D) restent actifs : c'est le pilote qui les applique. Annulable.
+    param([switch]$Off)
+    if ($Off) {
+        $n = 0
+        foreach ($s in $Script:NvSvc) {
+            $k = "svc|$($s.Name)"
+            if ($Script:Orig.Contains($k)) { Restore-Record $Script:Orig[$k]; $Script:Orig.Remove($k); $n++; Start-Service -Name $s.Name -ErrorAction SilentlyContinue }
+        }
+        Save-Orig
+        Write-Log ("{0} service(s) NVIDIA remis en démarrage automatique et relancés." -f $n) 'OK'
+        return
+    }
+    $found = 0
+    foreach ($s in $Script:NvSvc) {
+        if (-not (Get-Service -Name $s.Name -ErrorAction SilentlyContinue)) { continue }
+        $found++
+        Set-SvcMode $s.Name 'demand' $s.Label
+        try { Stop-Service -Name $s.Name -Force -ErrorAction Stop } catch {}
+    }
+    Get-Process -Name 'NVIDIA Overlay', 'NVIDIA App', 'NVIDIA Share', 'nvcontainer' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    if ($found -eq 0) { Write-Log 'Aucun service NVIDIA sur ce PC.' 'OK'; return }
+    Write-Log 'Services NVIDIA arrêtés et en démarrage manuel. Pour utiliser l''application NVIDIA ou le Panneau de configuration : bouton « Ouvrir NVIDIA App », puis « Arrêter les services NVIDIA » quand vous avez fini.' 'OK'
+}
+
+function Start-NvidiaApp {
+    # Lance les services nécessaires puis l'application NVIDIA, au nom de la personne connectée (pas en administrateur).
+    param([switch]$ControlPanel)
+    foreach ($n in 'NVDisplay.ContainerLocalSystem', 'NvContainerLocalSystem') {
+        $s = Get-Service -Name $n -ErrorAction SilentlyContinue
+        if ($s -and $s.Status -ne 'Running') { try { Start-Service -Name $n -ErrorAction Stop; Write-Log "Service démarré : $n" 'OK' } catch { Write-Log "$n : $($_.Exception.Message)" 'WARN' } }
+    }
+    Start-Sleep -Seconds 3
+    if ($ControlPanel) { $exe = 'shell:AppsFolder\NVIDIACorp.NVIDIAControlPanel_56jybvy8sckqj!NVIDIACorp.NVIDIAControlPanel' }
+    else { $exe = Find-NvidiaAppExe }
+    if (-not $exe) { Write-Log 'Application NVIDIA introuvable (C:\Program Files\NVIDIA Corporation\NVIDIA App).' 'WARN'; return }
+    try { Start-Process -FilePath 'explorer.exe' -ArgumentList ('"' + $exe + '"') -ErrorAction Stop; Write-Log 'Application NVIDIA ouverte.' 'OK' } catch { Write-Log "Ouverture : $($_.Exception.Message)" 'WARN' }
+}
+
+function Stop-NvidiaServices {
+    # Arrêt immédiat (sans changer le mode de démarrage) : utile après « Ouvrir NVIDIA App » en mode à la demande.
+    Get-Process -Name 'NVIDIA Overlay', 'NVIDIA App', 'NVIDIA Share' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    foreach ($s in $Script:NvSvc) { if ((Get-Service -Name $s.Name -ErrorAction SilentlyContinue).Status -eq 'Running') { Stop-Service -Name $s.Name -Force -ErrorAction SilentlyContinue; Write-Log "Arrêté : $($s.Label)" 'OK' } }
+}
+
 # ---------------------------------------------------------------- Stockage : inventaire, entretien, alimentation, NVMe natif
 # Tout est réversible : chaque réglage d'alimentation garde sa valeur d'origine (type 'pwr'), les valeurs de registre
 # passent par Set-Reg. Rien n'est appliqué sans un clic sur un bouton.

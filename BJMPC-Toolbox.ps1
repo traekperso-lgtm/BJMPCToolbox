@@ -15,7 +15,7 @@
 #>
 
 $ErrorActionPreference = 'Continue'
-$Script:AppVersion = '3.0'
+$Script:AppVersion = '3.1'
 $Script:Root       = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $Script:LogDir     = Join-Path $env:SystemDrive 'BJMPC-Logs'
 $Script:BackupDir  = Join-Path $Script:LogDir 'Backup'
@@ -1546,6 +1546,26 @@ function Build-Gaming {
     [void]$p.Children.Add($pw.Card)
 
     [void](New-TweakCard $p 'Barre de jeu et capture' 'Les réglages de jeu coupent déjà la capture pour votre session. Cette option applique la désactivation complète (stratégie) pour tous les comptes.')
+    # ---- NVIDIA : écritures sur le SSD et services en arrière-plan
+    $nv = New-Card 'NVIDIA : services en arrière-plan et écritures sur le SSD' 'Les pilotes 621.14 et 621.24 font réécrire en continu un journal par « NVIDIA Display Container LS » (jusqu''à 30 Go par heure sur le SSD). Correctif ciblé : seul le greffon fautif est coupé, le Panneau de configuration et NVIDIA App continuent de marcher. Mode à la demande : plus aucun service NVIDIA ne tourne en arrière-plan ; ils sont lancés quand vous ouvrez l''application. Les réglages appliqués (G-SYNC, couleurs, profils de jeux) restent actifs. Tout s''annule.' 'Annulable' 'g'
+    $Script:NvNote = New-Text 'Cliquez sur « Analyser » : services, version du pilote et écritures réelles mesurées pendant 20 secondes.' 13 '#9298A3' 'Normal' -Wrap
+    $Script:NvNote.Margin = '0,8,0,4'
+    [void]$nv.Body.Children.Add($Script:NvNote)
+    $nb1 = New-Object Windows.Controls.WrapPanel
+    $nb1.Margin = '-8,6,0,0'
+    [void]$nb1.Children.Add((New-Btn 'Analyser' (New-Spec 'opt' 'Get-NvidiaState' 'NVIDIA : analyse' @{} '' { param($r) Show-NvidiaState $r }) -Primary))
+    [void]$nb1.Children.Add((New-Btn 'Couper les écritures du journal' (New-Spec 'opt' 'Set-NvidiaLogFix' 'NVIDIA : journal coupé' @{} '' { param($r) Show-NvidiaStale })))
+    [void]$nb1.Children.Add((New-Btn 'Rétablir le journal' (New-Spec 'opt' 'Set-NvidiaLogFix -Off' 'NVIDIA : journal rétabli' @{} '' { param($r) Show-NvidiaStale })))
+    [void]$nv.Body.Children.Add($nb1)
+    $nb2 = New-Object Windows.Controls.WrapPanel
+    $nb2.Margin = '-8,2,0,0'
+    [void]$nb2.Children.Add((New-Btn 'Mode à la demande' (New-Spec 'opt' 'Set-NvidiaOnDemand' 'NVIDIA : services à la demande' @{} 'Arrêter les services NVIDIA et les passer en démarrage manuel ? NVIDIA App, la superposition Alt+Z et le Panneau de configuration ne s''ouvriront plus seuls : utilisez « Ouvrir NVIDIA App » de cette carte. Les réglages déjà appliqués restent actifs.' { param($r) Show-NvidiaStale })))
+    [void]$nb2.Children.Add((New-Btn 'Ouvrir NVIDIA App' (New-Spec 'opt' 'Start-NvidiaApp' 'NVIDIA App' @{} '' { param($r) Show-NvidiaStale })))
+    [void]$nb2.Children.Add((New-Btn 'Ouvrir le Panneau de configuration' (New-Spec 'opt' 'Start-NvidiaApp -ControlPanel' 'Panneau de configuration NVIDIA' @{} '' { param($r) Show-NvidiaStale })))
+    [void]$nb2.Children.Add((New-Btn 'Arrêter les services NVIDIA' (New-Spec 'opt' 'Stop-NvidiaServices' 'NVIDIA : services arrêtés' @{} '' { param($r) Show-NvidiaStale })))
+    [void]$nb2.Children.Add((New-Btn 'Revenir au démarrage automatique' (New-Spec 'opt' 'Set-NvidiaOnDemand -Off' 'NVIDIA : démarrage automatique' @{} '' { param($r) Show-NvidiaStale })))
+    [void]$nv.Body.Children.Add($nb2)
+    [void]$p.Children.Add($nv.Card)
 }
 
 # ---------------------------------------------------------------- Réseau
@@ -3021,6 +3041,20 @@ function Show-OutboundApps {
     }
 }
 
+function Show-NvidiaStale { try { $Script:NvNote.Text = 'Terminé. « Analyser » pour voir le nouvel état.' } catch {} }
+
+function Show-NvidiaState {
+    param($St)
+    if (-not $St) { $Script:NvNote.Text = 'Analyse impossible.'; return }
+    if (-not @($St.Services).Count) { $Script:NvNote.Text = 'Aucun service NVIDIA sur ce PC.'; return }
+    $l = @()
+    $l += ('Pilote {0} · NVDisplay.Container.exe écrit environ {1} Mo par heure{2} · correctif du journal : {3}' -f $(if ($St.Driver) { $St.Driver } else { '?' }), $St.WritesMBh, $(if ($St.WritesMBh -gt 500) { ' (ANORMAL)' } else { '' }), $(if ($St.LogFix) { 'posé' } else { 'non posé' }))
+    if ($null -ne $St.LogMB) { $l += ('Journal nvlog.nvlgstg : {0} Mo, modifié il y a {1} s' -f $St.LogMB, $St.LogAgeSec) }
+    foreach ($s in @($St.Services)) { $l += ('{0} : {1}, démarrage {2}' -f $s.Label, $(if ($s.Status -eq 'Running') { 'en marche' } else { 'arrêté' }), $(switch ($s.Mode) { 'demand' { 'manuel' } 'auto' { 'automatique' } 'delayed-auto' { 'automatique (différé)' } 'disabled' { 'désactivé' } default { $s.Mode } })) }
+    if (-not $St.App) { $l += 'NVIDIA App non installée.' }
+    $Script:NvNote.Text = ($l -join [Environment]::NewLine)
+}
+
 function Show-FirewallReport {
     param($Res)
     $Script:FwPanel.Children.Clear()
@@ -4120,6 +4154,8 @@ $Script:PlainMap = @(
     @{ K = '^Get-PrinterDiagnostic'; C = 'skip'; T = '' }
     @{ K = '^Get-StorageReport|^Show-NvmeState'; C = 'skip'; T = '' }
     @{ K = '^Get-TelemetryFirewallReport|^Get-OutboundAppsReport'; C = 'skip'; T = '' }
+    @{ K = '^Get-NvidiaState|^Start-NvidiaApp|^Stop-NvidiaServices'; C = 'skip'; T = '' }
+    @{ K = '^Set-NvidiaLogFix|^Set-NvidiaOnDemand'; C = 'vitesse'; T = 'Nous avons empêché les logiciels NVIDIA d''user le disque et de tourner pour rien en arrière-plan.' }
     @{ K = '^Block-ProgramsOutbound'; C = 'prive'; T = 'Nous avons coupé l''accès à Internet de programmes que vous avez choisis.' }
     @{ K = '^Get-PrinterDriverReport'; C = 'skip'; T = '' }
     @{ K = '^Switch-PrinterToVendor|^Restore-PrinterDriver|^Set-ProtectedPrintMode'; C = 'repar'; T = 'Nous avons réglé le pilote de votre imprimante pour retrouver toutes ses fonctions.' }

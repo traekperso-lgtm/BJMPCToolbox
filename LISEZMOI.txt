@@ -1,5 +1,18 @@
-﻿BJMPC Toolbox 3.0 - interface graphique (Windows 11)
+﻿BJMPC Toolbox 3.1 - interface graphique (Windows 11)
 =====================================================
+
+NOUVEAUTES 3.1
+  - Optimiser > Jeux et alimentation > carte "NVIDIA : services en arriere-plan et ecritures sur le SSD".
+       Analyser : version du pilote, etat et mode de demarrage des services NVIDIA, taille du journal
+         nvlog.nvlgstg, ecritures reelles de NVDisplay.Container.exe mesurees pendant 20 s (Mo/heure).
+       Couper les ecritures du journal : bogue des pilotes 621.14 / 621.24 (jusqu'a 30 Go/h sur le SSD).
+         Seul le greffon "nvtopps" est desactive (DisableLoad = 1) ; le service, le Panneau de configuration et
+         NVIDIA App continuent ; mesure apres coup. A refaire apres une mise a jour du pilote.
+       Mode a la demande : NVIDIA Display Container LS, NVIDIA LocalSystem Container, FrameView SDK (et l'ancien
+         Telemetry Container) arretes et en demarrage manuel : plus rien ne tourne en arriere-plan. Les reglages
+         appliques (G-SYNC, couleurs, profils 3D) restent actifs. "Ouvrir NVIDIA App" / "Ouvrir le Panneau de
+         configuration" demarrent les services puis ouvrent l'application ; "Arreter les services NVIDIA" ensuite.
+       Revenir au demarrage automatique / Retablir le journal : retour exact (aussi depuis le Journal).
 
 NOUVEAUTES 3.0
   - Nouvelle organisation du menu :
